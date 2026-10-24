@@ -12,6 +12,8 @@ struct VsaConfig {
   const int32_t* rows = nullptr;
   const int32_t* sizes = nullptr;
   const int32_t* row_tiles = nullptr;
+  int tile_size = 64, keep_denominator = 5, region_count = 0;
+  const int32_t* region_ends = nullptr;
 };
 
 size_t vsa_attention_workspace_bytes(int tiles, int heads, int head_dim);

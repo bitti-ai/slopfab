@@ -1,6 +1,7 @@
 """Real-checkpoint FFmpeg-free DLL smoke run with video and PCM references.
 
 Usage: python reference_generation_smoke.py slopfab.dll repository-root [vulkan] [--reuse]
+       [--transformer PATH] [--embedding PATH]
 --reuse checks identical repeated output, a new seed, and skipped VAE encodes.
 No output files are written; asserts decoded frame/audio geometry and finiteness.
 """
@@ -15,6 +16,11 @@ handle = C.c_void_p
 reuse = "--reuse" in sys.argv[3:]
 reference_events = []
 denoise_events = []
+def option(name):
+    return pathlib.Path(sys.argv[sys.argv.index(name) + 1]).resolve() if name in sys.argv else None
+
+transformer_path = option("--transformer")
+embedding_path = option("--embedding")
 
 
 def bind(name, arguments, result=C.c_int):
@@ -90,7 +96,12 @@ try:
                         (1, "text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
                         (3, "vae/minimax_h3_video_vae_fp16.safetensors"),
                         (4, "vae/minimax_h3_audio_vae_fp32.safetensors")]:
-        check(set_model(request, model, str(root / "weights" / path).encode()))
+        if model == 1 and embedding_path:
+            continue
+        check(set_model(request, model, str(transformer_path if model == 0 and transformer_path else root / "weights" / path).encode()))
+    if embedding_path:
+        check(bind("slopfab_request_set_prompt_embedding_path", [handle, C.c_char_p])(
+            request, str(embedding_path).encode()))
     check(set_prompt(request, b"A warm red scene with gentle motion and a soft continuous tone."))
     check(set_resolution(request, 32, 32))
     check(set_frames(request, 22))

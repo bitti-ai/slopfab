@@ -26,6 +26,7 @@ struct ExactH3TransformerConfig {
   uint32_t audio_output_rows = 0;
   uint32_t video_output_start = 0;
   uint32_t audio_output_start = 0;
+  uint32_t pdd_steps = 1;
 };
 
 struct H3TransformerTextReplayTaps {
@@ -77,7 +78,7 @@ public:
                       DeviceTensor& audio_velocity, const H3AttentionRanges* ranges = nullptr,
                       const H3TransformerForwardReplayTaps* taps = nullptr,
                       DeviceTensor* video_row_indices = nullptr,
-                      DeviceTensor* audio_row_indices = nullptr);
+                      DeviceTensor* audio_row_indices = nullptr, int pdd_step = 0);
   uint32_t required_forward_operators(const H3TransformerForwardReplayTaps* taps = nullptr) const;
 
   uint64_t persistent_bytes() const noexcept;

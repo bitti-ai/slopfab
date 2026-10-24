@@ -112,7 +112,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     if ((request.has_references() || request.continuation || request.bridge) &&
         !plan.model.supports_references)
       throw std::invalid_argument("selected model does not support reference conditioning");
-    if (plan.model.compressed_attention &&
+    if (plan.model.compressed_attention && plan.model.pdd_steps == 1 &&
         (request.has_references() || request.continuation || request.bridge || request.image_edit.invert_mask))
       throw std::invalid_argument(
           "compressed attention currently supports unconditioned media layouts only");
@@ -573,6 +573,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     description += "  sampling source     " + source + "\n";
   if (plan.fasth3_v2)
     description += "  attention           VSA-H3 (64-token tiles, 80% sparsity, learned gates)\n";
+  if (plan.model.pdd_steps > 1)
+    description += "  attention           OmniRef VSA-H3 (128-token tiles, 90% sparsity per video region)\n";
   for (const auto& lora : request.loras) {
     char strength[64];
     std::snprintf(strength, sizeof(strength), "%.6g", static_cast<double>(lora.strength));

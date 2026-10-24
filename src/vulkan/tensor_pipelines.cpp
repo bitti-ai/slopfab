@@ -359,7 +359,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
         detail::kTensorAttention_VSA, sizeof(detail::kTensorAttention_VSA), 6, 256, 1, 32);
     attention_vsa_prepare_pipeline =
         make_norm_pipeline(detail::kTensorAttention_VSA_PREPARE,
-                           sizeof(detail::kTensorAttention_VSA_PREPARE), 8, 256, 1, 32);
+                           sizeof(detail::kTensorAttention_VSA_PREPARE), 8, 256, 1, 48);
     attention_flash_pipeline = make_norm_pipeline(
         detail::kTensorAttentionFlashSpirv, sizeof(detail::kTensorAttentionFlashSpirv), 4,
         kFastH3AttentionLocalSize, 1, sizeof(AttentionParameters));

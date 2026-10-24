@@ -1,5 +1,6 @@
 // H3 transformer lifecycle and forward orchestration.
 #include "transformer_impl.h"
+#include "slopfab/dit/pdd.h"
 
 namespace slopfab::dit {
 
@@ -171,6 +172,7 @@ void Transformer::unload() {
   impl_->vsa_rows.reset();
   impl_->vsa_sizes.reset();
   impl_->vsa_row_tiles.reset();
+  impl_->vsa_region_ends.reset();
   impl_->vsa_compressed.reset();
   impl_->vsa_config = {};
   impl_->veda.reset();
@@ -189,11 +191,12 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   if (impl_->attention_mode == AttentionMode::kVeda && impl_->veda)
     total += impl_->veda->device_bytes();
   if (impl_->is_vsa()) {
-    const auto tiles = build_vsa_tiles(layout);
+    const auto tiles = build_vsa_tiles(layout, cfg.pdd_steps > 1 ? 128 : 64);
     total += align_up(tiles.sizes.size() * cfg.inner_dim() * sizeof(__nv_bfloat16));
     total += align_up(tiles.rows.size() * sizeof(int32_t)) +
              align_up(tiles.sizes.size() * sizeof(int32_t)) +
              align_up(tiles.row_tiles.size() * sizeof(int32_t));
+    total += align_up(tiles.region_ends.size() * sizeof(int32_t));
   }
   if (impl_->architecture == TransformerArchitecture::kRef2VAFullAdaLN && !impl_->blocks.empty()) {
     size_t full_scratch =
@@ -523,9 +526,20 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
       }
     }
   };
-  run_head(s.video_out, patch, video_rows, s.d_video_idx.get(), s.d_ts_video.get(),
+  auto video_head = s.video_out, audio_head = s.audio_out;
+  if (s.model.pdd_steps > 1) {
+    const int step = omniref_step(row_timesteps.unique.at(
+        row_timesteps.indices.at(s.layout.video_start())));
+    const auto select = [&](QuantWeight& weight) {
+      weight.data = static_cast<const float*>(weight.data) + size_t(step) * weight.out_features * hidden;
+      weight.bias = static_cast<const float*>(weight.bias) + size_t(step) * weight.out_features;
+    };
+    select(video_head);
+    select(audio_head);
+  }
+  run_head(video_head, patch, video_rows, s.d_video_idx.get(), s.d_ts_video.get(),
            s.d_video_head.get());
-  run_head(s.audio_out, audio_dim, audio_rows, s.d_audio_idx.get(), s.d_ts_audio.get(),
+  run_head(audio_head, audio_dim, audio_rows, s.d_audio_idx.get(), s.d_ts_audio.get(),
            s.d_audio_head.get());
   prof.tick("final_layer", s.stream.get());
 

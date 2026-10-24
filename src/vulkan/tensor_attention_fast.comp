@@ -37,7 +37,7 @@ layout(binding = 3, std430) writeonly buffer O { uint data[]; } o;
 #ifdef VEDA
 #define SPARSE_TILE 128u
 #else
-#define SPARSE_TILE 64u
+#define SPARSE_TILE p.output_row_offset
 #endif
 layout(binding = 4, std430) readonly buffer Geometry { int data[]; } geometry;
 layout(binding = 5, std430) readonly buffer TileMask { uint data[]; } tile_mask;
@@ -257,7 +257,7 @@ void main() {
 #endif
       if (row >= p.query_row_offset && row < p.query_row_offset + p.rows) {
         uint out_row = p.output_row_offset + row - p.query_row_offset;
-#ifdef VEDA
+#ifdef VSA
         out_row = row;
 #endif
         uint index = (out_row * p.heads + head) * HD + i % 64u + t * 64u;

@@ -33,7 +33,7 @@ SLOPFAB_TEST(vulkan_vsa_matches_cuda) {
   }
   cuda::Stream stream;
   for (int dim : {64, 128})
-    for (int scenario : {0, 1, 2}) {
+    for (int scenario : {0, 1, 2, 3, 4}) {
       dit::SequenceLayout layout;
       layout.num_text = scenario == 2 ? 0 : 65;
       layout.num_audio_rows = scenario == 2 ? 0 : 3;
@@ -42,7 +42,13 @@ SLOPFAB_TEST(vulkan_vsa_matches_cuda) {
       layout.latent_width = scenario == 1 ? 22 : 14;
       layout.num_video_rows =
           layout.num_latent_frames * layout.latent_height * layout.latent_width / 4;
-      auto tiles = dit::build_vsa_tiles(layout);
+      if (scenario >= 3) {
+        layout.num_condition_audio = 5;
+        layout.num_condition_video = 9 + 225;
+        layout.reference_segments = {
+            {layout.num_text, 9}, {layout.num_text + 9, 5}, {layout.num_text + 14, 225, 5, 5, 9}};
+      }
+      auto tiles = dit::build_vsa_tiles(layout, scenario >= 3 ? 128 : 64, scenario >= 3 ? 10 : 5);
       const int seq = layout.total_rows(), heads = 2, n = static_cast<int>(tiles.sizes.size());
       const size_t count = size_t(seq) * heads * dim;
       std::vector<__nv_bfloat16> q(count), k(count), v(count), gate(count);
@@ -56,7 +62,7 @@ SLOPFAB_TEST(vulkan_vsa_matches_cuda) {
       fill(v, 97);
       fill(gate, 113);
       // Equal routing scores must select lower tile indices deterministically.
-      if (scenario == 2)
+      if (scenario == 2 || scenario == 4)
         std::fill(q.begin(), q.end(), __float2bfloat16(0.0f));
       const uint64_t shape[] = {uint64_t(seq), uint64_t(heads), uint64_t(dim)};
       const uint64_t flat[] = {uint64_t(seq), uint64_t(heads * dim)};
@@ -70,14 +76,18 @@ SLOPFAB_TEST(vulkan_vsa_matches_cuda) {
       context.upload_bytes(vv, v.data(), count * 2);
       context.upload_bytes(vg, gate.data(), count * 2);
       auto plan = vulkan::VsaAttentionPlan::create(context, tiles, heads, dim);
-      const uint64_t workspace =
-          (tiles.rows.size() + tiles.sizes.size() + tiles.row_tiles.size()) * 4 +
-          uint64_t(n) * heads * dim * 14 + uint64_t(heads) * n * ((n + 31) / 32) * 4;
+      const uint64_t workspace = (tiles.rows.size() + tiles.sizes.size() + tiles.row_tiles.size() +
+                                  tiles.region_ends.size()) *
+                                     4 +
+                                 uint64_t(n) * heads * dim * 14 +
+                                 uint64_t(heads) * n * ((n + 31) / 32) * 4;
       CHECK(plan.workspace_bytes() == workspace);
       cuda::DeviceBuffer<int32_t> rows(tiles.rows.size()), sizes(n), row_tiles(seq);
       rows.copy_from_host(tiles.rows.data(), rows.size(), stream.get());
       sizes.copy_from_host(tiles.sizes.data(), sizes.size(), stream.get());
       row_tiles.copy_from_host(tiles.row_tiles.data(), row_tiles.size(), stream.get());
+      cuda::DeviceBuffer<int32_t> region_ends(tiles.region_ends.size());
+      region_ends.copy_from_host(tiles.region_ends.data(), region_ends.size(), stream.get());
       cuda::DeviceBuffer<__nv_bfloat16> cq(count), ck(count), cv(count), cg(count), co(count),
           compressed(size_t(n) * heads * dim);
       cq.copy_from_host(q.data(), count, stream.get());
@@ -86,6 +96,10 @@ SLOPFAB_TEST(vulkan_vsa_matches_cuda) {
       cg.copy_from_host(gate.data(), count, stream.get());
       cuda::VsaConfig config{n,          tiles.prefix_tiles, heads,          dim,
                              rows.get(), sizes.get(),        row_tiles.get()};
+      config.tile_size = tiles.tile_size;
+      config.keep_denominator = tiles.keep_denominator;
+      config.region_count = int(tiles.region_ends.size());
+      config.region_ends = region_ends.get();
       cuda::Workspace ws;
       ws.reserve(cuda::vsa_attention_workspace_bytes(n, heads, dim));
       cuda::vsa_attention_forward(stream.get(), cq.get(), ck.get(), cv.get(), co.get(),
@@ -113,6 +127,37 @@ SLOPFAB_TEST(vulkan_vsa_matches_cuda) {
         CHECK(std::sqrt(square / count) < 0.001);
       };
       compare("sparse");
+      if (scenario == 4) {
+        // Zero queries choose the first tile in each region. Attention then
+        // equals the uniform mean of all selected physical value rows.
+        for (int row = 0; row < seq; ++row) {
+          const bool dense = tiles.row_tiles[row] < tiles.prefix_tiles;
+          for (int h = 0; h < heads; ++h)
+            for (int d = 0; d < dim; ++d) {
+              double sum = 0;
+              int samples = 0, begin = tiles.prefix_tiles;
+              std::vector<bool> selected(n, dense);
+              for (int t = 0; t < tiles.prefix_tiles; ++t)
+                selected[t] = true;
+              if (!dense)
+                for (int end : tiles.region_ends) {
+                  for (int t = begin; t < begin + (end - begin + 9) / 10; ++t)
+                    selected[t] = true;
+                  begin = end;
+                }
+              for (int t = 0; t < n; ++t)
+                if (selected[t])
+                  for (int i = 0; i < tiles.sizes[t]; ++i) {
+                    sum += __bfloat162float(
+                        v[(size_t(tiles.rows[t * tiles.tile_size + i]) * heads + h) * dim + d]);
+                    ++samples;
+                  }
+              const size_t i = (size_t(row) * heads + h) * dim + d;
+              CHECK_NEAR(__bfloat162float(actual[i]), sum / samples, .001);
+              CHECK_NEAR(__bfloat162float(expected[i]), sum / samples, .001);
+            }
+        }
+      }
       cuda::vsa_add_compression(stream.get(), co.get(), cg.get(), compressed.get(), 0, seq, config);
       co.copy_to_host(expected.data(), count, stream.get());
       stream.synchronize();

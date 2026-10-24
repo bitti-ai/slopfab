@@ -122,6 +122,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     require(noise.size() == out.audio_rows.size(), "audio noise shape disagrees with the layout");
     out.audio_rows = noise;
   }
+  if (transformer.config().pdd_steps > 1) {
+    if (!inputs.inpaint && !inputs.init_video_rows)
+      for (auto& v : out.video_rows) v *= inputs.video_scheduler->sigmas().front();
+    if (!inputs.init_audio_rows)
+      for (auto& v : out.audio_rows) v *= inputs.audio_scheduler->sigmas().front();
+  }
   ContinuationConstraint overlap;
   if (inputs.continuation) {
     overlap = *inputs.continuation;

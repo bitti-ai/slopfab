@@ -153,7 +153,7 @@ struct Transformer::Impl {
   void capture_sol_inputs(const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
                           int rows, int layer);
   DeviceBuffer<int32_t> d_band;
-  DeviceBuffer<int32_t> vsa_rows, vsa_sizes, vsa_row_tiles;
+  DeviceBuffer<int32_t> vsa_rows, vsa_sizes, vsa_row_tiles, vsa_region_ends;
   DeviceBuffer<__nv_bfloat16> vsa_compressed;
   cuda::VsaConfig vsa_config;
   std::vector<int32_t> host_band;

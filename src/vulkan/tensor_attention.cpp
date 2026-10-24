@@ -557,22 +557,23 @@ VsaAttentionPlan VsaAttentionPlan::create(TensorContext& context, const dit::Vsa
                                           uint32_t heads, uint32_t head_dim) {
   context.require_h3_attention(AttentionMode::kFlash2);
   const size_t n = tiles.sizes.size(), sequence = tiles.row_tiles.size();
-  if (n == 0 || n > 4096 || sequence == 0 || sequence > UINT32_MAX || tiles.rows.size() != n * 64 ||
+  if (n == 0 || n > 4096 || sequence == 0 || sequence > UINT32_MAX || (tiles.tile_size != 64 && tiles.tile_size != 128) ||
+      tiles.keep_denominator < 1 || tiles.rows.size() != n * tiles.tile_size ||
       tiles.prefix_tiles < 0 || static_cast<size_t>(tiles.prefix_tiles) >= n || heads == 0 ||
       (head_dim != 64 && head_dim != 128))
     throw std::invalid_argument("Vulkan VSA: invalid tile geometry or head shape");
   const uint64_t elements = uint64_t(sequence) * heads * head_dim;
   if (elements > UINT32_MAX || elements * 2 > context.impl_->max_storage_bytes ||
-      n * 2 > context.impl_->max_dispatch_x || heads > context.impl_->max_dispatch_y ||
+      n * (tiles.tile_size / 32) > context.impl_->max_dispatch_x || heads > context.impl_->max_dispatch_y ||
       (elements + 511) / 512 >
           uint64_t(context.impl_->max_dispatch_x) * context.impl_->max_dispatch_y)
     throw std::out_of_range("Vulkan VSA: shape exceeds device/index limits");
   std::vector<bool> seen(sequence, false);
   for (size_t tile = 0; tile < n; ++tile) {
-    if (tiles.sizes[tile] < 1 || tiles.sizes[tile] > 64)
-      throw std::invalid_argument("Vulkan VSA: tile size must be in [1,64]");
-    for (int i = 0; i < 64; ++i) {
-      const int row = tiles.rows[tile * 64 + i];
+    if (tiles.sizes[tile] < 1 || tiles.sizes[tile] > tiles.tile_size)
+      throw std::invalid_argument("Vulkan VSA: invalid tile size");
+    for (int i = 0; i < tiles.tile_size; ++i) {
+      const int row = tiles.rows[tile * tiles.tile_size + i];
       if (i >= tiles.sizes[tile]) {
         if (row != -1)
           throw std::invalid_argument("Vulkan VSA: invalid padding");
@@ -586,6 +587,15 @@ VsaAttentionPlan VsaAttentionPlan::create(TensorContext& context, const dit::Vsa
   }
   if (std::find(seen.begin(), seen.end(), false) != seen.end())
     throw std::invalid_argument("Vulkan VSA: incomplete row mapping");
+  auto regions = tiles.region_ends;
+  if (regions.empty()) regions.push_back(static_cast<int32_t>(n));
+  int32_t begin = tiles.prefix_tiles;
+  for (int32_t end : regions) {
+    if (end <= begin || size_t(end) > n)
+      throw std::invalid_argument("Vulkan VSA: invalid region boundaries");
+    begin = end;
+  }
+  if (size_t(begin) != n) throw std::invalid_argument("Vulkan VSA: incomplete regions");
   auto result = std::make_shared<Impl>();
   result->owner = context.impl_;
   result->sequence = static_cast<uint32_t>(sequence);
@@ -593,6 +603,9 @@ VsaAttentionPlan VsaAttentionPlan::create(TensorContext& context, const dit::Vsa
   result->dim = head_dim;
   result->tiles = static_cast<uint32_t>(n);
   result->prefix = tiles.prefix_tiles;
+  result->tile_size = tiles.tile_size;
+  result->keep_denominator = tiles.keep_denominator;
+  result->regions = static_cast<uint32_t>(regions.size());
   result->padded = 1;
   while (result->padded < n - tiles.prefix_tiles)
     result->padded *= 2;
@@ -602,6 +615,7 @@ VsaAttentionPlan VsaAttentionPlan::create(TensorContext& context, const dit::Vsa
   std::vector<int32_t> geometry = tiles.rows;
   geometry.insert(geometry.end(), tiles.sizes.begin(), tiles.sizes.end());
   geometry.insert(geometry.end(), tiles.row_tiles.begin(), tiles.row_tiles.end());
+  geometry.insert(geometry.end(), regions.begin(), regions.end());
   result->geometry = allocate(geometry.size(), ScalarType::kInt32);
   result->pooled = allocate(3ull * n * heads * head_dim, ScalarType::kFloat32);
   result->mask = allocate(uint64_t(heads) * n * ((n + 31) / 32), ScalarType::kInt32);
@@ -644,7 +658,8 @@ void VsaAttentionPlan::record(TensorBatch& batch, DeviceTensor& query, DeviceTen
   auto geometry = s.owner->require(s.geometry), pooled = s.owner->require(s.pooled);
   auto mask = s.owner->require(s.mask), compressed = s.owner->require(s.compressed);
   uint32_t parameters[] = {
-      s.sequence, s.heads, s.dim, s.tiles, s.prefix, s.padded, (s.tiles - s.prefix + 4) / 5, 0};
+      s.sequence, s.heads, s.dim, s.tiles, s.prefix, s.padded, 0, 0,
+      s.tile_size, s.regions, s.keep_denominator, 0};
   try {
     for (auto& tensor : {q, k, v, geometry})
       batch.impl_->transition(tensor, BufferAccess::kComputeRead);
@@ -685,11 +700,12 @@ void VsaAttentionPlan::record(TensorBatch& batch, DeviceTensor& query, DeviceTen
     const float scale = 1.0f / std::sqrt(float(s.dim));
     std::memcpy(&attention.scale_bits, &scale, sizeof(scale));
     attention.rows = s.sequence;
+    attention.output_row_offset = s.tile_size;
     attention.reserved = s.tiles;
     batch.impl_->count_operator();
     commands.bind_compute(s.owner->attention_vsa_pipeline, sparse);
     commands.push_constants(&attention, sizeof(attention));
-    commands.dispatch(s.tiles * 2, s.heads);
+    commands.dispatch(s.tiles * (s.tile_size / 32), s.heads);
     s.batch_id = batch.impl_->batch_id;
     s.output_id = out->identity;
   } catch (...) {
@@ -716,7 +732,8 @@ void VsaAttentionPlan::add_compression(TensorBatch& batch, DeviceTensor& gate,
   const uint64_t groups = (uint64_t(s.sequence) * s.heads * s.dim + 511) / 512;
   const uint32_t groups_x =
       static_cast<uint32_t>(std::min<uint64_t>(groups, s.owner->max_dispatch_x));
-  uint32_t parameters[] = {s.sequence, s.heads, s.dim, s.tiles, s.prefix, s.padded, groups_x, 2};
+  uint32_t parameters[] = {s.sequence, s.heads, s.dim, s.tiles, s.prefix, s.padded, groups_x, 2,
+                           s.tile_size, s.regions, s.keep_denominator, 0};
   try {
     batch.impl_->count_operator();
     batch.impl_->transition(g, BufferAccess::kComputeRead);

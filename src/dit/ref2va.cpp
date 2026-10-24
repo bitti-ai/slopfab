@@ -142,18 +142,23 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt
   double clock = cur;
   for (auto& r : rs) {
     if (r.kind == ReferenceKind::kAudio) {
+      if (r.audio_rows()) l.reference_segments.push_back({cur, r.audio_rows()});
       audio(o.position_ids, cur, r.num_audio_latents, clock, tw);
       for (int i = 0; i < r.audio_rows(); ++i)
         o.indices.audio.push_back(cur + i);
       cur += r.audio_rows();
       clock += r.num_audio_latents;
     } else if (r.kind == ReferenceKind::kImage) {
+      l.reference_segments.push_back({cur, r.video_rows()});
       video(o.position_ids, cur, r, clock, H, W);
       for (int i = 0; i < r.video_rows(); ++i)
         o.indices.video.push_back(cur + i);
       cur += r.video_rows();
       if (!r.target_aligned) clock += 1;
     } else {
+      if (r.audio_rows()) l.reference_segments.push_back({cur, r.audio_rows()});
+      l.reference_segments.push_back({cur + r.audio_rows(), r.video_rows(), r.num_latent_frames,
+                                       r.latent_height / 2, r.latent_width / 2});
       auto rw = axis(r.latent_width, std::sqrt(double(r.latent_height) * r.latent_width));
       const double origin = clock + (r.target_aligned ? r.target_time_offset : 0);
       const double audio_origin = r.target_aligned && r.target_audio_time_offset

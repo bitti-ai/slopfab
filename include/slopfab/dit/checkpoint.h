@@ -17,13 +17,15 @@ enum class TransformerArchitecture {
   kViggleAnimatePrunedTable,
   kFastH3V2PrunedTable,
   kMossImage,
+  kOmniRefPrunedTable,
 };
 
 constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture) {
   return architecture == TransformerArchitecture::kPrunedTable ||
          architecture == TransformerArchitecture::kRef2VAPrunedTable ||
          architecture == TransformerArchitecture::kViggleAnimatePrunedTable ||
-         architecture == TransformerArchitecture::kFastH3V2PrunedTable;
+         architecture == TransformerArchitecture::kFastH3V2PrunedTable ||
+         architecture == TransformerArchitecture::kOmniRefPrunedTable;
 }
 
 enum class TransformerQuantization {
@@ -52,6 +54,7 @@ struct ModelDescriptor {
   std::string origin = "legacy checkpoint inference";
   TransformerArchitecture compatibility_architecture = TransformerArchitecture::kUnknown;
   TransformerQuantization quantization = TransformerQuantization::kUnknown;
+  int pdd_steps = 1;
 };
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint);

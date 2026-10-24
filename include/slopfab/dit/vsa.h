@@ -14,8 +14,11 @@ struct VsaTiles {
   std::vector<int32_t> rows;
   std::vector<int32_t> sizes;
   std::vector<int32_t> row_tiles;
+  int tile_size = 64;
+  int keep_denominator = 5; // exact ceil(region_tiles / denominator)
+  std::vector<int32_t> region_ends; // sparse regions after the dense prefix
 };
 
-VsaTiles build_vsa_tiles(const SequenceLayout& layout);
+VsaTiles build_vsa_tiles(const SequenceLayout& layout, int tile_size = 64, int keep_denominator = 5);
 
 } // namespace slopfab::dit

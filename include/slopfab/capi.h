@@ -91,8 +91,8 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 32
-#define SLOPFAB_CAPI_VERSION_PATCH 1
+#define SLOPFAB_CAPI_VERSION_MINOR 33
+#define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
  *

@@ -57,23 +57,20 @@ bool marks_fasth3_v2(const SafeTensors& st) {
   return identity.find("fasth38stepv2") != std::string::npos;
 }
 
-void reject_unsupported_pdd(const SafeTensors& st) {
+int pdd_heads(const SafeTensors& st) {
   // OmniRef's pruned PDD export shares the H3 backbone and VSA gate names,
-  // but predicts multiple fine-grid velocities per token. Neither a filename
-  // alias nor explicit legacy metadata can turn those widened heads into the
-  // single-velocity heads implemented by our CUDA and Vulkan runners.
+  // but predicts multiple fine-grid velocities per token. Detect the widened
+  // heads before applying legacy filename aliases or metadata.
   const auto* video = st.find("final_layer.video_out.weight");
   const auto* audio = st.find("final_layer.audio_out.weight");
   if (!has(st, "blocks.0.attn.to_gate_compress.weight") || !video || !audio ||
       video->shape.size() != 2 || audio->shape.size() != 2)
-    return;
+    return 1;
   const int64_t heads = video->shape[0] / 96;
   if (heads > 1 && video->shape[0] % 96 == 0 && audio->shape[0] == heads * 32 &&
       video->shape[1] == audio->shape[1])
-    throw std::invalid_argument(
-        "transformer: FastH3 OmniRef/PDD checkpoint (" + std::to_string(heads) +
-        " output heads) is not supported; requires PDD output decoding and sampling "
-        "plus reference-aware VSA. Use a supported H3 Ref2VA checkpoint instead");
+    return static_cast<int>(heads);
+  return 1;
 }
 
 } // namespace
@@ -112,8 +109,27 @@ void validate_adaln_table_config(int rank, int rows) {
 }
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
-  reject_unsupported_pdd(checkpoint);
   ModelDescriptor model;
+  model.pdd_steps = pdd_heads(checkpoint);
+  if (model.pdd_steps > 1) {
+    if (model.pdd_steps != 32 || !has(checkpoint, "adaln_t_table") ||
+        checkpoint.at("adaln_t_table").shape != std::vector<int64_t>{1025, 8} ||
+        !has(checkpoint, "blocks.0.adaln_proj.linear.weight"))
+      throw std::invalid_argument("OmniRef requires 32 PDD heads and a rank-8 AdaLN table");
+    if (checkpoint.metadata().count("slopfab.model"))
+      throw std::invalid_argument("OmniRef PDD cannot use a legacy slopfab.model descriptor");
+    model.compatibility_architecture = TransformerArchitecture::kOmniRefPrunedTable;
+    model.supports_references = model.compressed_attention = true;
+    model.quantization = detect_transformer_quantization(checkpoint);
+    model.origin = "FastH3 OmniRef PDD32 tensor contract";
+    const auto layout = checkpoint.metadata().find("qkv_layout");
+    if (layout != checkpoint.metadata().end()) {
+      if (layout->second != "contiguous" && layout->second != "interleaved")
+        throw std::invalid_argument("OmniRef: unsupported qkv_layout");
+      model.qkv_interleaved = layout->second == "interleaved";
+    }
+    return model;
+  }
   if (has(checkpoint, "video_embedder.weight") && has(checkpoint, "shared_block_modulation.weight")) {
     const auto shape = [&](const std::string& key, std::vector<int64_t> expected) {
       if (!checkpoint.find(key) || checkpoint.at(key).shape != expected)
@@ -287,6 +303,8 @@ const char* transformer_architecture_name(TransformerArchitecture architecture) 
     return "pruned AdaLN-table transformer";
   case TransformerArchitecture::kFastH3V2PrunedTable:
     return "FastH3 V2 (VSA-H3, 8-step) transformer";
+  case TransformerArchitecture::kOmniRefPrunedTable:
+    return "FastH3 OmniRef (PDD32, VSA-H3, 8-step) transformer";
   case TransformerArchitecture::kRef2VAPrunedTable:
     return "pruned AdaLN-table Ref2VA transformer";
   case TransformerArchitecture::kRef2VAFullAdaLN:

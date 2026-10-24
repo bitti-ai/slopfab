@@ -182,13 +182,16 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   if (s.is_vsa()) {
     if (s.attn_band > 0)
       throw std::runtime_error("VSA-H3 cannot use frame-banded attention");
-    const auto tiles = build_vsa_tiles(layout);
+    const auto tiles = build_vsa_tiles(layout, s.model.pdd_steps > 1 ? 128 : 64,
+                                      s.model.pdd_steps > 1 ? 10 : 5);
     s.vsa_rows.allocate(tiles.rows.size());
     s.vsa_sizes.allocate(tiles.sizes.size());
     s.vsa_row_tiles.allocate(tiles.row_tiles.size());
     s.vsa_rows.copy_from_host(tiles.rows.data(), tiles.rows.size(), s.stream.get());
     s.vsa_sizes.copy_from_host(tiles.sizes.data(), tiles.sizes.size(), s.stream.get());
     s.vsa_row_tiles.copy_from_host(tiles.row_tiles.data(), tiles.row_tiles.size(), s.stream.get());
+    s.vsa_region_ends.allocate(tiles.region_ends.size());
+    s.vsa_region_ends.copy_from_host(tiles.region_ends.data(), tiles.region_ends.size(), s.stream.get());
     s.vsa_compressed.allocate(tiles.sizes.size() * s.cfg.inner_dim());
     s.vsa_config = {static_cast<int>(tiles.sizes.size()),
                     tiles.prefix_tiles,
@@ -196,7 +199,8 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
                     s.cfg.attention_head_dim,
                     s.vsa_rows.get(),
                     s.vsa_sizes.get(),
-                    s.vsa_row_tiles.get()};
+                    s.vsa_row_tiles.get(), tiles.tile_size, tiles.keep_denominator,
+                    int(tiles.region_ends.size()), s.vsa_region_ends.get()};
     // The map vectors are local pageable storage; finish their transfers.
     SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   }

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "slopfab/dtype.h"
+#include "slopfab/dit/pdd.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/vulkan/gemm.h"
 
@@ -101,10 +102,12 @@ void validate_endpoint_archive(const SafeTensors& st, const ExactH3TransformerCo
   require("final_layer.norm.weight", {h}, DType::kBF16);
   require_float_weight("final_layer.adaln_proj.linear.weight", {2 * h, r});
   require_float_weight("final_layer.adaln_proj.linear.bias", {2 * h});
-  require_float_weight("final_layer.video_out.weight", {c.video_dim, h});
-  require("final_layer.video_out.bias", {c.video_dim}, DType::kF32);
-  require_float_weight("final_layer.audio_out.weight", {c.audio_dim, h});
-  require("final_layer.audio_out.bias", {c.audio_dim}, DType::kF32);
+  if (c.pdd_steps != 1 && c.pdd_steps != 32)
+    throw std::invalid_argument("Vulkan H3: unsupported PDD head count");
+  require_float_weight("final_layer.video_out.weight", {c.video_dim * c.pdd_steps, h});
+  require("final_layer.video_out.bias", {c.video_dim * c.pdd_steps}, DType::kF32);
+  require_float_weight("final_layer.audio_out.weight", {c.audio_dim * c.pdd_steps, h});
+  require("final_layer.audio_out.bias", {c.audio_dim * c.pdd_steps}, DType::kF32);
   for (const char* name :
        {"condition_proj", "video_patch_proj", "audio_patch_proj", "final_layer.video_out",
         "final_layer.audio_out", "final_layer.adaln_proj.linear"})
@@ -176,6 +179,8 @@ struct ExactH3Transformer::Impl {
     DeviceTensor final_scale_weight, final_scale_bias;
     DeviceTensor video_out_weight, video_out_bias;
     DeviceTensor audio_out_weight, audio_out_bias;
+    std::array<DeviceTensor, 8> pdd_video_weights, pdd_video_biases, pdd_audio_weights,
+        pdd_audio_biases;
     DenseGemmPlan condition_plan, video_in_plan, audio_in_plan;
     DenseGemmPlan video_out_plan, audio_out_plan;
     DeviceTensor text_input, text_cache;
@@ -300,14 +305,33 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
   next->final_scale_weight = upload_slice(adaln_w.data() + one_weight, matrix(h, rank));
   next->final_shift_bias = upload_slice(adaln_b.data(), vector(h));
   next->final_scale_bias = upload_slice(adaln_b.data() + h, vector(h));
-  next->video_out_weight = upload_video_endpoint("final_layer.video_out", matrix(c.video_dim, h));
-  next->video_out_bias =
-      upload_f32(context, checkpoint.at("final_layer.video_out.bias"), vector(c.video_dim));
-  if (has_audio) {
-    next->audio_out_weight =
-        upload_f32(context, checkpoint.at("final_layer.audio_out.weight"), matrix(c.audio_dim, h));
-    next->audio_out_bias =
-        upload_f32(context, checkpoint.at("final_layer.audio_out.bias"), vector(c.audio_dim));
+  if (c.pdd_steps > 1) {
+    if (c.main.block.loras && c.main.block.loras->find("final_layer.video_out"))
+      throw std::invalid_argument("OmniRef does not support output-head LoRA adapters");
+    const auto upload_heads = [&](const char* name, uint32_t dim, float shift, auto& weights,
+                                  auto& biases) {
+      const auto w = dit::fuse_omniref_heads(checkpoint.at(std::string(name) + ".weight"), shift);
+      const auto b = dit::fuse_omniref_heads(checkpoint.at(std::string(name) + ".bias"), shift);
+      for (int i = 0; i < 8; ++i) {
+        weights[i] = upload_slice(w.data() + uint64_t(i) * dim * h, matrix(dim, h));
+        biases[i] = upload_slice(b.data() + uint64_t(i) * dim, vector(dim));
+      }
+    };
+    upload_heads("final_layer.video_out", c.video_dim, 12, next->pdd_video_weights,
+                 next->pdd_video_biases);
+    if (has_audio)
+      upload_heads("final_layer.audio_out", c.audio_dim, 3, next->pdd_audio_weights,
+                   next->pdd_audio_biases);
+  } else {
+    next->video_out_weight = upload_video_endpoint("final_layer.video_out", matrix(c.video_dim, h));
+    next->video_out_bias =
+        upload_f32(context, checkpoint.at("final_layer.video_out.bias"), vector(c.video_dim));
+    if (has_audio) {
+      next->audio_out_weight = upload_f32(context, checkpoint.at("final_layer.audio_out.weight"),
+                                          matrix(c.audio_dim, h));
+      next->audio_out_bias =
+          upload_f32(context, checkpoint.at("final_layer.audio_out.bias"), vector(c.audio_dim));
+    }
   }
 
   next->condition_plan =
@@ -486,11 +510,13 @@ void ExactH3Transformer::record_forward(
     DeviceTensor& video_timestep_indices, DeviceTensor& audio_timestep_indices,
     DeviceTensor& video_velocity, DeviceTensor& audio_velocity, const H3AttentionRanges* ranges,
     const H3TransformerForwardReplayTaps* taps, DeviceTensor* video_row_indices,
-    DeviceTensor* audio_row_indices) {
+    DeviceTensor* audio_row_indices, int pdd_step) {
   if (!text_prepared())
     throw std::logic_error("Vulkan H3 transformer: text is not prepared");
   const auto& c = impl_->config;
   auto& s = *impl_->state;
+  if (pdd_step < 0 || pdd_step >= 8)
+    throw std::invalid_argument("Vulkan H3: invalid PDD step");
   const H3BlockConfig& b = c.main.block;
   const uint32_t video_output = c.video_output_rows ? c.video_output_rows : c.video_rows;
   const uint32_t audio_output = c.audio_output_rows ? c.audio_output_rows : c.audio_rows;
@@ -605,15 +631,19 @@ void ExactH3Transformer::record_forward(
   batch.convert(s.video_gather_bf16, s.video_gather);
   batch.rms_norm_modulate_f32(s.video_gather, s.final_norm, s.final_scale, s.final_shift,
                               video_timestep_indices, s.video_normed, b.epsilon);
-  s.video_out_plan.record(batch, s.video_normed, s.video_out_weight, video_velocity, video_output,
-                          0, 0, &s.video_out_bias);
+  s.video_out_plan.record(batch, s.video_normed,
+                          c.pdd_steps > 1 ? s.pdd_video_weights[pdd_step] : s.video_out_weight,
+                          video_velocity, video_output, 0, 0,
+                          c.pdd_steps > 1 ? &s.pdd_video_biases[pdd_step] : &s.video_out_bias);
   if (has_audio) {
     batch.copy_rows(s.hidden, s.audio_gather_bf16, audio_start, 0, audio_output);
     batch.convert(s.audio_gather_bf16, s.audio_gather);
     batch.rms_norm_modulate_f32(s.audio_gather, s.final_norm, s.final_scale, s.final_shift,
                                 audio_timestep_indices, s.audio_normed, b.epsilon);
-    s.audio_out_plan.record(batch, s.audio_normed, s.audio_out_weight, audio_velocity, audio_output,
-                            0, 0, &s.audio_out_bias);
+    s.audio_out_plan.record(batch, s.audio_normed,
+                            c.pdd_steps > 1 ? s.pdd_audio_weights[pdd_step] : s.audio_out_weight,
+                            audio_velocity, audio_output, 0, 0,
+                            c.pdd_steps > 1 ? &s.pdd_audio_biases[pdd_step] : &s.audio_out_bias);
   }
 }
 
@@ -622,6 +652,10 @@ uint64_t ExactH3Transformer::persistent_bytes() const noexcept {
     return 0;
   const auto& s = *impl_->state;
   uint64_t total = s.main.persistent_bytes();
+  for (const auto* bank :
+       {&s.pdd_video_weights, &s.pdd_video_biases, &s.pdd_audio_weights, &s.pdd_audio_biases})
+    for (const auto& tensor : *bank)
+      total = add_saturating(total, bytes(tensor));
   for (const auto& stage : s.refiner)
     total = add_saturating(total, stage.persistent_bytes());
   for (const DeviceTensor* tensor :

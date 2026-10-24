@@ -21,7 +21,7 @@ __global__ void pool_kernel(const __nv_bfloat16* q, const __nv_bfloat16* k, cons
     return;
   float sq = 0, sk = 0, sv = 0;
   for (int i = 0; i < c.sizes[tile]; ++i) {
-    const size_t off = (size_t(c.rows[tile * 64 + i]) * c.heads + head) * c.head_dim + d;
+    const size_t off = (size_t(c.rows[tile * c.tile_size + i]) * c.heads + head) * c.head_dim + d;
     sq += __bfloat162float(q[off]);
     sk += __bfloat162float(k[off]);
     sv += __bfloat162float(v[off]);
@@ -64,33 +64,41 @@ __global__ void route_kernel(const float* scores, uint8_t* mask, VsaConfig c, in
   extern __shared__ char storage[];
   float* values = reinterpret_cast<float*>(storage);
   int* ids = reinterpret_cast<int*>(values + padded);
-  for (int i = threadIdx.x; i < padded; i += blockDim.x) {
-    const int key = c.prefix_tiles + i;
-    values[i] = key < c.tiles ? scores[base + key] : kHostNegInf;
-    ids[i] = key;
-  }
-  __syncthreads();
-  for (int width = 2; width <= padded; width *= 2)
-    for (int stride = width / 2; stride > 0; stride /= 2) {
-      for (int i = threadIdx.x; i < padded; i += blockDim.x) {
-        const int j = i ^ stride;
-        if (j <= i)
-          continue;
-        const bool before = values[i] > values[j] || (values[i] == values[j] && ids[i] < ids[j]);
-        const bool descending = (i & width) == 0;
-        if (before != descending) {
-          const float v = values[i];
-          values[i] = values[j];
-          values[j] = v;
-          const int id = ids[i];
-          ids[i] = ids[j];
-          ids[j] = id;
-        }
-      }
-      __syncthreads();
+  int begin = c.prefix_tiles;
+  const int regions = c.region_count ? c.region_count : 1;
+  for (int region = 0; region < regions; ++region) {
+    const int end = c.region_ends ? c.region_ends[region] : c.tiles;
+    keep = (end - begin + c.keep_denominator - 1) / c.keep_denominator;
+    for (int i = threadIdx.x; i < padded; i += blockDim.x) {
+      const int key = begin + i;
+      values[i] = key < end ? scores[base + key] : kHostNegInf;
+      ids[i] = key;
     }
-  for (int i = threadIdx.x; i < keep; i += blockDim.x)
-    mask[base + ids[i]] = 1;
+    __syncthreads();
+    for (int width = 2; width <= padded; width *= 2)
+      for (int stride = width / 2; stride > 0; stride /= 2) {
+        for (int i = threadIdx.x; i < padded; i += blockDim.x) {
+          const int j = i ^ stride;
+          if (j <= i)
+            continue;
+          const bool before = values[i] > values[j] || (values[i] == values[j] && ids[i] < ids[j]);
+          const bool descending = (i & width) == 0;
+          if (before != descending) {
+            const float v = values[i];
+            values[i] = values[j];
+            values[j] = v;
+            const int id = ids[i];
+            ids[i] = ids[j];
+            ids[j] = id;
+          }
+        }
+        __syncthreads();
+      }
+    for (int i = threadIdx.x; i < keep; i += blockDim.x)
+      mask[base + ids[i]] = 1;
+    __syncthreads();
+    begin = end;
+  }
 }
 
 __global__ void compress_kernel(const float* pooled, const float* scores, __nv_bfloat16* compressed,
@@ -381,7 +389,8 @@ void vsa_attention_forward(cudaStream_t stream, const __nv_bfloat16* q, const __
                            const __nv_bfloat16* v, __nv_bfloat16* out, __nv_bfloat16* compressed,
                            const VsaConfig& c, Workspace& ws) {
   (void)vsa_attention_workspace_bytes(c.tiles, c.heads, c.head_dim);
-  if (c.prefix_tiles < 0 || c.prefix_tiles >= c.tiles || !c.rows || !c.sizes || !c.row_tiles)
+  if (c.prefix_tiles < 0 || c.prefix_tiles >= c.tiles || !c.rows || !c.sizes || !c.row_tiles ||
+      (c.tile_size != 64 && c.tile_size != 128) || c.keep_denominator < 1)
     throw std::invalid_argument("VSA-H3 invalid tile maps");
   Workspace::Scope scope(ws);
   float* pooled = ws.alloc_n<float>(size_t(3) * c.heads * c.tiles * c.head_dim);
@@ -398,7 +407,15 @@ void vsa_attention_forward(cudaStream_t stream, const __nv_bfloat16* q, const __
   route_kernel<<<grid, 256, padded * 8, stream>>>(scores, mask, c, padded, keep);
   compress_kernel<<<grid, 128, c.tiles * sizeof(float), stream>>>(pooled, scores, compressed, c);
   const size_t smem = 2 * 64 * (c.head_dim + 8) + 2 * c.head_dim * (64 + 2);
-  if (c.head_dim == 128)
+  const dim3 sparse_grid(c.tiles * (c.tile_size / 64), c.heads);
+  if (c.tile_size == 128) {
+    if (c.head_dim == 128)
+      sparse_kernel<128, 128><<<sparse_grid, kThreads, smem, stream>>>(
+          q, k, v, out, c.heads, 1.0f / sqrtf(128.0f), c.rows, c.sizes, mask, c.tiles);
+    else
+      sparse_kernel<64, 128><<<sparse_grid, kThreads, smem, stream>>>(
+          q, k, v, out, c.heads, 1.0f / 8.0f, c.rows, c.sizes, mask, c.tiles);
+  } else if (c.head_dim == 128)
     sparse_kernel<128><<<grid, kThreads, smem, stream>>>(
         q, k, v, out, c.heads, 1.0f / sqrtf(128.0f), c.rows, c.sizes, mask, c.tiles);
   else

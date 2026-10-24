@@ -35,6 +35,7 @@ add_library(slopfab_core STATIC
   src/dit/block_cache.cpp
   src/dit/chunking.cpp
   src/dit/checkpoint.cpp
+  src/dit/pdd.cpp
   src/dit/vsa.cpp
   src/dit/veda.cpp
   src/dit/packing.cpp

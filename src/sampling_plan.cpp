@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "slopfab/dit/checkpoint.h"
+#include "slopfab/dit/pdd.h"
 #include "slopfab/pipeline.h"
 
 namespace slopfab {
@@ -118,6 +119,35 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
 
+  if (plan.model.pdd_steps > 1) {
+    if (request.schedule != sampler::ScheduleKind::kDefault || request.animate ||
+        effective.audio_steps || effective.base_sigmas ||
+        *effective.video_sigma_shift != 12 || *effective.audio_sigma_shift != 3 ||
+        effective.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler ||
+        request.motion_cache.active() || request.cache_threshold > 0 || request.skip_every > 0 ||
+        request.block_cache_span > 0)
+      throw std::invalid_argument("OmniRef requires its trained eight-step PDD grid, shifts 12/3, Euler and no caches");
+    plan.video_sigmas = dit::omniref_sigmas(12);
+    plan.audio_sigmas = dit::omniref_sigmas(3);
+    if (request.image_edit.image) {
+      const int keep = std::max(1, int(std::ceil(request.image_edit.strength * 8)));
+      plan.video_sigmas.erase(plan.video_sigmas.begin(), plan.video_sigmas.begin() + 8 - keep);
+      plan.audio_sigmas.erase(plan.audio_sigmas.begin(), plan.audio_sigmas.begin() + 8 - keep);
+    }
+    sampler::FlowScheduler video(12), audio(3);
+    video.set_sigmas(plan.video_sigmas);
+    audio.set_sigmas(plan.audio_sigmas);
+    plan.video_timesteps = video.timesteps();
+    plan.audio_timesteps = audio.timesteps();
+    plan.video_sigma_shift = 12;
+    plan.audio_sigma_shift = 3;
+    plan.sampler = sampler::SamplerKind::kEuler;
+    plan.fixed_sampling_grid = true;
+    plan.num_inference_steps = int(plan.video_sigmas.size());
+    plan.sampling_sources.push_back("OmniRef PDD32 eight-block recipe");
+    return;
+  }
+
   if (effective.audio_steps && (request.still_image || plan.conditioning.pin_target_audio))
     throw std::invalid_argument("audio_steps requires generated target audio");
   if (effective.audio_steps && plan.fasth3_v2)
@@ -195,6 +225,8 @@ sampler::SamplerKind resolve_sampling_sampler(const GeneratePlan& plan,
 void validate_sampling_sampler(const GeneratePlan& plan,
                                std::optional<sampler::SamplerKind> requested) {
   const auto kind = resolve_sampling_sampler(plan, requested);
+  if (plan.model.pdd_steps > 1 && kind != sampler::SamplerKind::kEuler)
+    throw std::invalid_argument("OmniRef PDD requires the Euler sampler");
   if (plan.fasth3_v2 && kind != sampler::SamplerKind::kEuler)
     throw std::invalid_argument("FastH3 V2 requires the Euler sampler");
   if (plan.fixed_sampling_grid && kind == sampler::SamplerKind::kAb2)

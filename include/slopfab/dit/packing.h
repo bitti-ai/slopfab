@@ -27,6 +27,12 @@ enum : int32_t {
   kTagAudio = 2,
 };
 
+struct PackedReferenceSegment {
+  int start = 0, rows = 0;
+  // Zero frames denotes dense image/audio rows; video grids use patch coordinates.
+  int frames = 0, height = 0, width = 0;
+};
+
 struct SequenceLayout {
   int num_text = 0;            // L
   int num_condition_video = 0; // C, always 0 for t2va
@@ -41,6 +47,7 @@ struct SequenceLayout {
   int num_latent_frames = 0; // F
   int latent_height = 0;     // Hl
   int latent_width = 0;      // Wl
+  std::vector<PackedReferenceSegment> reference_segments;
 
   int rows_per_frame() const {
     return rows_per_frame(h3_latent_geometry());

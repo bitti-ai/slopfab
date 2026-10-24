@@ -1,5 +1,6 @@
 #include "transformer_impl.h"
 #include "load_retry.h"
+#include "slopfab/dit/pdd.h"
 
 namespace slopfab::dit {
 
@@ -40,6 +41,7 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   unload();
   s.cfg = config;
   s.model = resolve_model_descriptor(checkpoint);
+  s.cfg.pdd_steps = s.model.pdd_steps;
   s.architecture = s.model.compatibility_architecture;
   if (s.attention_mode == AttentionMode::kVeda) {
     if (!s.veda_request || s.is_vsa() || s.veda_request->bundle.layers != config.num_layers ||
@@ -138,10 +140,10 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
                  Store::kAsF32);
     plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsF32);
   }
-  plan.require("final_layer.video_out.weight", {patch, hidden}, Store::kAsF32);
-  plan.require("final_layer.video_out.bias", {patch}, Store::kAsF32);
-  plan.require("final_layer.audio_out.weight", {config.audio_in_channels, hidden}, Store::kAsF32);
-  plan.require("final_layer.audio_out.bias", {config.audio_in_channels}, Store::kAsF32);
+  plan.require("final_layer.video_out.weight", {patch * s.model.pdd_steps, hidden}, Store::kAsF32);
+  plan.require("final_layer.video_out.bias", {patch * s.model.pdd_steps}, Store::kAsF32);
+  plan.require("final_layer.audio_out.weight", {config.audio_in_channels * s.model.pdd_steps, hidden}, Store::kAsF32);
+  plan.require("final_layer.audio_out.bias", {config.audio_in_channels * s.model.pdd_steps}, Store::kAsF32);
   plan.require("token_refiner.final_norm.weight", {hidden}, Store::kAsBF16);
 
   // A block's tensor set, shared by the 50 main blocks and the 2 refiner
@@ -257,9 +259,9 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   if (options.layout) {
     const auto& layout = *options.layout;
     // Conservative ConvRot scratch even for archives that do not use it.
-    const Carve main = plan_carve(config, layout, s.row_chunk, s.attention_mode, true,
+    const Carve main = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode, true,
                                   s.compact_queries(s.attention_mode), s.is_vsa());
-    const Carve plain = plan_carve(config, layout, s.row_chunk, s.attention_mode, false,
+    const Carve plain = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode, false,
                                    s.compact_queries(s.attention_mode), s.is_vsa());
     size_t main_bytes = activation_bytes(layout) + main.total - plain.total;
     // Account for cached text and up to four distinct row timesteps, rather
@@ -398,6 +400,15 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
         else
           up.copy(dst, source, bytes, mapping);
       };
+      if (s.model.pdd_steps > 1 &&
+          (kv.first.find("final_layer.video_out.") == 0 ||
+           kv.first.find("final_layer.audio_out.") == 0)) {
+        if (loras && loras->find("final_layer.video_out"))
+          throw std::invalid_argument("OmniRef does not support output-head LoRA adapters");
+        wide = fuse_omniref_heads(*r.view, kv.first.find("video_out") != std::string::npos ? 12.f : 3.f);
+        copy(wide.data(), wide.size() * sizeof(float), false);
+        continue;
+      }
       if (loras && !full_adaln) {
         const bool weight =
             kv.first.size() > 7 && kv.first.compare(kv.first.size() - 7, 7, ".weight") == 0;

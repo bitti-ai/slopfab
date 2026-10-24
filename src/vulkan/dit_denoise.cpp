@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "slopfab/dit/adaln.h"
+#include "slopfab/dit/pdd.h"
 #include "slopfab/dit/rope.h"
 #include "slopfab/sampler/noise.h"
 #include "slopfab/sampler/joint_schedule.h"
@@ -67,8 +68,8 @@ void validate_config(const ExactH3DenoiseConfig& c) {
                                    : static_cast<uint32_t>(total_audio_wide);
   const bool conditioned = condition_video != 0 || condition_audio != 0;
   if (c.transformer.main.block.vsa_tiles &&
-      (conditioned || c.attention_band != 0 || !c.attention_ranges.empty()))
-    throw std::invalid_argument("Vulkan VSA requires unconditioned, unbanded text-to-video/audio");
+      (c.attention_band != 0 || !c.attention_ranges.empty()))
+    throw std::invalid_argument("Vulkan VSA requires unbanded attention");
   if (l.num_condition_video < 0 || l.num_condition_audio < 0 ||
       total_video_wide > std::numeric_limits<uint32_t>::max() ||
       total_audio_wide > std::numeric_limits<uint32_t>::max() ||
@@ -515,7 +516,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
                 inner_batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine,
                 s.video_timestep_indices, s.audio_timestep_indices, s.video_velocity, s.audio_velocity,
                 s.ranges ? &s.ranges : nullptr, taps, conditioned ? &s.video_row_indices : nullptr,
-                nullptr);
+                nullptr, c.transformer.pdd_steps > 1 ? dit::omniref_step(video_t) : 0);
             inner_batch.submit().wait();
             impl_->context->download(s.video_velocity, velocity, edited_video.size());
             ++result.steps_computed;
@@ -540,7 +541,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
           batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine, s.video_timestep_indices,
           s.audio_timestep_indices, s.video_velocity, s.audio_velocity,
           s.ranges ? &s.ranges : nullptr, taps, conditioned ? &s.video_row_indices : nullptr,
-          conditioned && has_audio ? &s.audio_row_indices : nullptr);
+          conditioned && has_audio ? &s.audio_row_indices : nullptr,
+          c.transformer.pdd_steps > 1 ? dit::omniref_step(video_t) : 0);
     if (motion.enabled() && compute) {
       batch.submit().wait();
       impl_->context->download(s.video_velocity, motion_vv.data(), motion_vv.size());

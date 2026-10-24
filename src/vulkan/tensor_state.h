@@ -183,6 +183,7 @@ struct H3AttentionPlan::Impl {
 struct VsaAttentionPlan::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   uint32_t sequence = 0, heads = 0, dim = 0, tiles = 0, prefix = 0, padded = 0;
+  uint32_t tile_size = 64, regions = 0, keep_denominator = 5;
   DeviceTensor geometry, pooled, mask, compressed;
   uintptr_t batch_id = 0, output_id = 0;
 };

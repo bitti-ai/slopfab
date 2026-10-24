@@ -995,6 +995,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       config.continuation = continuation_constraint;
       config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
+      config.transformer.pdd_steps = plan.model.pdd_steps;
       config.transformer.main.block.attention_mode = options.attention_mode;
       config.transformer.main.block.veda = veda;
       config.transformer.main.block.sequence = static_cast<uint32_t>(live.total_rows());
@@ -1003,7 +1004,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       config.transformer.main.block.loras = &loras;
       if (plan.model.compressed_attention)
         config.transformer.main.block.vsa_tiles =
-            std::make_shared<dit::VsaTiles>(dit::build_vsa_tiles(live));
+            std::make_shared<dit::VsaTiles>(dit::build_vsa_tiles(live,
+                plan.model.pdd_steps > 1 ? 128 : 64, plan.model.pdd_steps > 1 ? 10 : 5));
       config.transformer.text_rows = static_cast<uint32_t>(live.num_text);
       config.transformer.video_rows =
           static_cast<uint32_t>(live.num_condition_video + live.num_video_rows);
@@ -1041,6 +1043,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       }
       if (plan.conditioning.pin_target_audio)
         initial_audio = init_audio;
+      if (plan.model.pdd_steps > 1) {
+        if (init_video.empty())
+          for (auto& v : initial_video) v *= plan.video_sigmas.front();
+        if (init_audio.empty())
+          for (auto& v : initial_audio) v *= plan.audio_sigmas.front();
+      }
       if (conditioned) {
         if (condition_video_rows.size() != static_cast<size_t>(live.num_condition_video) * 96u ||
             condition_audio_rows.size() != static_cast<size_t>(live.num_condition_audio) * 32u) {

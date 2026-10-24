@@ -573,7 +573,7 @@ inline Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layo
     scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kF32));
   }
   c.attention_scratch = vsa ? cuda::vsa_attention_workspace_bytes(
-                                  static_cast<int>(build_vsa_tiles(layout).sizes.size()),
+                                  static_cast<int>(build_vsa_tiles(layout, cfg.pdd_steps > 1 ? 128 : 64).sizes.size()),
                                   cfg.num_attention_heads, cfg.attention_head_dim)
                             : attention_scratch_for_mode(cfg, seq, attention_mode);
   scratch = std::max(scratch, c.attention_scratch);

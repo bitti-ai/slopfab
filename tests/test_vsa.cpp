@@ -1,11 +1,81 @@
 #include "harness.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/vsa.h"
+#include "slopfab/dit/pdd.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/safetensors_write.h"
 
 #include <algorithm>
 #include <filesystem>
+
+SLOPFAB_TEST(omniref_fused_heads_match_fine_grid_integration) {
+  using namespace slopfab;
+  // The archive stores head zero followed by residuals relative to head zero.
+  std::vector<float> values(32 * 6);
+  for (size_t i = 0; i < values.size(); ++i)
+    values[i] = float(int(i % 29) - 14) / 17;
+  TensorView tensor{"head", DType::kF32, {64, 3}, values.data(), values.size() * 4};
+  for (float shift : {3.f, 12.f}) {
+    const auto fused = dit::fuse_omniref_heads(tensor, shift);
+    const auto grid = dit::omniref_sigmas(shift);
+    auto sigma = [shift](int j) {
+      double u = 1 - j / 32.;
+      return .999 * shift * u / (1 + (shift - 1) * u);
+    };
+    CHECK(grid.size() == 9);
+    for (int step = 0; step < 8; ++step) {
+      CHECK_NEAR(grid[step], sigma(step * 4), 6e-8);
+      for (int i = 0; i < 6; ++i) {
+        double integrated = 0;
+        for (int j = step * 4; j < step * 4 + 4; ++j)
+          integrated += (sigma(j) - sigma(j + 1)) * (values[i] + (j ? values[j * 6 + i] : 0));
+        CHECK_NEAR(fused[step * 6 + i], integrated / (sigma(step * 4) - sigma(step * 4 + 4)), 3e-7);
+      }
+    }
+  }
+  const auto grid = dit::omniref_sigmas(12);
+  for (int i = 0; i < 8; ++i)
+    CHECK(dit::omniref_step(1 - grid[i]) == i);
+  bool rejected = false;
+  try {
+    (void)dit::omniref_step(.5f);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+}
+
+SLOPFAB_TEST(omniref_reference_tile_geometry) {
+  slopfab::dit::SequenceLayout l;
+  l.num_text = 3;
+  l.num_condition_audio = 5;
+  l.num_condition_video = 9 + 5 * 5 * 9;
+  l.reference_segments = {{3, 9}, {12, 5}, {17, 225, 5, 5, 9}};
+  l.num_audio_rows = 7;
+  l.num_latent_frames = 5;
+  l.latent_height = 10;
+  l.latent_width = 18;
+  l.num_video_rows = 225;
+  auto tiles = slopfab::dit::build_vsa_tiles(l, 128, 10);
+  CHECK(tiles.prefix_tiles == 4);
+  CHECK(tiles.region_ends == std::vector<int32_t>({12, 20}));
+  CHECK(tiles.sizes[4] == 128);
+  CHECK(tiles.rows[4 * 128] == 17);
+  std::vector<int> seen(l.total_rows());
+  for (size_t tile = 0; tile < tiles.sizes.size(); ++tile)
+    for (int i = 0; i < 128; ++i) {
+      int row = tiles.rows[tile * 128 + i];
+      if (i >= tiles.sizes[tile]) {
+        CHECK(row == -1);
+        continue;
+      }
+      CHECK(tiles.row_tiles.at(row) == tile);
+      ++seen.at(row);
+    }
+  CHECK(std::all_of(seen.begin(), seen.end(), [](int n) {
+    return n == 1;
+  }));
+}
 
 SLOPFAB_TEST(vsa_tile_geometry) {
   slopfab::dit::SequenceLayout layout;

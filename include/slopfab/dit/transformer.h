@@ -51,6 +51,7 @@ struct TransformerConfig {
   int timestep_freq_dim = 256;
   int timestep_hidden_dim = 5376;
   int timestep_embed_dim = 2688;
+  int pdd_steps = 1; // resolved from the checkpoint by load
 
   int inner_dim() const {
     return num_attention_heads * attention_head_dim;
