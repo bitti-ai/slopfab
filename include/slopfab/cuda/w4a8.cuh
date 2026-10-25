@@ -9,6 +9,10 @@
 
 namespace slopfab::cuda {
 
+void launch_dequant_w6a8_weight(const int8_t* packed, const uint8_t* group_scale, int8_t* output,
+                                int out_features, int in_features, int group_size,
+                                cudaStream_t stream);
+
 // Expands ComfyUI asymmetric W4A8 codes into the rotated INT8 weight consumed
 // by the runtime GEMM. Channel scaling remains separate for the GEMM epilogue.
 void launch_dequant_w4a8_weight(const int8_t* packed, const uint8_t* group_scale,

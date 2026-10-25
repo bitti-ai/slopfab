@@ -66,10 +66,10 @@ set(SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV
 slopfab_reference_shaders()
 slopfab_fast_attention_shaders()
 
-slopfab_shader("src/vulkan/tensor_w4a8.comp" "95c450f795e4447fdfc53408146983fe60f9ea750cd26b247ea746ba2fffa418" SOURCE -)
+slopfab_shader("src/vulkan/tensor_w4a8.comp" "9044dee02031f5f9edd1d7b8b23098ecde215fa34b0e56dc72111d9b97f51773" SOURCE -)
 
-slopfab_shader("src/vulkan/tensor_w4a8.comp.spv" "26017c613d63caadf8d145815bdb55b2f13e56f599e91ebcbd61f170915324b6" BINARY SLOPFAB_TENSOR_W4A8_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_w4a8.comp.spv" "21f2d9d86f839d68c2949ebd37478391ce4e85daae75f36430c2b5f01cd2150d" BINARY SLOPFAB_TENSOR_W4A8_SPV_BYTES)
 
-slopfab_shader("src/vulkan/tensor_w4a8_denorm.comp.spv" "4820708e9c0ef1eb2f76b8eb638149b98e8f9dcda43c876798dd6ee7f1b55754" BINARY SLOPFAB_TENSOR_W4A8_DENORM_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_w4a8_denorm.comp.spv" "d198157b55a5959b536ec3ba7c6119b3d70a7ad18e978078d37ed36ef823fb6b" BINARY SLOPFAB_TENSOR_W4A8_DENORM_SPV_BYTES)
 
 slopfab_shader("src/vulkan/tensor_w4a8_quant.comp.spv" "d82caccba072fbdccf23819ccdfb7046f12447ffb4e55587fba1ebd1db2ed382" BINARY SLOPFAB_TENSOR_W4A8_QUANT_SPV_BYTES)

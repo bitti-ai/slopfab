@@ -817,19 +817,41 @@ SLOPFAB_TEST_CATEGORY(linear_nf4_double_quant, "synthetic") {
   CHECK_CLOSE_REL(want, dy.host(), 1e-3, 1e-2, "linear NF4 dequantise-then-GEMM");
 }
 
-
-SLOPFAB_TEST_CATEGORY(nn_w4a8_native_bf16_linear, "synthetic") {
+static void packed_integer_linear(int bits, int group_size) {
   using namespace slopfab::cuda;
   constexpr int rows=3,out=4,k=256;
-  std::vector<int8_t> packed(out*k/2);
-  for(int o=0;o<out;++o)for(int i=0;i<k/2;++i)packed[o*k/2+i]=int8_t(((i+o)&15)|(((i*3+o+1)&15)<<4));
-  std::vector<uint8_t> scales(out*k/16,0x38);std::vector<float> book(16);
+  std::vector<int8_t> packed(out * k * bits / 8, 0);
+  std::vector<int> levels(out * k);
+  for (int o = 0; o < out; ++o)
+    for (int i = 0; i < k; ++i) {
+      int code = (i * 7 + o * 13) % (1 << bits);
+      levels[o * k + i] = code - (1 << (bits - 1));
+      size_t base = size_t(o) * k * bits / 8;
+      packed[base + i / 2] |= int8_t((code & 15) << ((i & 1) * 4));
+      if (bits == 6)
+        packed[base + k / 2 + i / 4] |= int8_t((code >> 4) << ((i & 3) * 2));
+    }
+  std::vector<uint8_t> scales(out * k / group_size);
+  const uint8_t scale_values[] = {0, 0x30, 0x38, 0x48, 0x78};
+  for (size_t i = 0; i < scales.size(); ++i)
+    scales[i] = scale_values[i % 5];
+  std::vector<float> book(16);
   for(int i=0;i<16;++i)book[i]=float(i-8);
   std::vector<float> channel={.25f,.5f,1.f,2.f};
   DeviceBuffer<int8_t> codes(packed.size());codes.copy_from_host(packed.data(),packed.size());
   DeviceBuffer<uint8_t> groups(scales.size());groups.copy_from_host(scales.data(),scales.size());
   auto cb=to_device(book),cs=to_device(channel);
-  QuantWeight w;w.format=QuantFormat::kW4A8;w.in_features=k;w.out_features=out;w.data=codes.get();w.block_scale=groups.get();w.weight_scale=cs.get();w.w4_codebook=cb.get();w.convrot=true;w.convrot_group=256;
+  QuantWeight w;
+  w.format = bits == 6 ? QuantFormat::kW6A8 : QuantFormat::kW4A8;
+  w.packed_group_size = group_size;
+  w.in_features = k;
+  w.out_features = out;
+  w.data = codes.get();
+  w.block_scale = groups.get();
+  w.weight_scale = cs.get();
+  w.w4_codebook = bits == 4 ? cb.get() : nullptr;
+  w.convrot = true;
+  w.convrot_group = 256;
   CHECK(w.stored_bytes()==packed.size());
   CHECK(linear_dense_weight_bytes(w)==0);
   std::vector<float> input(rows*k);input[k]=1;std::fill(input.begin()+2*k,input.end(),1.f);
@@ -841,8 +863,28 @@ SLOPFAB_TEST_CATEGORY(nn_w4a8_native_bf16_linear, "synthetic") {
     std::vector<float> rotated(k);float maxabs=0;
     for(int i=0;i<k;++i){for(int j=0;j<k;++j)rotated[i]+=h[i*k+j]/16*input[r*k+j];maxabs=std::max(maxabs,std::abs(rotated[i]));}
     float scale=std::max(maxabs/127,1e-30f);float rounded=slopfab::bf16_to_f32(slopfab::f32_to_bf16(scale));
-    for(int o=0;o<out;++o){int32_t sum=0;for(int i=0;i<k;++i){float quotient=slopfab::bf16_to_f32(slopfab::f32_to_bf16(rotated[i]/rounded));int q=std::clamp(int(std::nearbyint(quotient)),-128,127);uint8_t b=uint8_t(packed[o*k/2+i/2]);int code=i%2?b>>4:b&15;sum+=q*int(book[code]);}
-      float expected=slopfab::bf16_to_f32(slopfab::f32_to_bf16(float(sum)*scale*channel[o]));CHECK(actual[r*out+o]==expected);}
+    for (int o = 0; o < out; ++o) {
+      int32_t sum = 0;
+      for (int i = 0; i < k; ++i) {
+        float quotient = slopfab::bf16_to_f32(slopfab::f32_to_bf16(rotated[i] / rounded));
+        int q = std::clamp(int(std::nearbyint(quotient)), -128, 127);
+        int weight = std::clamp(
+            int(std::nearbyint(levels[o * k + i] *
+                               slopfab::f8_e4m3_to_f32(scales[(o * k + i) / group_size]))),
+            -127, 127);
+        sum += q * weight;
+      }
+      float expected=slopfab::bf16_to_f32(slopfab::f32_to_bf16(float(sum)*scale*channel[o]));CHECK(actual[r*out+o]==expected);
+    }
   }
   runner.set_native(true);runner.forward(w,x.p(),rows,y.p(),ws);CHECK(actual==y.host());
+}
+
+SLOPFAB_TEST_CATEGORY(nn_w4a8_native_bf16_linear, "synthetic") {
+  packed_integer_linear(4, 16);
+}
+
+SLOPFAB_TEST_CATEGORY(nn_w6a8_native_bf16_linear, "synthetic") {
+  for (int group : {16, 32, 64})
+    packed_integer_linear(6, group);
 }

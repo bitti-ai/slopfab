@@ -12,6 +12,22 @@ namespace {
 constexpr int kThreads = 256;
 constexpr int kConvRotGroup = 256;
 
+__global__ void dequant_w6_kernel(const int8_t* packed, const uint8_t* group_scale, int8_t* output,
+                                  size_t count, int width, int group_size) {
+  const size_t index = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index >= count)
+    return;
+  const size_t row = index / width;
+  const int col = int(index % width);
+  const auto* bytes = reinterpret_cast<const uint8_t*>(packed) + row * (width * 3 / 4);
+  const int low = (bytes[col / 2] >> ((col & 1) * 4)) & 15;
+  const int high = (bytes[width / 2 + col / 4] >> ((col & 3) * 2)) & 3;
+  const int level = (low | (high << 4)) - 32;
+  const __half_raw half = __nv_cvt_fp8_to_halfraw(group_scale[index / group_size], __NV_E4M3);
+  const float scale = __half2float(*reinterpret_cast<const __half*>(&half));
+  output[index] = static_cast<int8_t>(max(-127, min(127, __float2int_rn(level * scale))));
+}
+
 __device__ float h4(int row, float x0, float x1, float x2, float x3) {
   switch (row) {
   case 0:
@@ -120,6 +136,18 @@ __global__ void dequant_output_kernel(int32_t* input_output, const float* activa
 }
 
 } // namespace
+
+void launch_dequant_w6a8_weight(const int8_t* packed, const uint8_t* group_scale, int8_t* output,
+                                int out_features, int in_features, int group_size,
+                                cudaStream_t stream) {
+  if (!packed || !group_scale || !output || out_features <= 0 || in_features <= 0 ||
+      in_features % 32 || group_size < 16 || group_size % 16 || in_features % group_size)
+    throw std::invalid_argument("W6A8 weight decode: invalid buffers or dimensions");
+  const size_t count = size_t(out_features) * in_features;
+  dequant_w6_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(
+      packed, group_scale, output, count, in_features, group_size);
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
+}
 
 void launch_dequant_w4a8_weight(const int8_t* packed, const uint8_t* group_scale,
                                 const float* codebook, int8_t* output, int out_features,

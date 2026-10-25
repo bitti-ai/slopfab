@@ -70,57 +70,95 @@ bool is_w4a8_weight(const SafeTensors& checkpoint, const std::string& weight_nam
   return format && format->as_string() == "asym_w4a8_int8";
 }
 
-W4A8State read_w4a8_state(const SafeTensors& checkpoint, const std::string& weight_name,
+bool is_w6a8_weight(const SafeTensors& checkpoint, const std::string& name) {
+  const auto root = quantization_state(checkpoint, name);
+  const auto* format = root.find("format");
+  return format && format->as_string() == "w6a8_int8";
+}
+
+bool is_packed_int8_weight(const SafeTensors& checkpoint, const std::string& name) {
+  const auto root = quantization_state(checkpoint, name);
+  const auto* format = root.find("format");
+  return format && (format->as_string() == "asym_w4a8_int8" || format->as_string() == "w6a8_int8");
+}
+
+W4A8State read_w4a8_state(const SafeTensors& checkpoint, const std::string& name,
                           const char* consumer) {
+  const auto state = read_packed_int8_state(checkpoint, name, consumer);
+  if (state.bits != 4)
+    throw std::runtime_error("W4A8 consumer cannot load W6A8: " + name);
+  return state;
+}
+
+void validate_w4a8_weight(const SafeTensors& checkpoint, const std::string& name, int out, int in) {
+  read_w4a8_state(checkpoint, name, "W4A8");
+  validate_packed_int8_weight(checkpoint, name, out, in);
+}
+
+W4A8State read_packed_int8_state(const SafeTensors& checkpoint, const std::string& weight_name,
+                                 const char* consumer) {
   const auto root = quantization_state(checkpoint, weight_name);
   const json::Value* format = root.find("format");
-  if (!format || format->as_string() != "asym_w4a8_int8") {
-    throw std::runtime_error(std::string(consumer) + ": unsupported W4A8 format for '" +
+  if (!format || (format->as_string() != "asym_w4a8_int8" && format->as_string() != "w6a8_int8")) {
+    throw std::runtime_error(std::string(consumer) + ": unsupported packed INT8 format for '" +
                              weight_name + "'");
   }
   const json::Value* group = parameter(root, "group_size");
   const json::Value* convrot = parameter(root, "convrot_groupsize");
   if (!group || !convrot) {
-    throw std::runtime_error(std::string(consumer) + ": incomplete W4A8 state for '" + weight_name +
-                             "'");
+    throw std::runtime_error(std::string(consumer) + ": incomplete packed INT8 state for '" +
+                             weight_name + "'");
   }
   if (const auto* enabled = parameter(root, "convrot"); enabled && !enabled->as_bool())
-    throw std::runtime_error("W4A8 requires ConvRot");
+    throw std::runtime_error("W4A8/W6A8 requires ConvRot");
   W4A8State state;
-  state.group_size = static_cast<int>(group->as_int());
-  state.convrot_group_size = static_cast<int>(convrot->as_int());
-  if (state.group_size != 16 || state.convrot_group_size != 256) {
-    throw std::runtime_error(std::string(consumer) + ": unsupported W4A8 layout for '" +
-                             weight_name + "' (requires group_size 16 and convrot_groupsize 256)");
+  state.bits = format->as_string() == "w6a8_int8" ? 6 : 4;
+  const int64_t g = group->as_int(), rotation = convrot->as_int();
+  if ((state.bits == 4 ? g != 16 : (g < 16 || g > 131072 || g % 16)) || rotation != 256) {
+    throw std::runtime_error(
+        std::string(consumer) + ": unsupported packed INT8 layout for '" + weight_name +
+        "' (requires W4 group 16 or W6 group divisible by 16, and ConvRot 256)");
   }
+  state.group_size = static_cast<int>(g);
+  state.convrot_group_size = static_cast<int>(rotation);
   return state;
 }
 
-void validate_w4a8_weight(const SafeTensors& st, const std::string& name, int out, int in) {
-  const auto state = read_w4a8_state(st, name, "transformer");
+void validate_packed_int8_weight(const SafeTensors& st, const std::string& name, int out, int in) {
+  const auto state = read_packed_int8_state(st, name, "transformer");
   const auto& w = st.at(name);
   const auto p = name.substr(0, name.size() - 7);
   const auto& group = st.at(p + ".weight_s_rel");
   const auto& channel = st.at(p + ".weight_s_channel");
-  const auto& book = st.at(p + ".weight_codebook");
-  if (out <= 0 || in <= 0 || in % state.convrot_group_size || w.dtype != DType::kI8 ||
-      w.shape != std::vector<int64_t>{out, in / 2} || group.dtype != DType::kF8E4M3 ||
+  const auto* book = st.find(p + ".weight_codebook");
+  if (out <= 0 || in <= 0 || in % state.convrot_group_size || in % state.group_size ||
+      in > INT32_MAX / (128 * 127) || w.dtype != DType::kI8 ||
+      w.shape != std::vector<int64_t>{out, int64_t(in) * state.bits / 8} ||
+      group.dtype != DType::kF8E4M3 ||
       group.shape != std::vector<int64_t>{out, in / state.group_size} ||
       channel.dtype != DType::kF32 || channel.shape != std::vector<int64_t>{out} ||
-      book.dtype != DType::kF32 || book.shape != std::vector<int64_t>{16})
-    throw std::runtime_error("W4A8: incompatible packed weight or auxiliaries: " + name);
+      (state.bits == 4
+           ? (!book || book->dtype != DType::kF32 || book->shape != std::vector<int64_t>{16})
+           : book != nullptr))
+    throw std::runtime_error("W4A8/W6A8: incompatible packed weight or auxiliaries: " + name);
+  const auto root = quantization_state(st, name);
+  if (const auto* full = parameter(root, "full_precision_matrix_mult"); full && full->as_bool())
+    throw std::runtime_error("W4A8/W6A8: full_precision_matrix_mult is unsupported: " + name);
+  if (st.find(p + ".pre_quant_scale"))
+    throw std::runtime_error("W4A8/W6A8: AWQ pre-scale is unsupported: " + name);
   if (st.find(p + ".weight_correction"))
-    throw std::runtime_error("W4A8: asymmetric correction is unsupported: " + name);
+    throw std::runtime_error("W4A8/W6A8: asymmetric correction is unsupported: " + name);
   for (float v : to_f32(channel))
     if (!std::isfinite(v) || v <= 0)
-      throw std::runtime_error("W4A8: invalid channel scale: " + name);
-  for (float v : to_f32(book))
-    if (!std::isfinite(v))
-      throw std::runtime_error("W4A8: non-finite codebook: " + name);
+      throw std::runtime_error("W4A8/W6A8: invalid channel scale: " + name);
+  if (book)
+    for (float v : to_f32(*book))
+      if (!std::isfinite(v))
+        throw std::runtime_error("W4A8: non-finite codebook: " + name);
   const auto* bytes = static_cast<const uint8_t*>(group.data);
   for (size_t i = 0; i < group.nbytes; ++i)
     if (bytes[i] & 128 || (bytes[i] & 127) == 127)
-      throw std::runtime_error("W4A8: invalid group scale: " + name);
+      throw std::runtime_error("W4A8/W6A8: invalid group scale: " + name);
 }
 
 } // namespace slopfab

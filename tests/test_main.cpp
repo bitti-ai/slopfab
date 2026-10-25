@@ -17,6 +17,7 @@
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/w4a8.h"
+#include "slopfab/dit/checkpoint.h"
 
 namespace {
 
@@ -291,6 +292,74 @@ void test_w4a8_state() {
   const std::string bad_path=write_temp_safetensors(make_header(global),packed,"slopfab_w4a8_bad.safetensors");
   st.open(bad_path);CHECK(rejected([&]{validate_w4a8_weight(st,"layer.weight",2,256);}));
   st.close();std::filesystem::remove(bad_path,ec);
+}
+
+SLOPFAB_TEST(w6a8_state) {
+  using namespace slopfab;
+  const std::string name = "blocks.0.attn.qkv_proj.weight";
+  auto fixture = [&](std::string descriptor, bool global, uint8_t scale = 0x38, float channel = 1.f,
+                     bool codebook = false, bool bad_shape = false) {
+    const size_t end = 408 + (codebook ? 64 : 0);
+    std::string header = R"({"blocks.0.attn.qkv_proj.weight":{"dtype":"I8","shape":[2,)" +
+                         std::string(bad_shape ? "128" : "192") + R"(],"data_offsets":[0,384]},
+      "blocks.0.attn.qkv_proj.weight_s_rel":{"dtype":"F8_E4M3","shape":[2,8],"data_offsets":[384,400]},
+      "blocks.0.attn.qkv_proj.weight_s_channel":{"dtype":"F32","shape":[2],"data_offsets":[400,408]})";
+    if (codebook)
+      header +=
+          R"(,"blocks.0.attn.qkv_proj.weight_codebook":{"dtype":"F32","shape":[16],"data_offsets":[408,472]})";
+    if (global) {
+      auto metadata = json::parse(R"({"format_version":"1.0","layers":{"blocks.0.attn.qkv_proj":)" +
+                                  descriptor + "}}");
+      header += ",\"__metadata__\":{\"_quantization_metadata\":" +
+                json::stringify(json::Value(json::stringify(metadata))) + "}";
+    } else {
+      header += R"(,"blocks.0.attn.qkv_proj.comfy_quant":{"dtype":"U8","shape":[)" +
+                std::to_string(descriptor.size()) + R"(],"data_offsets":[)" + std::to_string(end) +
+                "," + std::to_string(end + descriptor.size()) + "]}";
+    }
+    header += "}";
+    std::vector<uint8_t> data(end + (global ? 0 : descriptor.size()), 0);
+    std::fill(data.begin() + 384, data.begin() + 400, scale);
+    const float channels[] = {channel, 2.f};
+    std::memcpy(data.data() + 400, channels, sizeof(channels));
+    if (!global)
+      std::memcpy(data.data() + end, descriptor.data(), descriptor.size());
+    const auto path = write_temp_safetensors(header, data, "slopfab_w6a8_state.safetensors");
+    bool valid = false;
+    try {
+      SafeTensors st;
+      st.open(path);
+      CHECK(is_w6a8_weight(st, name));
+      CHECK(!is_w4a8_weight(st, name));
+      CHECK(dit::detect_transformer_quantization(st) == dit::TransformerQuantization::kW6A8ConvRot);
+      validate_packed_int8_weight(st, name, 2, 256);
+      const auto state = read_packed_int8_state(st, name, "test");
+      CHECK(state.bits == 6 && state.group_size == 32 && state.convrot_group_size == 256);
+      valid = true;
+    } catch (const std::exception&) {
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return valid;
+  };
+  const std::string good =
+      R"({"format":"w6a8_int8","group_size":32,"convrot":true,"convrot_groupsize":256})";
+  CHECK(fixture(good, false));
+  CHECK(fixture(good, true));
+  CHECK(fixture(R"({"format":"w6a8_int8","params":{"group_size":32,"convrot_groupsize":256}})",
+                true));
+  CHECK(!fixture(good, false, 0x7f));
+  CHECK(!fixture(good, false, 0x80));
+  CHECK(!fixture(good, false, 0x38, 0));
+  CHECK(!fixture(good, false, 0x38, 1, true));
+  CHECK(!fixture(good, false, 0x38, 1, false, true));
+  for (const auto& field :
+       {"\"group_size\":0", "\"group_size\":17", "\"group_size\":4294967328", "\"convrot\":false",
+        "\"convrot_groupsize\":16", "\"full_precision_matrix_mult\":true"}) {
+    CHECK(!fixture(R"({"format":"w6a8_int8","params":{"group_size":32,"convrot_groupsize":256},)" +
+                       std::string(field) + "}",
+                   true));
+  }
 }
 
 // --- compare ----------------------------------------------------------------

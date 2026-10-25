@@ -16,7 +16,12 @@ enum class LinearWeightFormat {
   kNVFloat4,
   kNF4,
   kW4A8,
+  kW6A8, // six-bit planes, uniform levels, dynamic INT8 activations
 };
+
+inline bool is_packed_int8(LinearWeightFormat format) {
+  return format == LinearWeightFormat::kW4A8 || format == LinearWeightFormat::kW6A8;
+}
 
 struct LinearWeightUpload {
   LinearWeightFormat format = LinearWeightFormat::kBFloat16;
@@ -44,6 +49,7 @@ struct LinearWeightUpload {
 
   // W4A8: low-even packed codes, row-major E4M3 block_scale per 16
   // weights, F32 weight_scale per output channel and a 16-entry codebook.
+  uint32_t packed_group_size = 16; // W4A8/W6A8 row-major scale group
   const float* w4_codebook = nullptr;
   uint64_t w4_codebook_count = 0;
 

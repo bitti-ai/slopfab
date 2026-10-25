@@ -38,6 +38,7 @@ enum class TransformerQuantization {
   kBFloat16,
   kFloat32,
   kW4A8ConvRot,
+  kW6A8ConvRot,
 };
 
 // Validated graph facts, independent of distribution filenames. Explicit metadata

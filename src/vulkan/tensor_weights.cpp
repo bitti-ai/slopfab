@@ -40,6 +40,9 @@ LinearWeight LinearWeight::upload(TensorContext& context, const LinearWeightUplo
     expected_bytes = elements;
     data_type = source.format == LinearWeightFormat::kInt8 ? ScalarType::kInt8 : ScalarType::kUInt8;
     break;
+  case LinearWeightFormat::kW6A8:
+    expected_bytes = checked_multiply(elements, 3, "W6A8 weight") / 4;
+    break;
   case LinearWeightFormat::kNVFloat4:
   case LinearWeightFormat::kNF4:
   case LinearWeightFormat::kW4A8:
@@ -119,30 +122,35 @@ LinearWeight LinearWeight::upload(TensorContext& context, const LinearWeightUplo
                            source.nf4_nested_quant_map_count != 0 ||
                            source.nf4_nested_absmax_count != 0;
   if ((source.format != LinearWeightFormat::kFloat8E4M3 &&
-       source.format != LinearWeightFormat::kInt8 && source.format != LinearWeightFormat::kW4A8 &&
+       source.format != LinearWeightFormat::kInt8 && !is_packed_int8(source.format) &&
        source.weight_scale_count != 0) ||
-      (source.format != LinearWeightFormat::kNVFloat4 && source.format != LinearWeightFormat::kW4A8 &&
+      (source.format != LinearWeightFormat::kNVFloat4 && !is_packed_int8(source.format) &&
        source.block_scale_count != 0) ||
       (source.format != LinearWeightFormat::kNF4 && has_nf4_aux) ||
       (source.format != LinearWeightFormat::kW4A8 && source.w4_codebook_count != 0)) {
     throw std::invalid_argument("vulkan linear weight: auxiliary metadata does not match format");
   }
 
-  if (source.format == LinearWeightFormat::kW4A8) {
+  if (is_packed_int8(source.format)) {
     // Bound INT32 accumulators even for the largest possible signed products.
     if (!source.convrot || source.convrot_group != 256 || source.in_features % 256 ||
         source.in_features > uint32_t(INT32_MAX / (128 * 127)) || source.out_features % 2 ||
-        elements > UINT32_MAX || source.block_scale_count != elements / 16 ||
-        source.weight_scale_count != source.out_features || source.w4_codebook_count != 16 ||
-        source.pre_quant_scale_count != 0)
-      throw std::invalid_argument("vulkan linear weight: invalid W4A8 metadata");
+        elements > UINT32_MAX || source.packed_group_size < 16 || source.packed_group_size % 16 ||
+        source.in_features % source.packed_group_size ||
+        source.block_scale_count != elements / source.packed_group_size ||
+        source.weight_scale_count != source.out_features ||
+        (source.format == LinearWeightFormat::kW4A8
+             ? (source.w4_codebook_count != 16 || source.packed_group_size != 16)
+             : source.w4_codebook_count != 0) ||
+        source.pre_quant_scale_count != 0 || source.full_precision_matrix_mult)
+      throw std::invalid_argument("vulkan linear weight: invalid W4A8/W6A8 metadata");
     for (uint64_t i = 0; i < source.block_scale_count; ++i)
       if ((source.block_scale[i] & 128) || (source.block_scale[i] & 127) == 127)
-        throw std::invalid_argument("vulkan linear weight: invalid W4A8 group scale");
+        throw std::invalid_argument("vulkan linear weight: invalid W4A8/W6A8 group scale");
     for (uint32_t i = 0; i < source.out_features; ++i)
       if (!std::isfinite(source.weight_scale[i]) || source.weight_scale[i] <= 0)
-        throw std::invalid_argument("vulkan linear weight: invalid W4A8 channel scale");
-    for (uint32_t i = 0; i < 16; ++i)
+        throw std::invalid_argument("vulkan linear weight: invalid W4A8/W6A8 channel scale");
+    for (uint32_t i = 0; i < source.w4_codebook_count; ++i)
       if (!std::isfinite(source.w4_codebook[i]))
         throw std::invalid_argument("vulkan linear weight: invalid W4A8 codebook");
   }
@@ -159,6 +167,7 @@ LinearWeight LinearWeight::upload(TensorContext& context, const LinearWeightUplo
   result->nf4_nested_offset = source.nf4_nested_offset;
   result->nf4_block_size = source.nf4_block_size;
   result->nf4_nested_block_size = source.nf4_nested_block_size;
+  result->packed_group_size = source.packed_group_size;
   result->convrot = source.convrot;
   result->convrot_group = source.convrot_group;
 
@@ -345,8 +354,9 @@ void TensorBatch::materialize_linear_weight(const LinearWeight& weight, DeviceTe
   resources[5] = output;
   uint32_t op = 0;
   switch (weight.impl_->format) {
+  case LinearWeightFormat::kW6A8:
   case LinearWeightFormat::kW4A8:
-    throw std::invalid_argument("vulkan W4A8 requires integer matrix multiplication");
+    throw std::invalid_argument("vulkan W4A8/W6A8 requires integer matrix multiplication");
   case LinearWeightFormat::kFloat32:
     op = 0;
     break;
@@ -490,7 +500,7 @@ void LinearWeight::forward_w4a8(TensorBatch& batch, DeviceTensor& rotated,
 
 void TensorBatch::w4a8_linear(const LinearWeight& weight, DeviceTensor& rotated,
                              DeviceTensor& workspace, DeviceTensor& output) {
-  if (!impl_ || impl_->poisoned || !weight.impl_ || weight.format() != LinearWeightFormat::kW4A8)
+  if (!impl_ || impl_->poisoned || !weight.impl_ || !is_packed_int8(weight.format()))
     throw std::invalid_argument("vulkan W4A8: invalid batch or weight");
   auto source = impl_->owner->require(rotated);
   auto scratch = impl_->owner->require(workspace);
@@ -512,8 +522,11 @@ void TensorBatch::w4a8_linear(const LinearWeight& weight, DeviceTensor& rotated,
   std::array<std::shared_ptr<DeviceTensor::Impl>, 6> gemm = {
       impl_->owner->require(weight.impl_->data),
       impl_->owner->require(weight.impl_->block_scale),
-      impl_->owner->require(weight.impl_->w4_codebook),
-      impl_->owner->require(weight.impl_->weight_scale), scratch, destination};
+      impl_->owner->require(weight.impl_->w4_codebook ? weight.impl_->w4_codebook
+                                                      : weight.impl_->weight_scale),
+      impl_->owner->require(weight.impl_->weight_scale),
+      scratch,
+      destination};
   if (source == scratch || source == destination || scratch == destination)
     throw std::invalid_argument("vulkan W4A8: aliased activation buffers");
   for (size_t i = 0; i < 4; ++i)
@@ -543,6 +556,8 @@ void TensorBatch::w4a8_linear(const LinearWeight& weight, DeviceTensor& rotated,
       impl_->transition(gemm[i], BufferAccess::kComputeRead);
     impl_->transition(destination, BufferAccess::kComputeWrite);
     p.op = 12;
+    p.block_size = weight.impl_->packed_group_size;
+    p.group = weight.format() == LinearWeightFormat::kW6A8 ? 6 : 4;
     impl_->dispatch_weight(p, static_cast<uint32_t>(groups), gemm);
   } catch (...) {
     impl_->poisoned = true;

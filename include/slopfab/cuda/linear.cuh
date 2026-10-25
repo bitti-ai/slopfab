@@ -55,7 +55,12 @@ enum class QuantFormat {
   kNVFP4,  // 4-bit, block-scaled; `data` is half as many bytes as elements
   kNF4,    // bitsandbytes NF4, double-quantised 64-element block scales
   kW4A8,   // low-nibble-first codes, group-16 scales, dynamic INT8 activations
+  kW6A8,   // six-bit planes, uniform levels, dynamic INT8 activations
 };
+
+inline bool is_packed_int8(QuantFormat format) {
+  return format == QuantFormat::kW4A8 || format == QuantFormat::kW6A8;
+}
 
 // Elements of the contraction axis sharing one e4m3 block scale. Fixed, not a
 // parameter: 16 is what `scale_vec::4X` on m16n8k64 implements and what both
@@ -101,6 +106,7 @@ struct QuantWeight {
   // Block j of row o scales stored elements [j*16, j*16+16).
   const uint8_t* block_scale = nullptr;
   // W4A8 uses row-major E4M3 group scales and a shared 16-entry codebook.
+  uint32_t packed_group_size = 16; // W4A8/W6A8 row-major scale group
   const float* w4_codebook = nullptr;
 
   // Second-level scale, host side, multiplying the whole tensor. Stored as

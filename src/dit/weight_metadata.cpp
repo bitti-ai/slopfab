@@ -34,7 +34,8 @@ QuantTag read_comfy_quant(const SafeTensors& st, const std::string& name) {
 
   // Anything else is a layout this port has not been shown, and guessing at one
   // yields finite plausible output rather than a failure.
-  if (tag.format != "nvfp4" && tag.format != "float8_e4m3fn" && tag.format != "int8_tensorwise" && tag.format != "asym_w4a8_int8") {
+  if (tag.format != "nvfp4" && tag.format != "float8_e4m3fn" && tag.format != "int8_tensorwise" &&
+      tag.format != "asym_w4a8_int8" && tag.format != "w6a8_int8") {
     throw std::runtime_error("transformer: '" + name + "' declares quant format '" + tag.format +
                              "', which this port does not implement");
   }

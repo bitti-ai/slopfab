@@ -918,8 +918,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_gemm_dispatch_geometry, "synthetic") {
   CHECK(!gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, nullptr));
 }
 
-
-SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
+static void vulkan_packed_integer_linear(int bits, uint32_t group_size) {
   using namespace slopfab;
   using namespace slopfab::vulkan;
   if (!Instance::available()) {
@@ -937,25 +936,37 @@ SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
   Device device = physical.front().create_device(options);
   TensorContext context(device);
   constexpr uint32_t rows = 5, n = 34, k = 512;
-  std::vector<uint8_t> packed(n * k / 2), groups(n * k / 16);
+  std::vector<uint8_t> packed(n * k * bits / 8, 0), groups(n * k / group_size);
+  std::vector<int> levels(n * k);
   std::vector<float> channel(n), codebook(16);
-  for (size_t i = 0; i < packed.size(); ++i)
-    packed[i] = uint8_t(((i * 7 + i / 43) & 15) | (((i * 3 + 5) & 15) << 4));
+  for (uint32_t o = 0; o < n; ++o)
+    for (uint32_t i = 0; i < k; ++i) {
+      int code = (i * 7 + o * 13) % (1 << bits);
+      levels[o * k + i] = code - 32;
+      size_t base = size_t(o) * k * bits / 8;
+      packed[base + i / 2] |= uint8_t((code & 15) << ((i & 1) * 4));
+      if (bits == 6)
+        packed[base + k / 2 + i / 4] |= uint8_t((code >> 4) << ((i & 3) * 2));
+      else
+        levels[o * k + i] = code; // W4 uses the codebook below.
+    }
   const uint8_t group_values[] = {0, 0x38, 0x48, 0x78};
   for (size_t i = 0; i < groups.size(); ++i) groups[i] = group_values[i % 4];
   for (uint32_t i = 0; i < n; ++i) channel[i] = std::ldexp(1.0f, int(i % 4) - 3);
   for (uint32_t i = 0; i < 16; ++i) codebook[i] = (float(i) - 7.0f) * 0.5f;
   LinearWeightUpload u;
-  u.format = LinearWeightFormat::kW4A8;
+  u.format = bits == 6 ? LinearWeightFormat::kW6A8 : LinearWeightFormat::kW4A8;
+  u.packed_group_size = group_size;
   u.out_features = n; u.in_features = k;
   u.data = packed.data(); u.data_bytes = packed.size();
   u.block_scale = groups.data(); u.block_scale_count = groups.size();
   u.weight_scale = channel.data(); u.weight_scale_count = channel.size();
-  u.w4_codebook = codebook.data(); u.w4_codebook_count = codebook.size();
+  u.w4_codebook = bits == 4 ? codebook.data() : nullptr;
+  u.w4_codebook_count = bits == 4 ? codebook.size() : 0;
   u.convrot = true; u.convrot_group = 256;
   auto weight = LinearWeight::upload(context, u);
   CHECK(weight.stored_bytes() == packed.size());
-  CHECK(weight.resident_bytes() == packed.size() + groups.size() + n * 4 + 64);
+  CHECK(weight.resident_bytes() == packed.size() + groups.size() + n * 4 + (bits == 4 ? 64 : 0));
   auto matrix = [&](uint32_t a, uint32_t b, ScalarType type) {
     const uint64_t shape[] = {a, b};
     return context.allocate(TensorLayout::contiguous(shape, 2), type);
@@ -993,8 +1004,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
         const float quotient = bf16_to_f32(reference_bf16(rotated_ref[i] / divisor));
         const int a = std::clamp(int(std::nearbyint(quotient)), -128, 127);
         const uint32_t index = o * k + i;
-        const int code = (packed[index / 2] >> ((index & 1) * 4)) & 15;
-        const int b = std::clamp(int(std::nearbyint(codebook[code] * f8_e4m3_to_f32(groups[index / 16]))), -127, 127);
+        const float level = bits == 6 ? float(levels[index]) : codebook[levels[index]];
+        const int b = std::clamp(
+            int(std::nearbyint(level * f8_e4m3_to_f32(groups[index / group_size]))), -127, 127);
         sum += a * b;
       }
       expected[r * n + o] = reference_bf16((float(sum) * scale) * channel[o]);
@@ -1007,6 +1019,35 @@ SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
   std::vector<uint16_t> actual(rows * n);
   context.download_bytes(output, actual.data(), actual.size() * 2);
   CHECK(actual == expected);
+  if (bits == 6) {
+    auto rejected = [](auto fn) {
+      try {
+        fn();
+        return false;
+      } catch (const std::exception&) {
+        return true;
+      }
+    };
+    const auto before = context.reserved_bytes();
+    u.w4_codebook = codebook.data();
+    u.w4_codebook_count = 16;
+    CHECK(rejected([&] {
+      LinearWeight::upload(context, u);
+    }));
+    u.w4_codebook = nullptr;
+    u.w4_codebook_count = 0;
+    u.packed_group_size = 0;
+    CHECK(rejected([&] {
+      LinearWeight::upload(context, u);
+    }));
+    u.packed_group_size = group_size;
+    groups[0] = 0x7f;
+    CHECK(rejected([&] {
+      LinearWeight::upload(context, u);
+    }));
+    CHECK(context.reserved_bytes() == before);
+    return;
+  }
   // 65,600 workgroups crosses Vulkan's guaranteed 65,535 X limit.
   // Check every output after a sentinel fill, including the second grid row.
   constexpr uint32_t large_rows = 4100, large_n = 2048, large_k = 256;
@@ -1062,4 +1103,13 @@ SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
   u.w4_codebook_count = 16;
   groups[0] = 0x7f;
   CHECK(rejected([&] { LinearWeight::upload(context, u); }));
+}
+
+SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
+  vulkan_packed_integer_linear(4, 16);
+}
+
+SLOPFAB_TEST_CATEGORY(vulkan_w6a8_integer_linear, "synthetic") {
+  for (uint32_t group : {16u, 32u, 64u})
+    vulkan_packed_integer_linear(6, group);
 }

@@ -14,10 +14,12 @@ int main(int argc, char** argv) {
     st.open(argv[1]); input.open(argv[3]);
     const std::string name = argv[2];
     const auto& tensor = st.at(name + ".weight");
-    const uint32_t out = uint32_t(tensor.shape.at(0)), in = uint32_t(tensor.shape.at(1)) * 2;
-    validate_w4a8_weight(st, name + ".weight", out, in);
+    const auto state = read_packed_int8_state(st, name + ".weight", "probe");
+    const uint32_t out = uint32_t(tensor.shape.at(0)),
+                   in = uint32_t(tensor.shape.at(1)) * 8 / state.bits;
+    validate_packed_int8_weight(st, name + ".weight", out, in);
     auto channel = to_f32(st.at(name + ".weight_s_channel"));
-    auto book = to_f32(st.at(name + ".weight_codebook"));
+    auto book = state.bits == 4 ? to_f32(st.at(name + ".weight_codebook")) : std::vector<float>{};
     const auto& group = st.at(name + ".weight_s_rel");
     const auto& t = input.at("input");
     if (t.shape.size() != 2 || t.shape[1] != in) throw std::invalid_argument("input shape");
@@ -29,11 +31,15 @@ int main(int argc, char** argv) {
     auto device = physical.front().create_device(options);
     TensorContext context(device);
     LinearWeightUpload u;
-    u.format = LinearWeightFormat::kW4A8; u.out_features = out; u.in_features = in;
+    u.format = state.bits == 6 ? LinearWeightFormat::kW6A8 : LinearWeightFormat::kW4A8;
+    u.packed_group_size = state.group_size;
+    u.out_features = out;
+    u.in_features = in;
     u.data = tensor.data; u.data_bytes = tensor.nbytes;
     u.block_scale = static_cast<const uint8_t*>(group.data); u.block_scale_count = group.nbytes;
     u.weight_scale = channel.data(); u.weight_scale_count = channel.size();
-    u.w4_codebook = book.data(); u.w4_codebook_count = book.size();
+    u.w4_codebook = book.empty() ? nullptr : book.data();
+    u.w4_codebook_count = book.size();
     u.convrot = true; u.convrot_group = 256;
     auto weight = LinearWeight::upload(context, u);
     auto matrix = [&](uint32_t columns, ScalarType type) {

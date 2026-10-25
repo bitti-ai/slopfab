@@ -136,9 +136,19 @@ void w4a8_gemm() {
       uint index = col * p.in_features + base + i % 32u;
       int value = 0;
       if (col < p.out_features) {
-        uint packed = load_byte(0u, index / 2u);
-        uint code = (packed >> ((index & 1u) * 4u)) & 15u;
-        precise float decoded = load_float(2u, code) * decode_e4m3(load_byte(1u, index / 16u));
+        uint k = base + i % 32u;
+        uint row_offset = col * (p.in_features * p.group / 8u);
+        uint packed = load_byte(0u, row_offset + k / 2u);
+        uint code = (packed >> ((k & 1u) * 4u)) & 15u;
+        float level;
+        if (p.group == 6u) {
+          uint high = load_byte(0u, row_offset + p.in_features / 2u + k / 4u);
+          code |= ((high >> ((k & 3u) * 2u)) & 3u) << 4u;
+          level = float(int(code) - 32);
+        } else {
+          level = load_float(2u, code);
+        }
+        precise float decoded = level * decode_e4m3(load_byte(1u, index / p.block_size));
         value = int(clamp(roundEven(decoded), -127.0, 127.0));
       }
       w4a8_b[i] = value;

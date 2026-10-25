@@ -117,6 +117,7 @@ inline size_t format_bytes(QuantFormat f) {
     return 1;
   case QuantFormat::kNVFP4:
   case QuantFormat::kNF4:
+  case QuantFormat::kW6A8:
   case QuantFormat::kW4A8:
     // The qkv split below is the only caller, and for nvfp4 it has to slice
     // the block scales as well as the nibbles. Throwing keeps a half-sized

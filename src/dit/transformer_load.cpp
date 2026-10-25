@@ -154,13 +154,18 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   // per-tensor scalar to one e4m3 byte per 16 contracted elements, and adds the
   // second-level `weight_scale_2`. Which of the two it is comes from the file.
   auto plan_linear = [&](const std::string& name, int out_features, int in_features) {
-    if (is_w4a8_weight(checkpoint, name + ".weight")) {
-      validate_w4a8_weight(checkpoint, name + ".weight", out_features, in_features);
-      if (interleaved_qkv) throw std::runtime_error("W4A8 interleaved QKV is not supported");
-      plan.require(name + ".weight", {out_features, in_features / 2}, Store::kVerbatim);
-      plan.require(name + ".weight_s_rel", {out_features, in_features / 16}, Store::kVerbatim);
+    if (is_packed_int8_weight(checkpoint, name + ".weight")) {
+      validate_packed_int8_weight(checkpoint, name + ".weight", out_features, in_features);
+      const auto packed = read_packed_int8_state(checkpoint, name + ".weight", "H3");
+      if (interleaved_qkv)
+        throw std::runtime_error("W4A8/W6A8 interleaved QKV is not supported");
+      plan.require(name + ".weight", {out_features, int64_t(in_features) * packed.bits / 8},
+                   Store::kVerbatim);
+      plan.require(name + ".weight_s_rel", {out_features, in_features / packed.group_size},
+                   Store::kVerbatim);
       plan.require(name + ".weight_s_channel", {out_features}, Store::kAsF32);
-      plan.require(name + ".weight_codebook", {16}, Store::kAsF32);
+      if (packed.bits == 4)
+        plan.require(name + ".weight_codebook", {16}, Store::kAsF32);
     } else if (is_nf4(checkpoint, name)) {
       plan_nf4(name, out_features, in_features);
     } else if (is_nvfp4(checkpoint, name, in_features)) {
@@ -566,8 +571,10 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     w.in_features = in_features;
     w.data = ptr(name + ".weight");
 
-    if (is_w4a8_weight(checkpoint, name + ".weight")) {
-      w.format = QuantFormat::kW4A8;
+    if (is_packed_int8_weight(checkpoint, name + ".weight")) {
+      const auto packed = read_packed_int8_state(checkpoint, name + ".weight", "H3");
+      w.format = packed.bits == 6 ? QuantFormat::kW6A8 : QuantFormat::kW4A8;
+      w.packed_group_size = packed.group_size;
       w.block_scale = static_cast<const uint8_t*>(ptr(name + ".weight_s_rel"));
       w.weight_scale = f32(name + ".weight_s_channel");
       w.w4_codebook = f32(name + ".weight_codebook");
@@ -619,7 +626,8 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
       while (power < tag.convrot_group)
         power *= 4;
       if (!((tag.format == "int8_tensorwise" && w.format == QuantFormat::kI8) ||
-            (tag.format == "asym_w4a8_int8" && w.format == QuantFormat::kW4A8)) ||
+            (tag.format == "asym_w4a8_int8" && w.format == QuantFormat::kW4A8) ||
+            (tag.format == "w6a8_int8" && w.format == QuantFormat::kW6A8)) ||
           power != tag.convrot_group) {
         throw std::runtime_error("transformer: '" + name + "' has incompatible ConvRot metadata");
       }
@@ -650,12 +658,13 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     b.wk = b.wq;
     b.wv = b.wq;
 
-    if (fused.format == QuantFormat::kW4A8) {
+    if (cuda::is_packed_int8(fused.format)) {
       const size_t third = size_t(inner) * hidden;
-      b.wk.data = static_cast<const uint8_t*>(fused.data) + third / 2;
-      b.wv.data = static_cast<const uint8_t*>(fused.data) + third;
-      b.wk.block_scale = fused.block_scale + third / 16;
-      b.wv.block_scale = fused.block_scale + third / 8;
+      const size_t packed_third = third * (fused.format == QuantFormat::kW6A8 ? 6 : 4) / 8;
+      b.wk.data = static_cast<const uint8_t*>(fused.data) + packed_third;
+      b.wv.data = static_cast<const uint8_t*>(fused.data) + 2 * packed_third;
+      b.wk.block_scale = fused.block_scale + third / fused.packed_group_size;
+      b.wv.block_scale = fused.block_scale + 2 * third / fused.packed_group_size;
       b.wk.weight_scale = fused.weight_scale + inner;
       b.wv.weight_scale = fused.weight_scale + 2 * inner;
     } else if (fused.format == QuantFormat::kNF4) {

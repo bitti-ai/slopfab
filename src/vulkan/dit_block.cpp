@@ -136,10 +136,10 @@ void validate_projection_archive(const SafeTensors& st, const std::string& name,
   const TensorView* block_scale = st.find(name + ".weight_scale");
   const bool nvfp4 =
       w.dtype == DType::kU8 && block_scale && block_scale->dtype == DType::kF8E4M3 && in % 64 == 0;
-  if (w.dtype == DType::kI8 && is_w4a8_weight(st, name + ".weight")) {
-    validate_w4a8_weight(st, name + ".weight", source_out, in);
+  if (w.dtype == DType::kI8 && is_packed_int8_weight(st, name + ".weight")) {
+    validate_packed_int8_weight(st, name + ".weight", source_out, in);
     if (st.find(name + ".pre_quant_scale"))
-      throw std::runtime_error("Vulkan H3: W4A8 with AWQ pre-scale is unsupported");
+      throw std::runtime_error("Vulkan H3: W4A8/W6A8 with AWQ pre-scale is unsupported");
   } else if (is_nf4_weight(st, name)) {
     const NF4State state = read_nf4_state(st, name, "Vulkan H3 block");
     if (state.shape != std::vector<int64_t>{source_out, in} || element_offset % 16384 != 0 ||
@@ -230,6 +230,7 @@ struct Projection {
     case LinearWeightFormat::kInt8:
     case LinearWeightFormat::kNVFloat4:
     case LinearWeightFormat::kNF4:
+    case LinearWeightFormat::kW6A8:
     case LinearWeightFormat::kW4A8:
       return true;
     default:
@@ -261,8 +262,8 @@ void validate_block_archive(const SafeTensors& st, const std::string& p, const H
   }
   const std::string qkv = p + "attn.qkv_proj";
   if (dit::transformer_qkv_is_interleaved(st)) {
-    if (is_w4a8_weight(st, qkv + ".weight"))
-      throw std::runtime_error("Vulkan H3: interleaved W4A8 QKV is unsupported");
+    if (is_packed_int8_weight(st, qkv + ".weight"))
+      throw std::runtime_error("Vulkan H3: interleaved W4A8/W6A8 QKV is unsupported");
     dit::validate_interleaved_qkv(st.at(qkv + ".weight"), c.head_dim);
     if (st.at(qkv + ".weight").dtype == DType::kI8)
       dit::validate_interleaved_qkv(st.at(qkv + ".weight_scale"), c.head_dim);
@@ -297,20 +298,23 @@ Projection load_projection(TensorContext& context, const SafeTensors& st, const 
   const TensorView* block_scale = st.find(name + ".weight_scale");
   const bool nvfp4 =
       w.dtype == DType::kU8 && block_scale && block_scale->dtype == DType::kF8E4M3 && in % 64 == 0;
-  if (w.dtype == DType::kI8 && is_w4a8_weight(st, name + ".weight")) {
-    validate_w4a8_weight(st, name + ".weight", source_out, in);
+  if (w.dtype == DType::kI8 && is_packed_int8_weight(st, name + ".weight")) {
+    validate_packed_int8_weight(st, name + ".weight", source_out, in);
     const auto& groups = st.at(name + ".weight_s_rel");
     auto all_scales = to_f32(st.at(name + ".weight_s_channel"));
     scale_storage.assign(all_scales.begin() + row_offset, all_scales.begin() + row_offset + out);
-    map_storage = to_f32(st.at(name + ".weight_codebook"));
-    u.format = LinearWeightFormat::kW4A8;
-    u.data = static_cast<const uint8_t*>(w.data) + element_offset / 2;
-    u.data_bytes = elements / 2;
-    u.block_scale = static_cast<const uint8_t*>(groups.data) + element_offset / 16;
-    u.block_scale_count = elements / 16;
+    const auto packed = read_packed_int8_state(st, name + ".weight", "Vulkan H3");
+    if (packed.bits == 4)
+      map_storage = to_f32(st.at(name + ".weight_codebook"));
+    u.format = packed.bits == 6 ? LinearWeightFormat::kW6A8 : LinearWeightFormat::kW4A8;
+    u.packed_group_size = packed.group_size;
+    u.data = static_cast<const uint8_t*>(w.data) + element_offset * packed.bits / 8;
+    u.data_bytes = elements * packed.bits / 8;
+    u.block_scale = static_cast<const uint8_t*>(groups.data) + element_offset / packed.group_size;
+    u.block_scale_count = elements / packed.group_size;
     u.weight_scale = scale_storage.data();
     u.weight_scale_count = out;
-    u.w4_codebook = map_storage.data();
+    u.w4_codebook = map_storage.empty() ? nullptr : map_storage.data();
     u.w4_codebook_count = map_storage.size();
   } else if (is_nf4_weight(st, name)) {
     const NF4State state = read_nf4_state(st, name, "Vulkan H3 block");
@@ -436,7 +440,7 @@ Projection load_projection(TensorContext& context, const SafeTensors& st, const 
   u.full_precision_matrix_mult = tag.full_precision;
   u.convrot = tag.convrot;
   u.convrot_group = tag.convrot_group;
-  if (u.format == LinearWeightFormat::kW4A8) {
+  if (is_packed_int8(u.format)) {
     u.convrot = true;
     u.convrot_group = 256;
   }
@@ -759,7 +763,7 @@ void ensure_transforms(TensorContext& context, const Projection& p, uint32_t row
   const bool convrot = p.weight.applies_convrot();
   if ((pre_scale || convrot) && !a)
     a = context.allocate(matrix(rows, p.in), ScalarType::kBFloat16);
-  if (p.weight.format() == LinearWeightFormat::kW4A8) {
+  if (is_packed_int8(p.weight.format())) {
     if (!b || b.type() != ScalarType::kFloat32)
       b = context.allocate(matrix(rows, uint64_t(p.in) + 1), ScalarType::kFloat32);
   } else if (pre_scale && convrot && (!b || b.type() != ScalarType::kBFloat16)) {
@@ -772,7 +776,7 @@ bool transforms_ready(const Projection& p, const DeviceTensor& a, const DeviceTe
   const bool convrot = p.weight.applies_convrot();
   return (!(pre_scale || convrot) || static_cast<bool>(a)) &&
          (!(pre_scale && convrot) || (b && b.type() == ScalarType::kBFloat16)) &&
-         (p.weight.format() != LinearWeightFormat::kW4A8 || (b && b.type() == ScalarType::kFloat32));
+         (!is_packed_int8(p.weight.format()) || (b && b.type() == ScalarType::kFloat32));
 }
 
 DeviceTensor& transformed_input(TensorBatch& batch, Projection& p, DeviceTensor& input,
@@ -802,7 +806,7 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
     if (tiled_rows != rows)
       plan.record(batch, source, weight, output, rows - tiled_rows, tiled_rows, tiled_rows);
   };
-  if (p.weight.format() == LinearWeightFormat::kW4A8) {
+  if (is_packed_int8(p.weight.format())) {
     p.weight.forward_w4a8(batch, source, transform_b, output);
   } else if (p.streamed()) {
     PreparedNVFP4WeightView prepared = cache.prepare(batch, p.weight, plan);
@@ -814,7 +818,7 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
 }
 
 uint32_t projection_operators(const Projection& projection, uint32_t rows) {
-  if (projection.weight.format() == LinearWeightFormat::kW4A8)
+  if (is_packed_int8(projection.weight.format()))
     return 3u + projection.lora.operators(rows); // ConvRot, quantize, integer GEMM
   return (projection.weight.has_pre_quant_scale() ? 1u : 0u) +
          (projection.weight.applies_convrot() ? 1u : 0u) + (projection.streamed() ? 1u : 0u) +
