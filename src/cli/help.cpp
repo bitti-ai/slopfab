@@ -93,7 +93,12 @@ const CommandHelp kCommands[] = {
      "  --width N                  base transformer hidden width\n"
      "  Requires an embedded grid or a local companion file.\n"},
     {"generate", "slopfab generate --prompt <text> [options]", "text to image, video and audio",
-     "  --model <h3|moss|fibo2>            model family; inferred from explicit checkpoint\n"
+     "  --model <h3|moss|fibo2|yue2>  model family; inferred from explicit checkpoint\n"
+     "  --lyrics TEXT               music lyrics; --prompt supplies style/tags\n"
+     "  --music-duration SECONDS    music duration ceiling (default 30, maximum 300)\n"
+     "  --music-planning MODE       YuE2 full (default), melody or off\n"
+     "  --music-settings JSON       music sampling settings; see docs/music-models.md\n"
+     "  YuE2 defaults: CUDA, 32 midpoint steps, stereo 48 kHz .wav output.\n"
      "  --prompt <text>              the prompt\n"
      "  --negative-prompt <text>     MOSS negative prompt (default empty)\n"
      "  --guidance <number>          MOSS CFG scale (default 3)\n"

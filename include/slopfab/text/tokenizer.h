@@ -53,7 +53,7 @@ public:
   // Encodes text. Special-token strings present in the added-tokens table are
   // matched before the byte-level split, so a chat template's control tokens
   // survive intact instead of being broken into pieces.
-  std::vector<int32_t> encode(const std::string& text) const;
+  std::vector<int32_t> encode(const std::string& text, bool allow_special = true) const;
 
   // Inverse of encode, including the byte-level unmapping.
   std::string decode(const std::vector<int32_t>& ids) const;
@@ -75,6 +75,8 @@ public:
   }
 
 private:
+  bool normalize_nfc_ = false;
+  bool ignore_merges_ = false;
   std::string source_sha256_;
   std::unordered_map<std::string, int32_t> vocab_;
   std::vector<std::string> id_to_token_;

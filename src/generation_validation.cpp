@@ -10,6 +10,13 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  if (p.model.family == "yue2") {
+    require(o.inference_backend == DeviceBackend::kCuda, "music requires the CUDA backend");
+    require(o.source == LatentSource::kDenoise && o.init_latents_path.empty() && o.prompt_embedding_path.empty(), "music requires native conditioning and fresh noise");
+    require(!o.sampler && !o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty(), "music does not support H3 sampler overrides, sampling effects or LCS");
+    require(o.upscale_model_path.empty() && o.latent_upscale_model_path.empty() && o.save_latents_path.empty() && !o.on_latents && !o.attention_band && o.veda.predictor_path.empty(), "music does not support video archives, upscaling or attention overrides");
+    return;
+  }
   if (p.model.family == "fibo2") {
     require(o.inference_backend == DeviceBackend::kCuda, "Fibo requires the CUDA backend");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Fibo requires editing from fresh noise");

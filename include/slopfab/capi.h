@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 36
+#define SLOPFAB_CAPI_VERSION_MINOR 37
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -613,6 +613,11 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_langevin_steps(
  * MOSS is image-only and uses CUDA/flash2, Qwen3.5-9B and the FLUX.2 small VAE.
  * Supply paths using the existing model-path setter, including TOKENIZER and
  * VIDEO_VAE. Family selection does not download/discover files in the C API. */
+/* Replace music settings with a JSON object. Fields: lyrics, duration (seconds),
+ * planning (full/melody/off), abc, temperature, top_p, top_k,
+ * repetition_penalty, semantic_guidance, abc_max_tokens. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_music_settings(
+    slopfab_request* request, const char* settings_json);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(
     slopfab_request* request, const char* family);
 /* Since 1.30. MOSS CFG and negative-branch block skipping. Defaults: CFG 3,

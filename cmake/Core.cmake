@@ -2,6 +2,7 @@
 
 add_library(slopfab_core STATIC
   src/fibo/plan.cpp
+  src/music/plan.cpp
   src/core/sampling_effect.cpp
   src/core/lcs.cpp
   src/seedvr2/plan.cpp
@@ -53,6 +54,7 @@ add_library(slopfab_core STATIC
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
+  src/text/nfc.cpp
   src/text/tokenizer_contract.cpp
   src/text/encoder.cpp
   src/text/prompt_embedding.cpp

@@ -199,10 +199,21 @@ Tensor Runtime::project(const Tensor& x, const std::string& name) {
   Tensor y(x.rows, w.out_features);
   scratch.reserve(cuda::linear_workspace_bytes(w, x.rows, cuda::ComputeType::kBF16));
   cuda::Workspace::Scope scope(scratch);
+  const BFloat* cached = nullptr;
+  if (cache_dense_weights) {
+    auto prepared = prepared_.find(name);
+    if (prepared == prepared_.end()) {
+      const auto* dense = linear.prepare(w, scratch);
+      cuda::DeviceBuffer<BFloat> copy(size_t(w.in_features) * w.out_features);
+      SLOPFAB_CUDA_CHECK(cudaMemcpy(copy.get(), dense, copy.nbytes(), cudaMemcpyDeviceToDevice));
+      prepared = prepared_.emplace(name, std::move(copy)).first;
+    }
+    cached = prepared->second.get();
+  }
   if (w.has_bias()) {
     // torch.nn.Linear adds bias to the FP32 accumulator before BF16 rounding.
     // H3's existing runner deliberately uses its own post-rounding bias contract.
-    const auto* dense = linear.prepare(w, scratch);
+    const auto* dense = cached ? cached : linear.prepare(w, scratch);
     const BFloat* input = x.ptr();
     if (w.convrot) {
       auto* rotated = scratch.alloc_n<BFloat>(size_t(x.rows) * x.cols);
@@ -218,7 +229,9 @@ Tensor Runtime::project(const Tensor& x, const std::string& name) {
     const int n = x.rows * w.out_features;
     fused_bias<<<(n + 255) / 256, 256>>>(accumulator.get(), static_cast<const BFloat*>(w.bias),
                                          y.ptr(), n, w.out_features);
-  } else
+  } else if (cached)
+    linear.forward_prepared(w, cached, x.ptr(), x.rows, y.ptr(), scratch);
+  else
     linear.forward(w, x.ptr(), x.rows, y.ptr(), scratch);
   return y;
 }
@@ -301,6 +314,8 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
 }
 
 void Runtime::release_prefix(const std::string& prefix) {
+  for (auto it = prepared_.begin(); it != prepared_.end();)
+    if (it->first.rfind(prefix, 0) == 0) it = prepared_.erase(it); else ++it;
   // DeviceBuffer destruction waits for outstanding uses before freeing storage.
   for (auto it = linears_.begin(); it != linears_.end();)
     if (it->first.rfind(prefix, 0) == 0) it = linears_.erase(it); else ++it;

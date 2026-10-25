@@ -39,6 +39,8 @@ public:
   cublasHandle_t blas = nullptr;
   cuda::Workspace scratch;
   cuda::LinearRunner linear;
+  // Autoregressive models reuse each matrix for thousands of single-token calls.
+  bool cache_dense_weights = false;
   const BFloat* weight(const std::string& name);
   const float* float_weight(const std::string& name);
   Tensor project(const Tensor& x, const std::string& name);
@@ -52,6 +54,7 @@ public:
 private:
   std::map<std::string, cuda::DeviceBuffer<uint8_t>> storage_;
   std::map<std::string, cuda::QuantWeight> linears_;
+  std::map<std::string, cuda::DeviceBuffer<BFloat>> prepared_;
   const void* upload(const std::string& key, const void* data, size_t bytes);
 };
 

@@ -57,6 +57,9 @@
 #include "generation/prompt.h"
 
 namespace slopfab {
+namespace music {
+RunResult run_yue(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+}
 namespace fibo {
 RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 }
@@ -67,6 +70,16 @@ using namespace generation;
 
 RunResult generation::run_generate_impl(const GenerateRequest& request, const GeneratePlan& plan,
                                         const RunOptions& options, ReusedGenerationModels& reuse) {
+  if (plan.model.family == "yue2") {
+    reuse.clear();
+#if SLOPFAB_WITH_CUDA
+    return music::run_yue(request, plan, options);
+#else
+    RunResult unsupported;
+    unsupported.message = "music requires a CUDA-enabled build";
+    return unsupported;
+#endif
+  }
   if (plan.model.family == "moss" || plan.model.family == "fibo2") {
     reuse.clear();
 #if SLOPFAB_WITH_CUDA

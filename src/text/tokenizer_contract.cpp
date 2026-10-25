@@ -63,7 +63,9 @@ void validate_tokenizer_model_field(const std::string& name, std::string_view te
     require(value.is_null(), "model." + name);
   else if (name == "continuing_subword_prefix" || name == "end_of_word_suffix")
     require(value.is_null() || value.as_string().empty(), "model." + name);
-  else if (name == "byte_fallback" || name == "fuse_unk" || name == "ignore_merges")
+  else if (name == "ignore_merges")
+    (void)value.as_bool();
+  else if (name == "byte_fallback" || name == "fuse_unk")
     require(!value.as_bool(), "model." + name);
 }
 }

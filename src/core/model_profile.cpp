@@ -8,6 +8,7 @@
 namespace slopfab {
 const ModelProfile& model_profile(const std::string& family) {
   static const ModelProfile profiles[] = {
+      {"yue2", "YuE2", "yue2_3b", "", "", false, 1, 2048},
       {"h3", "MiniMax H3", "fl2va", "qwen3vl_32b", "video", false, 32, 5120},
       {"moss", "MOSS Image", "moss_image", "qwen3.5_9b", "flux2", true, 16, 4096},
       {"fibo2", "Fibo 2.0 Edit Turbo", "fibo2_edit_turbo", "qwen3vl_4b_int8", "flux2-vae", true, 16, 46080}};
@@ -18,6 +19,9 @@ const ModelProfile& model_profile(const std::string& family) {
 }
 
 const ModelProfile& checkpoint_model_profile(const SafeTensors& checkpoint) {
+  if (checkpoint.find("text_encoders.yue2_tokenizer_json") &&
+      checkpoint.find("model.diffusion_model.vae2llm.weight"))
+    return model_profile("yue2");
   if (checkpoint.find("perceiver.latent_queries") && checkpoint.find("noise_refiner.0.attention.qkv.weight"))
     return model_profile("fibo2");
   return model_profile(checkpoint.find("video_embedder.weight") &&

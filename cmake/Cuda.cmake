@@ -100,6 +100,8 @@ if(SLOPFAB_ENABLE_CUDA)
       src/fibo/text.cu
       src/fibo/transformer.cu
       src/moss/runtime.cu
+      src/music/yue.cu
+      src/music/decoder.cu
       src/moss/text.cu
       src/moss/transformer.cu
       src/moss/vae.cu

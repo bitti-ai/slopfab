@@ -93,9 +93,17 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(
   if (!request || !family)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: null argument");
   return guarded([&] {
-    if (*family && std::string(family) != "h3" && std::string(family) != "moss" && std::string(family) != "fibo2")
-      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: expected h3, moss, fibo2 or empty");
+    if (*family && std::string(family) != "h3" && std::string(family) != "moss" && std::string(family) != "fibo2" && std::string(family) != "yue2")
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: expected h3, moss, fibo2, yue2 or empty");
     request->request.model_family = family;
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_music_settings(slopfab_request* request, const char* source) {
+  if (!request || !source) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_music_settings: null argument");
+  return guarded([&] {
+    request->request.music = slopfab::parse_music_settings(source);
     return SLOPFAB_OK;
   });
 }

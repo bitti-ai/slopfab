@@ -2,6 +2,7 @@
 #include "slopfab/sha256.h"
 #include "tokenizer_contract.h"
 #include "tokenizer_json_scanner.h"
+#include "nfc.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -410,6 +411,7 @@ std::vector<std::string> Tokenizer::pre_tokenize(const std::string& text) const 
 }
 
 std::vector<std::string> Tokenizer::bpe(const std::string& piece) const {
+  if (ignore_merges_ && vocab_.find(piece) != vocab_.end()) return {piece};
   // Start from single code points of the byte-mapped string.
   std::vector<std::string> symbols;
   size_t pos = 0;
@@ -462,6 +464,8 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
   id_to_token_.clear();
   merge_ranks_.clear();
   added_tokens_.clear();
+  normalize_nfc_ = false;
+  ignore_merges_ = false;
 
   // The four things below are collected by one forward scan of the text, but
   // they are *assembled* in exactly the order the json-tree version assembled
@@ -514,7 +518,9 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
     }
     if (key == "pre_tokenizer" || key == "normalizer" || key == "decoder" ||
         key == "post_processor") {
-      detail::validate_tokenizer_component(key, scan.value_text());
+      const auto component = scan.value_text();
+      detail::validate_tokenizer_component(key, component);
+      if (key == "normalizer") normalize_nfc_ = component.find("NFC") != std::string_view::npos;
       return;
     }
     if (key != "model") {
@@ -541,7 +547,9 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
         return;
       }
       if (model_key != "merges") {
-        detail::validate_tokenizer_model_field(model_key, scan.value_text());
+        const auto field = scan.value_text();
+        detail::validate_tokenizer_model_field(model_key, field);
+        if (model_key == "ignore_merges") ignore_merges_ = field.find("true") != std::string_view::npos;
         return;
       }
       if (!scan.at_array()) {
@@ -720,7 +728,8 @@ const std::string& Tokenizer::id_to_token(int32_t id) const {
   return id_to_token_[static_cast<size_t>(id)];
 }
 
-std::vector<int32_t> Tokenizer::encode(const std::string& text) const {
+std::vector<int32_t> Tokenizer::encode(const std::string& source, bool allow_special) const {
+  const std::string text = normalize_nfc_ ? normalize_nfc(source) : source;
   if (!loaded())
     throw std::runtime_error("tokenizer: not loaded");
   std::vector<int32_t> ids;
@@ -735,6 +744,7 @@ std::vector<int32_t> Tokenizer::encode(const std::string& text) const {
     size_t hit_len = 0;
     int32_t hit_id = -1;
     for (const auto& [token, id] : added_tokens_) {
+      if (!allow_special) break;
       const size_t at = text.find(token, cursor);
       if (at != std::string::npos && (hit == std::string::npos || at < hit)) {
         hit = at;

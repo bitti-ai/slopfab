@@ -179,6 +179,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       saw_edit_option = true;
     } else if (arg == "--model") {
       req.model_family = next("--model");
+    } else if (arg == "--music-settings") {
+      req.music = slopfab::parse_music_settings(next("--music-settings"));
+    } else if (arg == "--lyrics") {
+      req.music.lyrics = next("--lyrics");
+    } else if (arg == "--music-duration") {
+      const std::string value = next("--music-duration");
+      size_t used = 0;
+      req.music.duration = std::stod(value, &used);
+      if (used != value.size()) throw std::invalid_argument("--music-duration expects seconds");
+    } else if (arg == "--music-planning") {
+      req.music.planning = next("--music-planning");
     } else if (arg == "--negative-prompt") {
       saw_image_guidance = true;
       req.negative_prompt = next("--negative-prompt");
@@ -635,6 +646,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     slopfab::validate_reference_media(req.reference_image_paths.size(), req.reference_media);
   }
   discover_generate_checkpoints(req, executable);
+  if (slopfab::request_model_family(req) == "yue2") {
+    if (saw_frames || saw_aspect || saw_resolution) throw std::invalid_argument("music uses --music-duration; omit video dimensions and frames");
+    if (!saw_out) req.out_path = std::filesystem::path(req.out_path).replace_extension(".wav").string();
+    if (std::filesystem::path(req.out_path).extension() != ".wav") throw std::invalid_argument("music output requires --out FILE.wav");
+  }
   if (slopfab::request_model_family(req) == "moss" || slopfab::request_model_family(req) == "fibo2") {
     if (saw_frames)
       throw std::invalid_argument("This model generates one image; omit --frames");

@@ -140,6 +140,11 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   const std::filesystem::path weights = find_weights_directory(executable);
   if (weights.empty())
     return;
+  if (std::string_view(profile.family) == "yue2") {
+    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights, "yue2_3b");
+    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights / "transformer", "yue2_3b");
+    return;
+  }
   if (req.text_encoder_path.empty())
     req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
   if (req.transformer_path.empty()) {
@@ -158,6 +163,10 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
 }
 
 void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_encoder) {
+  if (request_model_family(req) == "yue2") {
+    if (req.transformer_path.empty()) throw std::runtime_error("missing YuE2 bundle: pass --transformer FILE");
+    return;
+  }
   const auto require_model = [](const std::string& path, const char* option,
                                 const char* directory) {
     if (path.empty())
