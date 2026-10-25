@@ -72,6 +72,35 @@ Use `dist/windows/slopfab.dll` with the matching `capi.h`. The existing C ABI re
 
 Progress and cancellation are checked between transformer blocks and pipeline stages. Model memory is released between MiniMax AR, flow and decoding stages. When expanded weights are cached, their compressed GPU copies are released to avoid retaining both representations. Real generation was tested on an RTX 5090 with 32 GB VRAM; smaller GPUs have not been characterized.
 
+## CUDA performance
+
+CUDA music reuses temporary activation and attention buffers within each autoregressive stage and flow window/chunk. Buffers are scoped to a generation stage, use the runtime's default stream, and are released before the next stage; checkpoint weights keep their existing lifetime. MiniMax also collects each frame's eight hidden vectors on the GPU before a single download. Single-token attention batches query heads across the KV heads, reducing MiniMax's per-layer attention submissions from 96 to 9 and YuE2's from 48 to 5. Prefill and FP32 flow attention retain their existing kernels.
+
+Batched GEMMs retain BF16 inputs/probabilities and FP32 accumulation but can reorder sums. Generated audio can therefore differ from older builds with the same seed. Repeatability within a build remains tested. Synthetic attention checks compare both the previous per-head path and an independent CPU reference, including partially filled KV caches.
+
+Measured on an RTX 5090 under Windows on 2026-10-26, using the supplied INT8 ConvRot checkpoints, caption `Warm instrumental piano`, seed 42, and two serial C API generations per build. Values are mean seconds, including model preparation in the reported stages. MiniMax uses a 12-second ceiling and 30 steps per overlapping window; YuE2 uses an 8-second ceiling, 32 steps and planning off.
+
+| Model / stage | Before | After | Speedup |
+| --- | ---: | ---: | ---: |
+| MiniMax conditioning | 39.34 | 18.80 | 2.09x |
+| MiniMax flow | 49.66 | 29.27 | 1.70x |
+| MiniMax total | 90.23 | 49.31 | 1.83x |
+| YuE2 conditioning | 9.36 | 4.43 | 2.11x |
+| YuE2 flow | 6.73 | 2.80 | 2.40x |
+| YuE2 total | 17.27 | 8.40 | 2.06x |
+
+Both builds produced 529408 stereo frames for MiniMax and 383936 for YuE2. Repeated runs of the optimized build produced byte-identical audio. Buffer pooling alone also preserved MiniMax's previous audio exactly; batched attention changes rounding as described above. Benchmark JSON, raw audio and logs are retained locally under `build/music-perf/`.
+
+To measure each stage with local checkpoints, the smoke harness accepts longer durations, flow steps and optional YuE2 planning. It reports per-run timing JSON while checking finite audio, same-seed repeatability and cancellation:
+
+```powershell
+python tools/music_generation_smoke.py --library build/Release/slopfab.dll --family minimax_music3 --duration 12 --steps 30 --timings-json build/music-perf/minimax.json
+python tools/music_generation_smoke.py --library build/Release/slopfab.dll --family yue2 --duration 8 --steps 32 --timings-json build/music-perf/yue.json
+python tools/music_generation_smoke.py --library build/Release/slopfab.dll --cancel-stages
+```
+
+The harness defaults to YuE2 planning off; add `--planning full --abc-max-tokens 128` for a bounded planning test. `--cancel-stages` additionally cancels after several transformer blocks in conditioning and flow, then verifies that a fresh generation succeeds. Compare timings with no competing GPU jobs and account for the first run's initialization costs.
+
 ## Limits and diagnostics
 
 Music requires CUDA or a Vulkan device with 16-bit storage, shader int64, timeline semaphores, 256-thread workgroups and the required FP32 arithmetic features. Cooperative BF16 matrix multiplication is used when supported; other devices use the portable scalar GEMM path. Hardware validation so far covers an RTX 5090, not AMD or Intel GPUs. Refmods, LoRA, reference audio, video/image controls, H3 sampling schedules/caches, precomputed prompt embeddings, upscaling and continuation/bridge controls are unsupported. MiniMax text is limited to 5000 tokens and the combined AR context to 10240 tokens. YuE2 uses its 24576-token context with flow chunking.
