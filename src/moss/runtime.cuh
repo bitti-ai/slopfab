@@ -2,6 +2,7 @@
 #include "slopfab/cuda/attention.cuh"
 #include "slopfab/cuda/linear.cuh"
 #include "slopfab/safetensors.h"
+#include "buffer.cuh"
 #include <map>
 #include <memory>
 #include <string>
@@ -12,7 +13,7 @@ using BFloat = __nv_bfloat16;
 
 struct Tensor {
   int rows = 0, cols = 0;
-  cuda::DeviceBuffer<BFloat> data;
+  TemporaryBuffer<BFloat> data;
   Tensor() = default;
 
   Tensor(int r, int c) : rows(r), cols(c), data(size_t(r) * c) {

@@ -319,6 +319,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_nn_kernels_attention_synthetic.cu
       tests/test_nn_kernels_attention_ranges_synthetic.cu
       tests/test_nn_kernels_workspace_synthetic.cu
+      tests/test_music_cuda_runtime.cu
       tests/test_nn_kernels_nvfp4_benchmark.cu
       tests/test_nn_kernels_operators_benchmark.cu
       tests/test_nn_kernels_vision_synthetic.cu

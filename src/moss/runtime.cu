@@ -10,6 +10,8 @@
 
 namespace slopfab::moss {
 namespace {
+thread_local std::shared_ptr<cuda::ReferenceBufferPool> activation_pool, temporary_pool;
+
 __device__ float f(BFloat x) {
   return __bfloat162float(x);
 }
@@ -129,6 +131,24 @@ Runtime::Runtime(const std::string& path) {
   linear.init(blas, nullptr);
 }
 
+TemporaryBufferScope::TemporaryBufferScope()
+    : activations_(std::make_shared<cuda::ReferenceBufferPool>()),
+      temporaries_(std::make_shared<cuda::ReferenceBufferPool>()),
+      previous_activations_(std::move(activation_pool)),
+      previous_temporaries_(std::move(temporary_pool)) {
+  activation_pool = activations_;
+  temporary_pool = temporaries_;
+}
+
+TemporaryBufferScope::~TemporaryBufferScope() {
+  activation_pool = std::move(previous_activations_);
+  temporary_pool = std::move(previous_temporaries_);
+}
+
+std::shared_ptr<cuda::ReferenceBufferPool> temporary_buffer_pool(TemporaryBufferKind kind) {
+  return kind == TemporaryBufferKind::kActivation ? activation_pool : temporary_pool;
+}
+
 Runtime::~Runtime() {
   if (blas)
     cuda::cublas_destroy(blas);
@@ -228,7 +248,8 @@ Tensor Runtime::project(const Tensor& x, const std::string& name, bool fuse_bias
       cuda::launch_convrot(input, rotated, x.rows, x.cols, w.convrot_group, nullptr);
       input = rotated;
     }
-    cuda::DeviceBuffer<float> accumulator(size_t(x.rows) * w.out_features);
+    TemporaryBuffer<float> accumulator(size_t(x.rows) * w.out_features,
+                                        TemporaryBufferKind::kScratch);
     const float alpha = 1.f, beta = 0.f;
     SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
         blas, CUBLAS_OP_T, CUBLAS_OP_N, w.out_features, x.rows, w.in_features, &alpha, dense,
@@ -320,13 +341,14 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
   if (q.rows != k.rows || float_probabilities) {
     const int dim = q.cols / heads, tile = 128;
     Tensor out(q.rows, q.cols);
-    cuda::DeviceBuffer<float> scores(size_t(std::min(tile, q.rows)) * k.rows);
-    cuda::DeviceBuffer<BFloat> probabilities(scores.size());
-    cuda::DeviceBuffer<float> fp, fv, fo;
+    TemporaryBuffer<float> scores(size_t(std::min(tile, q.rows)) * k.rows,
+                                    TemporaryBufferKind::kScratch);
+    TemporaryBuffer<BFloat> probabilities(scores.size(), TemporaryBufferKind::kScratch);
+    TemporaryBuffer<float> fp, fv, fo;
     if (float_probabilities) {
-      fp = cuda::DeviceBuffer<float>(scores.size());
-      fv = cuda::DeviceBuffer<float>(size_t(v.rows) * v.cols);
-      fo = cuda::DeviceBuffer<float>(size_t(q.rows) * q.cols);
+      fp = TemporaryBuffer<float>(scores.size(), TemporaryBufferKind::kScratch);
+      fv = TemporaryBuffer<float>(size_t(v.rows) * v.cols, TemporaryBufferKind::kScratch);
+      fo = TemporaryBuffer<float>(size_t(q.rows) * q.cols, TemporaryBufferKind::kScratch);
       cast_attention<<<(v.rows * v.cols + 255) / 256, 256>>>(v.ptr(), fv.get(), v.rows * v.cols);
     }
     const float scale = 1 / std::sqrt(float(dim)), one = 1, zero = 0;
