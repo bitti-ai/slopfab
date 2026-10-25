@@ -174,6 +174,9 @@ int sample(std::vector<float> values, const std::vector<int32_t>& generated, boo
 std::vector<int32_t> generate_tokens(Runtime& rt, const std::vector<int32_t>& prefix,
                                      const std::vector<int32_t>& negative, bool abc, int maximum,
                                      const MusicSettings& s, uint64_t seed, Hook hook) {
+#ifndef SLOPFAB_MUSIC_VULKAN
+  moss::TemporaryBufferScope buffers;
+#endif
   if (prefix.size() + maximum > context || negative.size() + maximum > context)
     throw std::invalid_argument("YuE2 prompt plus requested token budget exceeds context");
   Caches cache, uncond;
@@ -369,6 +372,9 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
                          noise.size());
     start = Clock::now();
     for (int first = 0; first < int(codes.size()); first += chunk) {
+#ifndef SLOPFAB_MUSIC_VULKAN
+      moss::TemporaryBufferScope buffers;
+#endif
       const int count = std::min(chunk, int(codes.size()) - first);
       auto tokens = prefix;
       tokens.insert(tokens.end(), codes.begin() + first, codes.begin() + first + count);
