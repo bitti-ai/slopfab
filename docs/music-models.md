@@ -91,6 +91,8 @@ Measured on an RTX 5090 under Windows on 2026-10-26, using the supplied INT8 Con
 
 Both builds produced 529408 stereo frames for MiniMax and 383936 for YuE2. Repeated runs of the optimized build produced byte-identical audio. Buffer pooling alone also preserved MiniMax's previous audio exactly; batched attention changes rounding as described above. Benchmark JSON, raw audio and logs are retained locally under `build/music-perf/`.
 
+Validation passed 69 CUDA runtime checks, the unit/music CLI/C API/embedded-tokenizer suites, an 8-second YuE2 run with full planning capped at 128 ABC tokens and all 32 flow steps, and cancellation within both conditioning and flow followed by successful recovery. MiniMax's shared hidden-vector collection also passed repeated Vulkan audio and active-cancellation checks.
+
 To measure each stage with local checkpoints, the smoke harness accepts longer durations, flow steps and optional YuE2 planning. It reports per-run timing JSON while checking finite audio, same-seed repeatability and cancellation:
 
 ```powershell
