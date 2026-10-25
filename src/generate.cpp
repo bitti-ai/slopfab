@@ -59,6 +59,7 @@
 namespace slopfab {
 namespace music {
 RunResult run_yue(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+RunResult run_minimax(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 }
 namespace fibo {
 RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
@@ -70,10 +71,10 @@ using namespace generation;
 
 RunResult generation::run_generate_impl(const GenerateRequest& request, const GeneratePlan& plan,
                                         const RunOptions& options, ReusedGenerationModels& reuse) {
-  if (plan.model.family == "yue2") {
+  if (plan.model.family == "yue2" || plan.model.family == "minimax_music3") {
     reuse.clear();
 #if SLOPFAB_WITH_CUDA
-    return music::run_yue(request, plan, options);
+    return plan.model.family == "yue2" ? music::run_yue(request, plan, options) : music::run_minimax(request, plan, options);
 #else
     RunResult unsupported;
     unsupported.message = "music requires a CUDA-enabled build";

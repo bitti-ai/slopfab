@@ -8,6 +8,13 @@
 
 namespace slopfab::music {
 namespace {
+__global__ void raw_snake(float* x,const float* alpha,int length,int n) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  if(i<n){float a=alpha[i/length],v=x[i],s=sinf(a*v);x[i]=v+s*s/(a+1e-9f);}
+}
+__global__ void final_tanh(float* x,int n) {
+  int i=blockIdx.x*blockDim.x+threadIdx.x;if(i<n)x[i]=tanhf(x[i]);
+}
 struct AudioTensor {
   int channels, length;
   cuda::DeviceBuffer<float> data;
@@ -25,6 +32,7 @@ public:
   }
 
   const float* weight(const std::string& p) {
+    if(rt.checkpoint.find(p+".weight"))return rt.float_weight(p+".weight");
     auto it = weights.find(p);
     if (it != weights.end())
       return it->second.get();
@@ -49,7 +57,7 @@ public:
   }
 
   AudioTensor conv(const AudioTensor& x, const std::string& p, int dilation = 1, int stride = 1) {
-    const auto& shape = rt.checkpoint.at(p + ".weight_v").shape;
+    const auto& shape = rt.checkpoint.at(p + (rt.checkpoint.find(p+".weight") ? ".weight" : ".weight_v")).shape;
     const int kernel = int(shape.at(2));
     const bool transpose = stride > 1;
     const int channels = int(shape[transpose ? 1 : 0]);
@@ -69,6 +77,9 @@ public:
   }
 
   void snake(AudioTensor& x, const std::string& p) {
+    if(!rt.checkpoint.find(p+".beta")) {
+      int n=x.channels*x.length;raw_snake<<<(n+255)/256,256>>>(x.data.get(),rt.float_weight(p+".alpha"),x.length,n);return;
+    }
     cuda::launch_snake_beta(x.data.get(), rt.float_weight(p + ".alpha"),
                             rt.float_weight(p + ".beta"), 1, x.channels, x.length, nullptr);
   }
@@ -128,6 +139,31 @@ std::vector<float> decode_yue(Runtime& rt, const std::vector<float>& latent, Hoo
     for (int t = begin; t < finish; ++t)
       for (int c = 0; c < 2; ++c)
         output[size_t(t) * 2 + c] = planar[size_t(c) * x.length + offset + t - begin];
+  }
+  return output;
+}
+std::vector<float> decode_minimax(Runtime& rt,const std::vector<float>& latent,Hook hook) {
+  if(latent.empty()||latent.size()%128)throw std::invalid_argument("MiniMax Music3 VAE latent shape");
+  int frames=int(latent.size()/128),total=frames*512;
+  std::vector<float> output(size_t(total)*2);Decoder decoder(rt);
+  constexpr int core=256,halo=16,strides[]={8,8,4,2};
+  for(int channel=0;channel<2;++channel)for(int start=0;start<frames;start+=core) {
+    if(hook)hook();int end=std::min(frames,start+core),left=std::max(0,start-halo),right=std::min(frames,end+halo),count=right-left;
+    std::vector<float> planar(size_t(count)*64);
+    for(int t=0;t<count;++t)for(int c=0;c<64;++c)planar[size_t(c)*count+t]=latent[size_t(t+left)*128+channel*64+c];
+    AudioTensor x(64,count);SLOPFAB_CUDA_CHECK(cudaMemcpy(x.data.get(),planar.data(),x.data.nbytes(),cudaMemcpyHostToDevice));
+    x=decoder.conv(x,"dec_in_proj");x=decoder.conv(x,"decoder.model.0");
+    for(int i=0;i<4;++i) {
+      if(hook)hook();auto p="decoder.model."+std::to_string(i+1)+".block.";
+      decoder.snake(x,p+"0");x=decoder.conv(x,p+"1",1,strides[i]);
+      for(int j=0,d=1;j<3;++j,d*=3)x=decoder.residual(std::move(x),p+std::to_string(j+2)+".block.",d);
+    }
+    decoder.snake(x,"decoder.model.5");x=decoder.conv(x,"decoder.model.6");
+    final_tanh<<<(x.length+255)/256,256>>>(x.data.get(),x.length);
+    int begin=start*512,finish=end*512,offset=(start-left)*512;
+    if(x.channels!=1||offset+finish-begin>x.length)throw std::runtime_error("MiniMax Music3 VAE tile extent mismatch");
+    planar.resize(x.data.size());SLOPFAB_CUDA_CHECK(cudaMemcpy(planar.data(),x.data.get(),x.data.nbytes(),cudaMemcpyDeviceToHost));
+    for(int t=begin;t<finish;++t)output[size_t(t)*2+channel]=planar[offset+t-begin];
   }
   return output;
 }

@@ -101,6 +101,7 @@ if(SLOPFAB_ENABLE_CUDA)
       src/fibo/transformer.cu
       src/moss/runtime.cu
       src/music/yue.cu
+      src/music/minimax.cu
       src/music/decoder.cu
       src/moss/text.cu
       src/moss/transformer.cu

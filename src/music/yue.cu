@@ -433,6 +433,7 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
     text::Tokenizer tokenizer;
     load_yue_tokenizer(tokenizer, rt.checkpoint);
     auto s = request.music;
+    if (!s.top_k) s.top_k = 100;
     if (s.semantic_guidance == 0)
       s.semantic_guidance = s.planning == "off" ? 1.01f : 1.f;
     const auto instruction = yue_instruction(s.planning);

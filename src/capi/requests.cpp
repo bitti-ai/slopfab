@@ -93,8 +93,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(
   if (!request || !family)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: null argument");
   return guarded([&] {
-    if (*family && std::string(family) != "h3" && std::string(family) != "moss" && std::string(family) != "fibo2" && std::string(family) != "yue2")
-      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: expected h3, moss, fibo2, yue2 or empty");
+    if (*family && std::string(family) != "h3" && std::string(family) != "moss" && std::string(family) != "fibo2" && std::string(family) != "yue2" && std::string(family) != "minimax_music3")
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: expected h3, moss, fibo2, yue2, minimax_music3 or empty");
     request->request.model_family = family;
     return SLOPFAB_OK;
   });

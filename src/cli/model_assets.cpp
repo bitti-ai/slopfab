@@ -145,6 +145,15 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
     if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights / "transformer", "yue2_3b");
     return;
   }
+  if (std::string_view(profile.family) == "minimax_music3") {
+    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights, profile.transformer_hint);
+    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights / "transformer", profile.transformer_hint);
+    if (req.text_encoder_path.empty()) req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
+    if (req.text_encoder_path.empty()) req.text_encoder_path = find_checkpoint(weights, profile.conditioner_hint);
+    if (req.audio_vae_path.empty()) req.audio_vae_path = find_checkpoint(weights, profile.vae_hint);
+    if (req.audio_vae_path.empty()) req.audio_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
+    return;
+  }
   if (req.text_encoder_path.empty())
     req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
   if (req.transformer_path.empty()) {
@@ -163,6 +172,11 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
 }
 
 void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_encoder) {
+  if (request_model_family(req) == "minimax_music3") {
+    if (req.transformer_path.empty() || req.text_encoder_path.empty() || req.audio_vae_path.empty())
+      throw std::runtime_error("MiniMax Music3 requires --transformer, --text-encoder and --audio-vae checkpoints");
+    return;
+  }
   if (request_model_family(req) == "yue2") {
     if (req.transformer_path.empty()) throw std::runtime_error("missing YuE2 bundle: pass --transformer FILE");
     return;

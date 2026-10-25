@@ -121,6 +121,20 @@ void validate_adaln_table_config(int rank, int rows) {
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
   ModelDescriptor model;
+  if (has(checkpoint, "cond_layer_logits") && has(checkpoint, "diffusion_transformer.transformer.project_in.weight")) {
+    for (const auto& item : std::vector<std::pair<std::string, std::vector<int64_t>>>{
+        {"cond_layer_logits", {8}}, {"latent_conditioners.0.weight", {2048,4096,3}},
+        {"diffusion_transformer.transformer.project_in.weight", {2048,2304}},
+        {"diffusion_transformer.transformer.layers.35.self_attn.to_qkv.weight", {6144,2048}},
+        {"diffusion_transformer.transformer.project_out.weight", {128,2048}}})
+      if (!checkpoint.find(item.first) || checkpoint.at(item.first).shape != item.second)
+        throw std::invalid_argument("MiniMax Music3: incompatible tensor " + item.first);
+    model.family = "minimax_music3";
+    model.modulation = ModulationImplementation::kTimestepMlp;
+    model.origin = "MiniMax Music3 fused flow/conditioner tensor contract";
+    model.quantization = checkpoint.at("diffusion_transformer.transformer.layers.35.self_attn.to_qkv.weight").dtype == DType::kI8 ? TransformerQuantization::kInt8ConvRot : TransformerQuantization::kBFloat16;
+    return model;
+  }
   if (has(checkpoint, "text_encoders.yue2_tokenizer_json")) {
     for (const auto& item : std::vector<std::pair<std::string, std::vector<int64_t>>>{
         {"text_encoders.model.embed_tokens.weight", {184704,2048}},

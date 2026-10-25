@@ -609,13 +609,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_blend_overlap(
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_langevin_steps(
     slopfab_request* request, int32_t steps);
 
-/* Since 1.30. Family is "h3", "moss", "fibo2" (since 1.34), or empty for checkpoint detection.
+/* Since 1.30. Family is h3, moss, fibo2 (since 1.34), yue2 or minimax_music3
+ * (since 1.37), or empty for checkpoint detection.
  * MOSS is image-only and uses CUDA/flash2, Qwen3.5-9B and the FLUX.2 small VAE.
  * Supply paths using the existing model-path setter, including TOKENIZER and
  * VIDEO_VAE. Family selection does not download/discover files in the C API. */
 /* Replace music settings with a JSON object. Fields: lyrics, duration (seconds),
  * planning (full/melody/off), abc, temperature, top_p, top_k,
- * repetition_penalty, semantic_guidance, abc_max_tokens. */
+ * repetition_penalty, semantic_guidance, flow_guidance, abc_max_tokens.
+ * Since 1.37. Music returns audio-only samples through the existing result API. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_music_settings(
     slopfab_request* request, const char* settings_json);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(

@@ -71,7 +71,7 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
-  if (request_model_family(request) == "yue2") return resolve_music_plan(request);
+  if (request_model_family(request) == "yue2" || request_model_family(request) == "minimax_music3") return resolve_music_plan(request);
   if (request_model_family(request) == "moss")
     return resolve_moss_plan(request);
   if (request_model_family(request) == "fibo2")
@@ -455,6 +455,11 @@ std::string media_encoding_cache_key(const GenerateRequest& request,
 }
 
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {
+  if (plan.model.family == "minimax_music3") {
+    return "  model               MiniMax Music3\n  output              stereo 44100 Hz WAV\n  duration ceiling    " +
+        std::to_string(plan.duration_seconds) + " seconds\n  flow steps          " +
+        std::to_string(plan.num_inference_steps) + " (Euler, overlapping windows)\n";
+  }
   if (plan.model.family == "yue2") {
     return "  model               YuE2 music\n  output              stereo 48000 Hz WAV\n  duration ceiling    " +
         std::to_string(plan.duration_seconds) + " seconds\n  flow steps          " +
