@@ -21,18 +21,28 @@ def transform(raw: bytes, denorm: bool, rounding_rte: bool = True) -> bytes:
     capability_end = 5
     execution_end = 0
     entry = 0
+    existing = set()
+    cleaned = words[:5]
     at = 5
     while at < len(words):
         count, opcode = words[at] >> 16, words[at] & 0xFFFF
         if count == 0 or at + count > len(words):
             raise ValueError("malformed SPIR-V instruction")
-        if opcode == 17 and capability_end == at:
-            capability_end = at + count
+        instruction = tuple(words[at:at + count])
+        if opcode in (16, 17) and instruction in existing:
+            at += count
+            continue
+        existing.add(instruction)
+        position = len(cleaned)
+        cleaned.extend(instruction)
+        if opcode == 17 and capability_end == position:
+            capability_end = position + count
         if opcode == 15:
             entry = words[at + 2]
         if opcode in (15, 16):
-            execution_end = at + count
+            execution_end = position + count
         at += count
+    words = cleaned
     if not entry or not execution_end:
         raise ValueError("SPIR-V has no entry point")
     capabilities = [(2 << 16) | 17, 4467 if rounding_rte else 4466]
@@ -43,6 +53,12 @@ def transform(raw: bytes, denorm: bool, rounding_rte: bool = True) -> bytes:
     if denorm:
         capabilities[0:0] = [(2 << 16) | 17, 4464]
         modes[0:0] = [(4 << 16) | 16, entry, 4459, 32]
+    capabilities = [word for i in range(0, len(capabilities), 2)
+                    if tuple(capabilities[i:i + 2]) not in existing
+                    for word in capabilities[i:i + 2]]
+    modes = [word for i in range(0, len(modes), 4)
+             if tuple(modes[i:i + 4]) not in existing
+             for word in modes[i:i + 4]]
     words[capability_end:capability_end] = capabilities
     execution_end += len(capabilities)
     words[execution_end:execution_end] = modes

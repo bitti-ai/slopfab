@@ -276,6 +276,7 @@ __global__ void cross_softmax(const float* scores, T* probabilities, int keys) {
     __syncthreads();
   }
   maximum = reduce[0];
+  __syncthreads(); // broadcast must finish before reusing reduction storage
   float sum = 0;
   for (int k = t; k < keys; k += 256)
     sum += expf(scores[size_t(q) * keys + k] - maximum);

@@ -102,7 +102,11 @@ void main() {
     for(uint k=t;k<cols;k+=256) mx=max(mx,x32(g*cols+k));
     s[t]=mx; barrier();
     for(uint d=128;d>0;d/=2) { if(t<d) s[t]=max(s[t],s[t+d]); barrier(); }
-    mx=s[0]; float sum=0;
+    mx=s[0];
+    // Every warp must read the maximum before the shared array is reused
+    // for the sum reduction. Otherwise a fast warp can overwrite s[0].
+    barrier();
+    float sum=0;
     for(uint k=t;k<cols;k+=256) sum+=exp(x32(g*cols+k)-mx);
     s[t]=sum; barrier();
     for(uint d=128;d>0;d/=2) { if(t<d) s[t]+=s[t+d]; barrier(); }

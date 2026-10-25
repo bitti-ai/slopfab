@@ -216,6 +216,7 @@ struct SpirvShape {
   uint32_t local_size[3] = {};
   std::vector<uint32_t> bindings;
   bool has_local_size = false;
+  bool cooperative_matrix = false;
 };
 
 inline SpirvShape inspect_spirv(const std::vector<uint32_t>& words) {
@@ -226,6 +227,9 @@ inline SpirvShape inspect_spirv(const std::vector<uint32_t>& words) {
     if (count == 0 || at + count > words.size()) {
       throw std::invalid_argument("vulkan: malformed SPIR-V instruction stream");
     }
+    // OpCapability CooperativeMatrixKHR
+    if (opcode == 17 && count == 2 && words[at + 1] == 6022)
+      shape.cooperative_matrix = true;
     // OpExecutionMode %entry LocalSize x y z
     if (opcode == 16 && count >= 6 && words[at + 2] == 17) {
       shape.local_size[0] = words[at + 3];

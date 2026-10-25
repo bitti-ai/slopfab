@@ -228,6 +228,9 @@ ComputePipeline ComputePipeline::create(const Device& device, const std::vector<
     VkPipelineShaderStageCreateInfo stage{};
     stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    // SPIR-V before 1.6 needs explicitly full subgroups for cooperative matrices.
+    if (shape.cooperative_matrix && spirv[1] < 0x00010600u)
+      stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
     stage.module = shader;
     stage.pName = options.entry_point.c_str();
     stage.pSpecializationInfo = specialization_entries.empty() ? nullptr : &specialization;

@@ -106,6 +106,11 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
     VkPhysicalDeviceVulkan12Features features12{};
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     features11.pNext = &features12;
+    VkPhysicalDeviceSubgroupSizeControlFeatures subgroup_control{};
+    subgroup_control.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+    if (properties.apiVersion >= VK_API_VERSION_1_3 ||
+        info.supports_extension(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME))
+      features12.pNext = &subgroup_control;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative{};
     cooperative.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
     VkPhysicalDeviceShaderBfloat16FeaturesKHR bfloat16{};
@@ -139,7 +144,10 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
         features12.descriptorIndexing == VK_TRUE && info.runtime_descriptor_array &&
         info.descriptor_binding_partially_bound && info.descriptor_binding_variable_count &&
         info.storage_buffer_non_uniform_indexing;
-    info.cooperative_matrix = cooperative.cooperativeMatrix == VK_TRUE;
+    info.cooperative_matrix = cooperative.cooperativeMatrix == VK_TRUE &&
+                              features12.vulkanMemoryModel == VK_TRUE &&
+                              features12.vulkanMemoryModelDeviceScope == VK_TRUE &&
+                              subgroup_control.computeFullSubgroups == VK_TRUE;
     info.shader_bfloat16_type = bfloat16.shaderBFloat16Type == VK_TRUE;
     info.shader_bfloat16_cooperative_matrix = bfloat16.shaderBFloat16CooperativeMatrix == VK_TRUE;
   }
@@ -411,6 +419,8 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   std::vector<std::string> names = options.extensions;
   if (options.enable_cooperative_matrix) {
     names.emplace_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    if (impl_->info.api_version.major == 1 && impl_->info.api_version.minor < 3)
+      names.emplace_back(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
     if (enable_bfloat16)
       names.emplace_back(VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME);
   }
@@ -444,6 +454,13 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   features12.shaderInt8 = options.enable_shader_int8;
   features12.timelineSemaphore = options.enable_timeline_semaphore;
   features12.bufferDeviceAddress = options.enable_buffer_device_address;
+  features12.vulkanMemoryModel = options.enable_cooperative_matrix;
+  features12.vulkanMemoryModelDeviceScope = options.enable_cooperative_matrix;
+  VkPhysicalDeviceSubgroupSizeControlFeatures subgroup_control{};
+  subgroup_control.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+  subgroup_control.computeFullSubgroups = options.enable_cooperative_matrix;
+  if (options.enable_cooperative_matrix)
+    features12.pNext = &subgroup_control;
   features12.descriptorIndexing = options.enable_descriptor_indexing;
   features12.runtimeDescriptorArray = options.enable_descriptor_indexing;
   features12.descriptorBindingPartiallyBound = options.enable_descriptor_indexing;

@@ -65,6 +65,7 @@ __global__ void causal_probabilities(const float* scores, BFloat* probabilities,
     __syncthreads();
   }
   maximum = reduction[0];
+  __syncthreads(); // broadcast must finish before reusing reduction storage
   float sum = 0;
   for (int k = t; k < limit; k += 256)
     sum += expf(scores[size_t(q) * keys + k] - maximum);

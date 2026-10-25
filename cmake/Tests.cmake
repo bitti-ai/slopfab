@@ -10,6 +10,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME spirv_float_controls COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_spirv_float_controls.py")
+    set_tests_properties(spirv_float_controls PROPERTIES LABELS synthetic TIMEOUT 30)
     add_test(NAME music_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_music_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(music_cli PROPERTIES LABELS synthetic TIMEOUT 60)
