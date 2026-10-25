@@ -106,6 +106,8 @@ licenses. Linux packages use external GPU and media runtimes.
 
 ## Models
 
+For YuE2 and MiniMax Music3 audio generation, see [music setup and usage](docs/music-models.md).
+
 For the H3 W4A8 ConvRot transformer, see [packed INT4 setup](docs/w4a8.md).
 For H3 W6A8 checkpoints, including the Singularity/PRISM merge, see [packed INT6 setup](docs/w6a8.md).
 
@@ -118,10 +120,10 @@ slopfab generate --model moss --prompt "A red apple on a wooden table" --resolut
 ```
 
 Model family is inferred from an explicit transformer checkpoint, or selected
-with `--model h3|moss`. Discovery selects matching conditioner and VAE families.
+with `--model h3|moss|fibo2|yue2|minimax_music3`. Discovery selects matching conditioner and VAE families.
 The default family remains H3.
 
-Generation uses a Qwen3-VL text encoder, an H3 transformer, a video VAE and an audio VAE. Place compatible checkpoints under:
+H3 generation uses a Qwen3-VL text encoder, an H3 transformer, a video VAE and an audio VAE. Place compatible checkpoints under:
 
 ```text
 weights/

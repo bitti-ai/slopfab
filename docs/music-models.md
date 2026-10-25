@@ -1,0 +1,101 @@
+# YuE2 and MiniMax Music3
+
+Native CUDA music generation is available in the CLI and C API 1.37. YuE2 supports lyric and style conditioning with optional ABC planning. MiniMax Music3 supports caption and lyric conditioning with autoregressive acoustic codes, flow synthesis and overlapping audio windows. Both return stereo audio without a Python runtime or an online service.
+
+## Checkpoints
+
+The supplied single-file Comfy INT8 ConvRot checkpoints are supported directly:
+
+```text
+weights/yue2_3b_int8_convrot.safetensors
+weights/minimax_music3_dit_int8_convrot.safetensors
+weights/minimax_music3_dav.safetensors
+weights/text_encoder/minimax_music3_text_encoder_pruned_int8_convrot.safetensors
+```
+
+YuE2 contains its tokenizer, autoregressive and flow transformers, and audio decoder in one bundle. MiniMax requires all three files. The pruned MiniMax language model was downloaded to Downloads, verified against SHA256 `010b7416d2336a08c711bc22ee65849c9623069ddb7d89bec011a75699e52014`, and moved to the text encoder folder.
+
+The CLI discovers these files under `weights/`, `weights/transformer/`, `weights/text_encoder/` and `weights/vae/`. Explicit paths use `--transformer`, `--text-encoder` and `--audio-vae`. The family can also be inferred from an explicit transformer. Raw Hugging Face sharded directories and unfused Diffusers layouts are not supported checkpoint inputs. The music implementation does not download weights at runtime.
+
+## Generate audio
+
+From the repository root on Windows:
+
+```powershell
+build/Release/slopfab.exe generate --model yue2 --prompt "Warm piano ballad with a gentle female vocal" --lyrics "[verse] Morning light across the sea" --music-duration 30 --seed 42 --out yue2.wav
+build/Release/slopfab.exe generate --model yue2 --prompt "Gentle instrumental piano and strings" --music-planning off --music-duration 8 --seed 42 --out piano.wav
+build/Release/slopfab.exe generate --model minimax_music3 --prompt "Warm piano ballad with a gentle female vocal" --lyrics "[verse] Morning light across the sea" --music-duration 30 --seed 42 --out music3.wav
+```
+
+`--prompt` is the style/caption, and `--lyrics` supplies lyrics. Duration defaults to 30 seconds, accepts `(0,300]`, and limits generated acoustic frames: the model may emit EOS earlier. It is rounded up to acoustic frames at 25 Hz. YuE2 returns native 48 kHz audio; the supplied MiniMax DAV returns native 44.1 kHz audio. Codec framing and window crops can make the final WAV duration differ slightly from the requested limit. MiniMax's model card describes a 32 kHz service output; slopfab preserves this checkpoint's 44.1 kHz decoder output without resampling.
+
+`--steps` controls flow integration, independently of the autoregressive frame budget. Defaults are 32 midpoint steps for YuE2 and 30 Euler steps per MiniMax window. MiniMax uses windows of up to 200 acoustic frames, advances by 100 frames, carries the preceding latent context and crops decoded overlaps. Long requests therefore involve multiple flow windows.
+
+## Music controls
+
+`--music-settings` accepts a JSON object. Individual `--lyrics`, `--music-duration` and `--music-planning` options are also available. For multiline lyrics or externally supplied ABC, JSON avoids shell newline escaping.
+
+| Setting | Default and meaning |
+| --- | --- |
+| `lyrics` | Empty string; lyric text with optional section tags |
+| `duration` | 30 seconds; positive, at most 300 |
+| `planning` | YuE2 `full`, `melody` or `off`; full includes chords in ABC |
+| `abc` | YuE2 external ABC; requires full or melody planning and bypasses ABC generation |
+| `abc_max_tokens` | YuE2 planning budget, 4096; range 32–4096 |
+| `temperature` | YuE2 1; zero selects greedy sampling |
+| `top_p` | YuE2 0.95; positive, at most 1 |
+| `top_k` | Zero selects YuE2 100 or MiniMax 50; MiniMax maximum 1024 |
+| `repetition_penalty` | YuE2 1.2; at least 1 |
+| `semantic_guidance` | Zero selects YuE2 1 for ABC planning, 1.01 with planning off, or MiniMax 1.5; explicit values must be at least 1 |
+| `flow_guidance` | MiniMax only; zero selects 1.7; 1 disables the conditional/unconditional difference |
+
+MiniMax uses top-k sampling and rejects nondefault YuE2-only controls. Unknown JSON keys and invalid ranges are rejected. Seeded generation is reproducible on the same native backend; seeds are not equivalent to PyTorch RNG seeds. User text is tokenized as ordinary text so literal special-token spellings cannot inject protocol controls. YuE2 includes NFC normalization and the checkpoint's whole-token merge behavior.
+
+## DLL integration
+
+Use `dist/windows/slopfab.dll` with the matching `capi.h`. The existing C ABI remains compatible.
+
+1. Set `SLOPFAB_MODEL_TRANSFORMER` to the YuE2 bundle or MiniMax flow checkpoint with `slopfab_request_set_model_path`. MiniMax additionally needs `SLOPFAB_MODEL_TEXT_ENCODER` and `SLOPFAB_MODEL_AUDIO_VAE`.
+2. Set family `yue2` or `minimax_music3`, or leave it empty for checkpoint detection. Unlike the CLI, the C API requires explicit model paths.
+3. Set the caption with `slopfab_request_set_prompt` and music controls with `slopfab_request_set_music_settings(request, json)`. The JSON setter replaces all music settings; a rejected call leaves the previous settings intact.
+4. Select CUDA and leave attention at its default `flash2` selector. Music chooses its own kernels internally, including FP32 softmax/PV for the MiniMax flow transformer.
+5. Start and wait using the existing generation API. Read the existing output structure: video is empty, audio is interleaved stereo float data, and `audio_sample_rate` reports the native rate. Copy audio before destroying the generation handle.
+
+Progress and cancellation are checked between transformer blocks and pipeline stages. Model memory is released between MiniMax AR, flow and decoding stages. Real generation was tested on an RTX 5090 with 32 GB VRAM; smaller GPUs have not been characterized.
+
+## Limits and diagnostics
+
+Music currently requires CUDA. Vulkan, refmods, LoRA, reference audio, video/image controls, H3 sampling schedules/caches, precomputed prompt embeddings, upscaling and continuation/bridge controls are unsupported. MiniMax text is limited to 5000 tokens and the combined AR context to 10240 tokens. YuE2 uses its 24576-token context with flow chunking.
+
+`--dump-latents` saves FP32 values of the BF16 flow result: YuE2 `audio_latents` has shape `[acoustic_frames,64]`; MiniMax saves `audio_chunk_0`, `audio_chunk_1`, etc., each `[flow_latent_frames,128]`. These are diagnostic tensors, not resumable H3 latent archives. MiniMax latent frame counts are `floor(acoustic_frames * 441 / 128)` per window.
+
+## Validation
+
+Portable music and C API tests cover settings, rejected controls, audio geometry, step counts and overlapping windows. Development tools exercise local checkpoints:
+
+```powershell
+python tools/music_generation_smoke.py --library dist/windows/slopfab.dll
+```
+
+The Windows release passed all seven selected unit, C API, tokenizer and existing CLI regression suites. Both models passed DLL audio delivery, same-seed byte-for-byte repeatability and cancellation checks. Real CLI runs include YuE2 full ABC planning with 32 flow steps and an 8-second frame budget, and MiniMax with a 12-second frame budget, two overlapping windows and 30 flow steps per window. Example WAVs and logs are under `build/music-support/` (`yue-full.wav` and `music3-piano.wav`).
+
+`tools/yue_reference.py`, `tools/yue_tokenizer_reference.py` and `tools/minimax_music_reference.py` provide independent PyTorch equation, tokenizer and upstream codec comparisons using `slopfab_musicprobe`. They require development dependencies and upstream decoder source paths; production inference does not.
+
+Measured relative RMS errors on fixed fixtures:
+
+| Stage | YuE2 | MiniMax Music3 |
+| --- | --- | --- |
+| Global autoregressive transformer | 0.414% | 1.171% |
+| Local codebook transformer | Not applicable | 1.082% |
+| Acoustic conditioning projection | Not applicable | Exact for equivalent GEMM convolution |
+| Flow transformer | 1.294% | 3.416% |
+| Waveform decoder | 0.000333% | 0.000202% |
+
+MiniMax flow uses PyTorch math attention as the numerical reference. PyTorch's math and default cuDNN attention themselves differed by 3.987% after the full BF16 flow stack on the same fixture. The native comparison had cosine similarity 0.999416. Convolution comparisons use equivalent GEMM equations; cuDNN may accumulate products in a different order. These checks validate implementation arithmetic and are not perceptual music-quality benchmarks.
+
+## Upstream references
+
+- [YuE2 model and usage](https://huggingface.co/m-a-p/YuE2-3B)
+- [MiniMax Music3 model and usage](https://huggingface.co/MiniMaxAI/MiniMax-Music3)
+- [Comfy MiniMax Music3 checkpoints](https://huggingface.co/Comfy-Org/MiniMax-Music-3)
+- [Comfy MiniMax model implementation](https://github.com/Comfy-Org/ComfyUI/tree/master/comfy/ldm/minimax_music)

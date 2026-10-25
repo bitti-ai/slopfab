@@ -120,7 +120,7 @@ def vae_reference(path,source,state):
 def main():
     p=argparse.ArgumentParser()
     for arg in ("ar","dit","vae","vae-source","probe","out"):p.add_argument("--"+arg,required=True)
-    p.add_argument("--modes",default="global,depth,condition,flow,vae")
+    p.add_argument("--modes",default="prompt,global,depth,condition,flow,vae")
     p.add_argument("--trace",action="store_true")
     a=p.parse_args();out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
     torch.backends.cuda.matmul.allow_tf32=False;torch.backends.cudnn.allow_tf32=False;torch.manual_seed(13)
@@ -129,8 +129,20 @@ def main():
     fixture=out/"input.safetensors";save_file({"tokens":torch.tensor(tokens,dtype=torch.float32),"hidden":hidden,"sequence":sequence,"audio_latents":state},str(fixture))
     stats={}
     for mode in a.modes.split(","):
-        model=a.ar if mode in ("global","depth") else a.vae if mode=="vae" else a.dit
+        model=a.ar if mode in ("prompt","global","depth") else a.vae if mode=="vae" else a.dit
         dest=out/(mode+".safetensors");subprocess.run([a.probe,"mm-"+mode,model,str(fixture),str(dest)]+([str(out)] if a.trace else []),check=True)
+        if mode=="prompt":
+            from tokenizers import Tokenizer
+            with safe_open(model,framework="pt") as f:
+                tokenizer=Tokenizer.from_str(bytes(f.get_tensor("tokenizer_json").numpy()).decode())
+            spec=importlib.util.spec_from_file_location("music3_prompt",Path(a.vae_source).with_name("prompt.py"))
+            prompt=importlib.util.module_from_spec(spec);spec.loader.exec_module(prompt)
+            expected=tokenizer.encode(prompt.build_prompt("# Warm **piano**\n<|BPM 90|>","[Verse] Hello\n [Chorus] World")).ids
+            actual=load_file(str(dest))["output"].int().tolist()
+            assert actual==expected,(actual,expected)
+            stats[mode]={"token_count":len(actual),"exact_match":True}
+            print(mode,stats[mode],flush=True)
+            continue
         with torch.no_grad():
             if mode=="vae":expected=vae_reference(model,a.vae_source,state).cpu()
             else:
