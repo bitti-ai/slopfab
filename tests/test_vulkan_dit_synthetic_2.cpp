@@ -148,7 +148,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
                 {"condition_proj.weight",
                  {h, text_dim},
                  values(size_t(h * text_dim), 101, 1.0f / 1024.0f),
-                 corruption == 2 ? DType::kF32 : DType::kBF16},
+                 DType::kBF16},
                 {"condition_proj.bias", {h}, values(h, 103, 1.0f / 128.0f), DType::kBF16},
                 {"video_patch_proj.weight",
                  {h, video_dim},
@@ -178,6 +178,13 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
                 {"final_layer.audio_out.bias",
                  {corruption == 1 ? audio_dim - 1 : audio_dim},
                  values(size_t(corruption == 1 ? audio_dim - 1 : audio_dim), 157, 1.0f / 128.0f)}});
+    if (corruption == 2) {
+      for (auto& tensor : all) if (tensor.name == "condition_proj.weight") {
+        tensor.dtype = DType::kI32;
+        tensor.integers.assign(tensor.data.size(), 0);
+        tensor.data.clear();
+      }
+    }
     const char* metadata_suffix = nullptr;
     if (corruption == 3)
       metadata_suffix = ".pre_quant_scale";
@@ -916,6 +923,10 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
         tensor.name == "final_layer.video_out.weight" ||
         tensor.name == "final_layer.audio_out.weight")
       tensor.dtype = DType::kBF16;
+    // The W6A8 PRISM merge retains FP32 biases and normalization weights.
+    if (tensor.name == "condition_proj.bias" || tensor.name == "token_refiner.final_norm.weight" ||
+        tensor.name == "final_layer.norm.weight")
+      tensor.dtype = DType::kF32;
     tensor.name = "model.diffusion_model." + tensor.name;
   }
   const auto singularity_path = base / "Singularity_ref2va_Pruned.safetensors";

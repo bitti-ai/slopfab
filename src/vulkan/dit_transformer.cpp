@@ -41,12 +41,6 @@ void require_shape(const TensorView& view, std::initializer_list<int64_t> shape,
     throw std::runtime_error("Vulkan H3 transformer: '" + name + "' has wrong shape");
 }
 
-void require_dtype(const TensorView& view, DType dtype, const std::string& name) {
-  if (view.dtype != dtype)
-    throw std::runtime_error("Vulkan H3 transformer: '" + name + "' has dtype " +
-                             dtype_name(view.dtype) + ", expected " + dtype_name(dtype));
-}
-
 void require_plain_weight(const SafeTensors& st, const std::string& name) {
   for (const char* suffix :
        {".weight_scale", ".weight_scale_2", ".input_scale", ".pre_quant_scale", ".comfy_quant"}) {
@@ -78,36 +72,31 @@ void validate_config(const ExactH3TransformerConfig& c) {
 void validate_endpoint_archive(const SafeTensors& st, const ExactH3TransformerConfig& c) {
   const uint32_t h = c.main.block.hidden;
   const uint32_t r = c.main.block.adaln_rank;
-  auto require = [&](const char* name, std::initializer_list<int64_t> shape, DType dtype) {
-    const TensorView& view = st.at(name);
-    require_shape(view, shape, name);
-    require_dtype(view, dtype, name);
-  };
   auto require_float_weight = [&](const char* name, std::initializer_list<int64_t> shape) {
     const TensorView& view = st.at(name);
     require_shape(view, shape, name);
-    // Endpoint uploads widen to F32. Singularity stores these weights as
-    // BF16, while the original pruned releases use F32/F16.
+    // Endpoint uploads explicitly convert to their compute dtype. H3 merges
+    // can store biases and norms as F32 even when projection weights are BF16.
     if (view.dtype != DType::kF32 && view.dtype != DType::kF16 && view.dtype != DType::kBF16)
       throw std::runtime_error("Vulkan H3 transformer: '" + std::string(name) +
                                "' must be an F32/F16/BF16 weight");
   };
-  require("condition_proj.weight", {h, c.text_dim}, DType::kBF16);
-  require("condition_proj.bias", {h}, DType::kBF16);
+  require_float_weight("condition_proj.weight", {h, c.text_dim});
+  require_float_weight("condition_proj.bias", {h});
   require_float_weight("video_patch_proj.weight", {h, c.video_dim});
-  require("video_patch_proj.bias", {h}, DType::kF32);
+  require_float_weight("video_patch_proj.bias", {h});
   require_float_weight("audio_patch_proj.weight", {h, c.audio_dim});
-  require("audio_patch_proj.bias", {h}, DType::kF32);
-  require("token_refiner.final_norm.weight", {h}, DType::kBF16);
-  require("final_layer.norm.weight", {h}, DType::kBF16);
+  require_float_weight("audio_patch_proj.bias", {h});
+  require_float_weight("token_refiner.final_norm.weight", {h});
+  require_float_weight("final_layer.norm.weight", {h});
   require_float_weight("final_layer.adaln_proj.linear.weight", {2 * h, r});
   require_float_weight("final_layer.adaln_proj.linear.bias", {2 * h});
   if (c.pdd_steps != 1 && c.pdd_steps != 32)
     throw std::invalid_argument("Vulkan H3: unsupported PDD head count");
   require_float_weight("final_layer.video_out.weight", {c.video_dim * c.pdd_steps, h});
-  require("final_layer.video_out.bias", {c.video_dim * c.pdd_steps}, DType::kF32);
+  require_float_weight("final_layer.video_out.bias", {c.video_dim * c.pdd_steps});
   require_float_weight("final_layer.audio_out.weight", {c.audio_dim * c.pdd_steps, h});
-  require("final_layer.audio_out.bias", {c.audio_dim * c.pdd_steps}, DType::kF32);
+  require_float_weight("final_layer.audio_out.bias", {c.audio_dim * c.pdd_steps});
   for (const char* name :
        {"condition_proj", "video_patch_proj", "audio_patch_proj", "final_layer.video_out",
         "final_layer.audio_out", "final_layer.adaln_proj.linear"})
