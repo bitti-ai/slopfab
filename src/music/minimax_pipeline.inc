@@ -143,6 +143,9 @@ struct Cancelled {};
 std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
                                   const MusicSettings& settings, int maximum, uint64_t seed,
                                   Hook hook, const std::string& trace) {
+#ifndef SLOPFAB_MUSIC_VULKAN
+  moss::TemporaryBufferScope buffers;
+#endif
   if (ids.empty() || ids.size() > 5000 || ids.size() + maximum + 1 > 10240)
     throw std::invalid_argument("MiniMax Music3 prompt plus audio exceeds the 10240-token context");
   const bool pruned = rt.checkpoint.find("model.embed_tokens_prefill.weight") != nullptr;
@@ -177,12 +180,14 @@ std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
     auto projected = rt.project(cembed, d + "projection");
     auto seq = moss::concatenate(rt.project(h, d + "projection"), projected);
     auto useq = moss::concatenate(rt.project(uh, d + "projection"), projected);
-    std::vector<float> hidden = moss::to_host(h);
+    // Collect the eight hidden vectors on device, then download once per frame.
+    // Sampling already needs logits on the host; hidden states do not.
+    Tensor frame_hidden(8, 4096);
+    gpu_copy_rows(h, frame_hidden, 0, 0, 1);
     std::vector<int32_t> extra;
     for (int i = 0; i < 7; ++i) {
       auto local = depth(rt, seq, hook), ulocal = depth(rt, useq, hook);
-      auto values = moss::to_host(local);
-      hidden.insert(hidden.end(), values.begin(), values.end());
+      gpu_copy_rows(local, frame_hidden, 0, i + 1, 1);
       auto p = d + "audio_heads." + std::to_string(i);
       int residual = choose(moss::to_host(rt.project(local, p)),
                             moss::to_host(rt.project(ulocal, p)), cfg, topk, false, false, rng);
@@ -194,6 +199,7 @@ std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
         useq = moss::concatenate(useq, next);
       }
     }
+    auto hidden = moss::to_host(frame_hidden);
     // The first prediction primes the acoustic recurrence and is not a frame.
     if (!trace.empty()) {
       trace_codes.push_back(float(c0));
