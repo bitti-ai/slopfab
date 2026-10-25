@@ -389,6 +389,9 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
           starts.push_back(i);
       }
       for (size_t chunk = 0; chunk < starts.size(); ++chunk) {
+#ifndef SLOPFAB_MUSIC_VULKAN
+        moss::TemporaryBufferScope buffers;
+#endif
         int first = starts[chunk], count = std::min(200, frames - first);
         std::vector<float> window(hidden.begin() + size_t(first) * 32768,
                                   hidden.begin() + size_t(first + count) * 32768);
