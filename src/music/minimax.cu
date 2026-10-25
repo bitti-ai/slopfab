@@ -178,7 +178,7 @@ struct Cancelled {};
 
 std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
                                   const MusicSettings& settings, int maximum, uint64_t seed,
-                                  Hook hook) {
+                                  Hook hook, const std::string& trace) {
   if (ids.empty() || ids.size() > 5000 || ids.size() + maximum + 1 > 10240)
     throw std::invalid_argument("MiniMax Music3 prompt plus audio exceeds the 10240-token context");
   const bool pruned = rt.checkpoint.find("model.embed_tokens_prefill.weight") != nullptr;
@@ -196,6 +196,7 @@ std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
   const int topk = settings.top_k ? settings.top_k : 50;
   std::mt19937_64 rng(seed ^ 0xa0761d6478bd642full);
   std::vector<float> output;
+  std::vector<float> trace_codes, trace_hidden;
   output.reserve(size_t(maximum) * 32768);
   const std::string d = "model.audio_decoder.";
   for (int frame = 0; frame <= maximum; ++frame) {
@@ -230,6 +231,12 @@ std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
       }
     }
     // The first prediction primes the acoustic recurrence and is not a frame.
+    if (!trace.empty()) {
+      trace_codes.push_back(float(c0));
+      for (int i = 0; i < 7; ++i)
+        trace_codes.push_back(float(extra[i] - i * 1024));
+      trace_hidden.insert(trace_hidden.end(), hidden.begin(), hidden.end());
+    }
     if (frame > 0)
       output.insert(output.end(), hidden.begin(), hidden.end());
     if (frame == maximum)
@@ -247,6 +254,13 @@ std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
   }
   if (output.empty())
     throw std::runtime_error("MiniMax Music3 generated zero audio frames");
+  if (!trace.empty()) {
+    parent(trace);
+    write_safetensors(
+        trace, {{"codes", {int64_t(trace_codes.size() / 8), 8}, trace_codes},
+                {"hidden", {int64_t(trace_hidden.size() / 32768), 32768}, trace_hidden},
+                {"tokens", {int64_t(ids.size())}, std::vector<float>(ids.begin(), ids.end())}});
+  }
   return output;
 }
 
@@ -306,7 +320,8 @@ Tensor minimax_prediction(Runtime& rt, const Tensor& state, const Tensor& condit
   auto frequencies = to_f32(rt.checkpoint.at(p + "timestep_features.weight"));
   std::vector<float> features(256);
   for (int i = 0; i < 128; ++i) {
-    float a = bf(bf(2 * 3.14159265358979323846f * bf(time)) * bf(frequencies[i]));
+    // Fourier phases are computed in FP32; only sin/cos outputs are narrowed.
+    float a = (2 * 3.14159265358979323846f * time) * frequencies[i];
     features[i] = std::cos(a);
     features[i + 128] = std::sin(a);
   }
@@ -316,13 +331,9 @@ Tensor minimax_prediction(Runtime& rt, const Tensor& state, const Tensor& condit
   auto x = moss::concatenate(temb, rt.project(full, t + "project_in"));
   dump(x, "input");
   const auto inv = to_f32(rt.checkpoint.at(t + "rotary_pos_emb.inv_freq"));
-  std::vector<float> phases(size_t(x.rows) * 32);
-  for (int r = 0; r < x.rows; ++r)
-    for (int j = 0; j < 16; ++j) {
-      float a = bf(r * inv[j]);
-      phases[size_t(r) * 32 + j] = std::sin(a);
-      phases[size_t(r) * 32 + 16 + j] = std::cos(a);
-    }
+  // BF16 cannot distinguish adjacent positions beyond 256. Evaluate phases
+  // and trig functions in FP32 before narrowing their bounded outputs.
+  auto phases = minimax_rotary_table(x.rows, inv);
   auto rotation = moss::from_host(phases, x.rows, 32);
   for (int i = 0; i < 36; ++i) {
     if (hook)
@@ -437,7 +448,7 @@ RunResult run_minimax(const GenerateRequest& r, const GeneratePlan& plan,
         float dt = 1.f / plan.num_inference_steps,
               cfg = r.music.flow_guidance ? r.music.flow_guidance : 1.7f;
         for (int step = 0; step < plan.num_inference_steps; ++step) {
-          float time = bf(step * dt);
+          float time = step * dt;
           for (int i = 0; i < overlap * 128; ++i)
             state[i] = bf(bf((1 - time) * noise[i]) + bf(time * previous[i]));
           Hook progress = [&] {

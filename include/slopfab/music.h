@@ -36,6 +36,8 @@ void load_yue_tokenizer(text::Tokenizer&, const SafeTensors&);
 std::vector<int32_t> minimax_prompt(const SafeTensors&, const std::string& caption,
                                     const std::string& lyrics);
 int minimax_latent_length(int frames);
+// FP32 phase evaluation, then sin/cos; narrowing phases aliases long windows.
+std::vector<float> minimax_rotary_table(int positions, const std::vector<float>& frequencies);
 constexpr int eod = 151643, abc_start = 151847, abc_end = 151848;
 constexpr int music_start = 151851, music_end = 151852;
 constexpr int codec_offset = 151853, codec_size = 32768, context = 24576;

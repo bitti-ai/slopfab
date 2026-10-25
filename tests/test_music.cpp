@@ -4,6 +4,7 @@
 #include "slopfab/generate.h"
 #include "../src/text/nfc.h"
 #include <limits>
+#include <cmath>
 
 SLOPFAB_TEST(music_plan_and_guards) {
   using namespace slopfab;
@@ -105,4 +106,15 @@ SLOPFAB_TEST(music_minimax_geometry_and_sampling) {
     rejected = true;
   }
   CHECK(rejected);
+}
+
+SLOPFAB_TEST(music_minimax_long_window_positions) {
+  std::vector<float> frequencies(16, 1.f);
+  const auto table = slopfab::music::minimax_rotary_table(690, frequencies);
+  CHECK(table.size() == 690 * 32);
+  // Adjacent positions must remain distinct after crossing BF16's integer
+  // precision boundaries. The previous phase cast collapsed both pairs.
+  CHECK(std::abs(table[256 * 32] - table[257 * 32]) > .1f);
+  CHECK(std::abs(table[512 * 32] - table[513 * 32]) > .1f);
+  CHECK(std::abs(table[689 * 32] - std::sin(689.f)) < 1e-6f);
 }

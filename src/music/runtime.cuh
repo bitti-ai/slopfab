@@ -16,7 +16,8 @@ Tensor probe_yue(Runtime& rt, const std::vector<int32_t>& ids, const std::vector
 std::vector<float> decode_yue(Runtime& rt, const std::vector<float>& latent, Hook hook = {});
 std::vector<float> decode_minimax(Runtime& rt, const std::vector<float>& latent, Hook hook = {});
 std::vector<float> minimax_hidden(Runtime&, const std::vector<int32_t>&, const MusicSettings&,
-                                  int maximum, uint64_t seed, Hook hook = {});
+                                  int maximum, uint64_t seed, Hook hook = {},
+                                  const std::string& trace = "");
 Tensor minimax_condition(Runtime&, const std::vector<float>&);
 Tensor minimax_prediction(Runtime&, const Tensor&, const Tensor&, float time, Hook hook = {},
                           const std::string& trace = "");

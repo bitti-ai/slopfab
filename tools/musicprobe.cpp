@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fstream>
 #include "slopfab/text/tokenizer.h"
+#include "slopfab/sampler/noise.h"
 
 int main(int argc, char** argv) {
   try {
@@ -17,6 +18,16 @@ int main(int argc, char** argv) {
                                        "[Verse] Hello\n [Chorus] World");
       std::vector<float> values(ids.begin(), ids.end());
       write_safetensors(argv[4], {{"output", {int64_t(ids.size())}, values}});
+      return 0;
+    }
+    if (requested == "mm-hidden") {
+      rt.cache_dense_weights = true;
+      std::ifstream stream(argv[3], std::ios::binary);
+      std::string caption((std::istreambuf_iterator<char>(stream)), {});
+      auto ids = music::minimax_prompt(rt.checkpoint, caption, "");
+      auto hidden =
+          music::minimax_hidden(rt, ids, MusicSettings{}, 300, 42, {}, argc == 6 ? argv[5] : "");
+      write_safetensors(argv[4], {{"hidden", {int64_t(hidden.size() / 32768), 32768}, hidden}});
       return 0;
     }
     if (std::string(argv[1]) == "tokenize") {
@@ -36,7 +47,33 @@ int main(int argc, char** argv) {
     std::vector<int64_t> shape;
     if (mode.rfind("mm-", 0) == 0) {
       music::Tensor out;
-      if (mode == "mm-vae") {
+      if (mode == "mm-sample") {
+        rt.cache_dense_weights = true;
+        auto condition = music::minimax_condition(rt, to_f32(input.at("hidden")));
+        auto state = to_f32(input.at("audio_latents"));
+        auto round = [](float v) {
+          return __bfloat162float(__float2bfloat16(v));
+        };
+        for (auto& v : state)
+          v = round(v);
+        music::Tensor zero(condition.rows, condition.cols);
+        SLOPFAB_CUDA_CHECK(cudaMemset(zero.ptr(), 0, zero.data.nbytes()));
+        for (int step = 0; step < 30; ++step) {
+          auto x = moss::from_host(state, condition.rows, 128);
+          auto c = moss::to_host(music::minimax_prediction(rt, x, condition, step / 30.f));
+          auto u = moss::to_host(music::minimax_prediction(rt, x, zero, step / 30.f));
+          for (size_t i = 0; i < state.size(); ++i)
+            state[i] = round(state[i] + round(u[i] + round(round(c[i] - u[i]) * 1.7f)) / 30.f);
+        }
+        result = std::move(state);
+        shape = {condition.rows, 128};
+      } else if (mode == "mm-noise") {
+        const auto& t = input.at("hidden");
+        int length = music::minimax_latent_length(int(t.shape[0]));
+        result.resize(size_t(length) * 128);
+        sampler::fill_normal(42, sampler::NoiseStream::kAudioLatents, result.data(), result.size());
+        shape = {length, 128};
+      } else if (mode == "mm-vae") {
         result = music::decode_minimax(rt, to_f32(input.at("audio_latents")));
         shape = {int64_t(result.size() / 2), 2};
       } else {
@@ -54,9 +91,9 @@ int main(int argc, char** argv) {
         else if (mode == "mm-flow") {
           auto condition = music::minimax_condition(rt, to_f32(input.at("hidden")));
           const auto& state = input.at("audio_latents");
-          out = music::minimax_prediction(rt,
-                                          moss::from_host(to_f32(state), int(state.shape[0]), 128),
-                                          condition, .5f, {}, argc == 6 ? argv[5] : "");
+          out = music::minimax_prediction(
+              rt, moss::from_host(to_f32(state), int(state.shape[0]), 128), condition,
+              input.find("time") ? to_f32(input.at("time"))[0] : .5f, {}, argc == 6 ? argv[5] : "");
         } else
           throw std::invalid_argument("unknown MiniMax probe mode");
         result = moss::to_host(out);

@@ -74,13 +74,13 @@ def flow_reference(w,state,condition,math_attention=True):
     x=torch.cat((state.cuda().bfloat16(),torch.zeros_like(state,device="cuda",dtype=torch.bfloat16),condition),-1)
     x=F.linear(x,w.get(p+"preprocess_conv.weight").bfloat16()[:,:,0])+x
     check(x,"preprocess")
-    time=torch.tensor([.5],device="cuda",dtype=torch.bfloat16)
-    angles=2*torch.pi*time[:,None]@w.get(p+"timestep_features.weight").bfloat16().T
-    emb=w.linear(F.silu(w.linear(torch.cat((angles.cos(),angles.sin()),-1),p+"to_timestep_embed.0")),p+"to_timestep_embed.2")
+    time=torch.tensor([.5],device="cuda",dtype=torch.float32)
+    angles=2*torch.pi*time[:,None]@w.get(p+"timestep_features.weight").float().T
+    emb=w.linear(F.silu(w.linear(torch.cat((angles.cos(),angles.sin()),-1).bfloat16(),p+"to_timestep_embed.0")),p+"to_timestep_embed.2")
     x=torch.cat((emb,w.linear(x,t+"project_in")))
     check(x,"input")
-    n=x.shape[0];phase=(torch.arange(n,device="cuda").float()[:,None]*w.get(t+"rotary_pos_emb.inv_freq").float()).bfloat16()
-    cs,sn=phase.cos()[:,None],phase.sin()[:,None]
+    n=x.shape[0];phase=torch.arange(n,device="cuda").float()[:,None]*w.get(t+"rotary_pos_emb.inv_freq").float()
+    cs,sn=phase.cos().bfloat16()[:,None],phase.sin().bfloat16()[:,None]
     def rope(q):
         q=q.reshape(n,32,64);a,b=q[...,:16],q[...,16:32]
         return torch.cat((a*cs-b*sn,b*cs+a*sn,q[...,32:]),-1).reshape(n,-1)

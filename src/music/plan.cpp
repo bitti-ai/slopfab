@@ -120,6 +120,20 @@ int music::minimax_latent_length(int frames) {
   return std::max(1, frames * 441 / 128);
 }
 
+std::vector<float> music::minimax_rotary_table(int positions,
+                                               const std::vector<float>& frequencies) {
+  if (positions < 1 || positions > 690 || frequencies.size() != 16)
+    throw std::invalid_argument("MiniMax Music3 rotary table shape");
+  std::vector<float> values(size_t(positions) * 32);
+  for (int r = 0; r < positions; ++r)
+    for (int j = 0; j < 16; ++j) {
+      const float phase = r * frequencies[j];
+      values[size_t(r) * 32 + j] = std::sin(phase);
+      values[size_t(r) * 32 + 16 + j] = std::cos(phase);
+    }
+  return values;
+}
+
 std::string music::yue_instruction(const std::string& mode) {
   if (mode == "off")
     return "Generate music with codec tokens from the given conditions.";
