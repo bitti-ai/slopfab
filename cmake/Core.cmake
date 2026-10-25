@@ -3,6 +3,7 @@
 add_library(slopfab_core STATIC
   src/fibo/plan.cpp
   src/music/plan.cpp
+  src/music/tokenizer.cpp
   src/core/sampling_effect.cpp
   src/core/lcs.cpp
   src/seedvr2/plan.cpp

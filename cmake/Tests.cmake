@@ -25,6 +25,8 @@ if(SLOPFAB_BUILD_TESTS)
   endif()
   slopfab_add_tokenizer_tests()
   if(TARGET slopfab_cuda)
+    add_executable(slopfab_musicprobe tools/musicprobe.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
+    target_link_libraries(slopfab_musicprobe PRIVATE slopfab_cuda)
     add_executable(slopfab_w4a8probe tools/w4a8probe.cpp)
     target_link_libraries(slopfab_w4a8probe PRIVATE slopfab_cuda)
     add_executable(slopfab_fiboprobe tools/fiboprobe.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
@@ -72,6 +74,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_sampling_effect.cpp
     tests/test_lcs.cpp
     tests/test_fibo.cpp
+    tests/test_music.cpp
     tests/test_moss.cpp
     tests/test_seedvr2.cpp
     tests/harness.cpp

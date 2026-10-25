@@ -121,6 +121,22 @@ void validate_adaln_table_config(int rank, int rows) {
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
   ModelDescriptor model;
+  if (has(checkpoint, "text_encoders.yue2_tokenizer_json")) {
+    for (const auto& item : std::vector<std::pair<std::string, std::vector<int64_t>>>{
+        {"text_encoders.model.embed_tokens.weight", {184704,2048}},
+        {"text_encoders.model.layers.27.self_attn.qkv_proj.weight", {4096,2048}},
+        {"model.diffusion_model.model.layers.27.self_attn.qkv_proj.weight", {4096,2048}},
+        {"model.diffusion_model.vae2llm.weight", {2048,64}},
+        {"model.diffusion_model.llm2vae.weight", {64,2048}},
+        {"vae.decoder.layers.8.weight_v", {2,64,7}}})
+      if (!checkpoint.find(item.first) || checkpoint.at(item.first).shape != item.second)
+        throw std::invalid_argument("YuE2: incompatible tensor " + item.first);
+    model.family = "yue2";
+    model.modulation = ModulationImplementation::kTimestepMlp;
+    model.origin = "YuE2 bundled AR/NAR/VAE tensor contract";
+    model.quantization = checkpoint.at("model.diffusion_model.llm2vae.weight").dtype == DType::kI8 ? TransformerQuantization::kInt8ConvRot : TransformerQuantization::kBFloat16;
+    return model;
+  }
   if (has(checkpoint, "perceiver.latent_queries") && has(checkpoint, "noise_refiner.0.attention.qkv.weight")) {
     for (const auto& pair : std::vector<std::pair<std::string, std::vector<int64_t>>>{
         {"x_embedder.weight", {3584,128}}, {"perceiver.latent_queries", {512,3584}},

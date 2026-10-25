@@ -29,6 +29,7 @@
 #include "harness.h"
 #include "slopfab/json.h"
 #include "slopfab/text/tokenizer.h"
+#include "../src/text/nfc.h"
 
 namespace {
 
@@ -281,11 +282,11 @@ SLOPFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
             "%zu merges missing and %zu misranked of %zu, first '%s'", missing, misranked,
             expected.size(), shown.c_str());
 
-  // Byte-level BPE stays lossless over a broad corpus, which is the property a
-  // corrupted merge *key* breaks first even when the rank survives.
+  // The checkpoint declares NFC normalization. BPE must preserve that canonical
+  // text, including vocabulary fragments containing decomposed characters.
   size_t lossy = 0;
   for (const std::string& s : corpus(scanned)) {
-    if (scanned.decode(scanned.encode(s)) != s)
+    if (scanned.decode(scanned.encode(s)) != slopfab::text::normalize_nfc(s))
       ++lossy;
   }
   CHECK_MSG(lossy == 0, "%zu corpus strings failed to round trip", lossy);
