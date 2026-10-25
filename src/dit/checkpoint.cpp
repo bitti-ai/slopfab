@@ -23,7 +23,17 @@ bool path_marks_ref2va(const SafeTensors& st) {
   std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
   });
-  return name.find("ref2va") != std::string::npos;
+  if (name.find("ref2va") != std::string::npos)
+    return true;
+  // The published PRISM merge is Ref2VA, but its renamed exports omit
+  // "ref2va" and retain only {format:pt, pruned:curve_rank8}. Its model card
+  // identifies both parents as Ref2VA. Limit this alias to the named release;
+  // neither W6A8 storage nor generic Singularity filenames imply references.
+  name.erase(std::remove_if(name.begin(), name.end(),
+                            [](char c) { return c == '_' || c == '-'; }), name.end());
+  const std::string prism = "minimaxh3singularityx10erosmaxprism";
+  return name == prism + "w6a8.safetensors" || name == prism + "int8.safetensors" ||
+         name == prism + "fp16.safetensors";
 }
 
 bool marks_viggle(const SafeTensors& st) {

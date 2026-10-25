@@ -63,6 +63,30 @@ SLOPFAB_TEST(model_descriptor_explicit_identity_survives_rename) {
   CHECK(!model.compressed_attention);
 }
 
+SLOPFAB_TEST(model_descriptor_prism_release_is_ref2va) {
+  const std::vector<TensorWrite> tensors = {
+      {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+      {"blocks.0.adaln_proj.linear.weight", {18, 8}, std::vector<float>(18 * 8)}};
+  for (const char* filename : {"Minimax-h3_Singularity_x_10Eros-Max_PRISM_w6a8.safetensors",
+                               "Minimax-h3_Singularity_x_10Eros-Max_PRISM_int8.safetensors",
+                               "Minimax-h3_Singularity_x_10Eros-Max_PRISM_fp16.safetensors",
+                               "unrelated_w6a8.safetensors"}) {
+    ModelFixture fixture;
+    fixture.path = std::filesystem::temp_directory_path() / filename;
+    write_safetensors(fixture.path.string(), tensors, {{"format", "pt"}, {"pruned", "curve_rank8"}});
+    fixture.file.open(fixture.path.string());
+    const auto model = dit::resolve_model_descriptor(fixture.file);
+    const bool prism = std::string(filename).find("PRISM") != std::string::npos;
+    CHECK(model.supports_references == prism);
+    CHECK(model.compatibility_architecture == (prism ? dit::TransformerArchitecture::kRef2VAPrunedTable
+                                                     : dit::TransformerArchitecture::kPrunedTable));
+    CHECK(!model.compressed_attention && !model.qkv_interleaved);
+    // Explicit capability metadata still takes precedence over release aliases.
+    fixture.write(R"({"version":1,"family":"h3","modulation":"table","supports_references":false,"compressed_attention":false,"qkv_layout":"contiguous"})");
+    CHECK(!dit::resolve_model_descriptor(fixture.file).supports_references);
+  }
+}
+
 SLOPFAB_TEST(model_descriptor_rejects_unsupported_contracts) {
   ModelFixture fixture;
   for (const auto& bad : {std::string("{}"), std::string(R"({"version":2})"),

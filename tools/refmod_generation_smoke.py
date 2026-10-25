@@ -4,6 +4,7 @@ Usage: python refmod_generation_smoke.py slopfab.dll repository-root [cuda|vulka
 `export` creates real standalone text conditioning through the DLL, then generates
 without a text-encoder path. `bundle` packs the three media kinds through the DLL.
 `refmod=PATH` additionally attaches a real exported RefMod/bundle for generation.
+`transformer=PATH` selects another Ref2VA checkpoint for the same checks.
 No output files are written; asserts decoded frame/audio geometry and finiteness.
 """
 import ctypes as C
@@ -120,6 +121,9 @@ try:
                         (3, "vae/minimax_h3_video_vae_fp16.safetensors"),
                         (4, "vae/minimax_h3_audio_vae_fp32.safetensors")]:
         check(set_model(request, model, str(root / "weights" / path).encode()))
+    for argument in sys.argv[3:]:
+        if argument.startswith("transformer="):
+            check(set_model(request, 0, str(pathlib.Path(argument.split("=", 1)[1]).resolve()).encode()))
     check(set_prompt(request, b"A warm red scene with gentle motion and a soft continuous tone."))
     check(set_resolution(request, 32, 32))
     check(set_frames(request, 22))
