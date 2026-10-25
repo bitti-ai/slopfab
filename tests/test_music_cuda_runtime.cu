@@ -3,6 +3,7 @@
 #include "slopfab/safetensors_write.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <numeric>
 #include <thread>
@@ -147,4 +148,92 @@ SLOPFAB_TEST_CATEGORY(music_cuda_pool_preserves_projection_and_attention, "synth
   CHECK(to_host(survivor) == to_host(activate(slice(rt.project(q, "proj"), 0, dim))));
   survivor = Tensor();
   CHECK(weak.expired());
+}
+
+SLOPFAB_TEST_CATEGORY(music_cuda_batched_decode_attention, "synthetic") {
+  if (!have_cuda())
+    return;
+  auto path = std::filesystem::temp_directory_path() /
+              ("slopfab_music_decode_" +
+               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+               ".safetensors");
+
+  struct Cleanup {
+    std::filesystem::path path;
+
+    ~Cleanup() {
+      std::error_code error;
+      std::filesystem::remove(path, error);
+    }
+  } cleanup{path};
+
+  write_safetensors(path.string(), {{"unused", {1}, {0}}});
+  Runtime rt(path.string());
+  constexpr int dim = 128, kv_heads = 8;
+  const auto bf = [](float x) {
+    return __bfloat162float(__float2bfloat16(x));
+  };
+  for (int heads : {16, 32})
+    for (int keys : {17, 317, 1025}) {
+      auto qvalues = test::make_data(heads * dim, 17, .5f);
+      auto kvalues = test::make_data((keys + 7) * kv_heads * dim, 29, .5f);
+      auto vvalues = test::make_data((keys + 7) * kv_heads * dim, 43, .5f);
+      for (auto* values : {&qvalues, &kvalues, &vvalues})
+        for (auto& value : *values)
+          value = bf(value);
+      // Poison unused capacity: neither path may attend past the live prefix.
+      std::fill(kvalues.begin() + size_t(keys) * kv_heads * dim, kvalues.end(), 100.f);
+      std::fill(vvalues.begin() + size_t(keys) * kv_heads * dim, vvalues.end(), 100.f);
+      auto q = from_host(qvalues, 1, heads * dim);
+      auto k = from_host(kvalues, keys + 7, kv_heads * dim);
+      auto v = from_host(vvalues, keys + 7, kv_heads * dim);
+      k.rows = v.rows = keys;
+      const auto original = to_host(rt.attend(q, k, v, heads, kv_heads));
+      std::vector<float> expected(heads * dim);
+      for (int head = 0; head < heads; ++head) {
+        int kh = head / (heads / kv_heads);
+        std::vector<double> probabilities(keys);
+        double sum = 0;
+        for (int row = 0; row < keys; ++row) {
+          double score = 0;
+          for (int c = 0; c < dim; ++c)
+            score +=
+                double(qvalues[head * dim + c]) * kvalues[(size_t(row) * kv_heads + kh) * dim + c];
+          sum += (probabilities[row] = std::exp(score / std::sqrt(double(dim))));
+        }
+        for (auto& p : probabilities)
+          p = bf(float(p / sum));
+        for (int c = 0; c < dim; ++c) {
+          double output = 0;
+          for (int row = 0; row < keys; ++row)
+            output += probabilities[row] * vvalues[(size_t(row) * kv_heads + kh) * dim + c];
+          expected[head * dim + c] = bf(float(output));
+        }
+      }
+      TemporaryBufferScope scope;
+      std::vector<float> previous;
+      for (int repeat = 0; repeat < 4; ++repeat) {
+        auto actual = to_host(rt.attend(q, k, v, heads, kv_heads));
+        if (repeat)
+          CHECK(actual == previous);
+        else {
+          double error = 0, energy = 0;
+          float maximum = 0;
+          int different = 0;
+          for (size_t i = 0; i < actual.size(); ++i) {
+            double delta = double(actual[i]) - original[i];
+            error += delta * delta;
+            energy += double(original[i]) * original[i];
+            maximum = std::max(maximum, float(std::abs(delta)));
+            different += actual[i] != original[i];
+          }
+          std::printf("decode H=%d KV=%d K=%d: different=%d max_abs=%.8g relative_rms=%.8g\n",
+                      heads, kv_heads, keys, different, maximum, std::sqrt(error / energy));
+          CHECK_CLOSE_REL(original, actual, .001, .01, "batched vs per-head decode");
+          CHECK_CLOSE_REL(expected, actual, .001, .01, "batched vs CPU decode");
+          CHECK(std::sqrt(error / energy) < .005);
+        }
+        previous = std::move(actual);
+      }
+    }
 }

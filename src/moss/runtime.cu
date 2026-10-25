@@ -338,6 +338,34 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
                                    scratch);
     return out;
   }
+  if (q.rows == 1 && k.rows > 1 && !float_probabilities && heads % kv_heads == 0 &&
+      temporary_buffer_pool(TemporaryBufferKind::kScratch)) {
+    // Music AR decodes one query against its KV prefix. Batch the same query
+    // position within each KV group across all KV heads. This preserves the
+    // existing score/softmax/PV precision while reducing 3 * heads submissions
+    // to 2 * (heads / kv_heads) + 1. Prefill and flow retain their own paths.
+    const int dim = q.cols / heads, group = heads / kv_heads;
+    const long long score_stride = static_cast<long long>(group) * k.rows;
+    Tensor out(1, q.cols);
+    TemporaryBuffer<float> scores(size_t(heads) * k.rows, TemporaryBufferKind::kScratch);
+    TemporaryBuffer<BFloat> probabilities(scores.size(), TemporaryBufferKind::kScratch);
+    const float scale = 1 / std::sqrt(float(dim)), one = 1, zero = 0;
+    for (int g = 0; g < group; ++g)
+      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_strided_batched_ex(
+          blas, CUBLAS_OP_T, CUBLAS_OP_N, k.rows, 1, dim, &scale, k.ptr(), CUDA_R_16BF, k.cols, dim,
+          q.ptr() + g * dim, CUDA_R_16BF, q.cols, group * dim, &zero,
+          scores.get() + size_t(g) * k.rows, CUDA_R_32F, k.rows, score_stride, kv_heads,
+          CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+    cross_softmax<<<heads, 256>>>(scores.get(), probabilities.get(), k.rows);
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
+    for (int g = 0; g < group; ++g)
+      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_strided_batched_ex(
+          blas, CUBLAS_OP_N, CUBLAS_OP_N, dim, 1, k.rows, &one, v.ptr(), CUDA_R_16BF, v.cols, dim,
+          probabilities.get() + size_t(g) * k.rows, CUDA_R_16BF, k.rows, score_stride, &zero,
+          out.ptr() + g * dim, CUDA_R_16BF, out.cols, group * dim, kv_heads, CUBLAS_COMPUTE_32F,
+          CUBLAS_GEMM_DEFAULT));
+    return out;
+  }
   if (q.rows != k.rows || float_probabilities) {
     const int dim = q.cols / heads, tile = 128;
     Tensor out(q.rows, q.cols);
