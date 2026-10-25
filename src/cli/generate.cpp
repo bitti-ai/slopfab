@@ -647,6 +647,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   discover_generate_checkpoints(req, executable);
   if (slopfab::request_model_family(req) == "yue2" || slopfab::request_model_family(req) == "minimax_music3") {
+    if (!saw_attention) attention_mode = slopfab::AttentionMode::kFlash2;
     if (saw_frames || saw_aspect || saw_resolution) throw std::invalid_argument("music uses --music-duration; omit video dimensions and frames");
     if (!saw_out) req.out_path = std::filesystem::path(req.out_path).replace_extension(".wav").string();
     if (std::filesystem::path(req.out_path).extension() != ".wav") throw std::invalid_argument("music output requires --out FILE.wav");
