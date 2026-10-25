@@ -13,12 +13,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     // reported synchronously, as a return code, rather than as a handle that
     // fails a millisecond later.
     GeneratePlan resolved_plan;
+    RunOptions resolved_options;
     try {
       if (request->request.continuation &&
           request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       resolved_plan = slopfab::resolve_plan(request->request);
-      slopfab::validate_generation_options(request->request, resolved_plan, request->options);
+      resolved_options = generation_options(*request, resolved_plan);
+      slopfab::validate_generation_options(request->request, resolved_plan, resolved_options);
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
     }
@@ -58,7 +60,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     gen->request = request->request;
     gen->plan = std::move(resolved_plan);
     gen->session = request->session;
-    gen->options = request->options;
+    gen->options = std::move(resolved_options);
     gen->callback = callback;
     gen->userdata = userdata;
     gen->started = std::chrono::steady_clock::now();

@@ -1,6 +1,6 @@
 # YuE2 and MiniMax Music3
 
-Native CUDA music generation is available in the CLI and C API 1.37. YuE2 supports lyric and style conditioning with optional ABC planning. MiniMax Music3 supports caption and lyric conditioning with autoregressive acoustic codes, flow synthesis and overlapping audio windows. Both return stereo audio without a Python runtime or an online service.
+Native CUDA and Vulkan music generation is available in the CLI and C API 1.38. YuE2 supports lyric and style conditioning with optional ABC planning. MiniMax Music3 supports caption and lyric conditioning with autoregressive acoustic codes, flow synthesis and overlapping audio windows. Both return stereo audio without a Python runtime or an online service.
 
 ## Checkpoints
 
@@ -26,6 +26,15 @@ build/Release/slopfab.exe generate --model yue2 --prompt "Warm piano ballad with
 build/Release/slopfab.exe generate --model yue2 --prompt "Gentle instrumental piano and strings" --music-planning off --music-duration 8 --seed 42 --out piano.wav
 build/Release/slopfab.exe generate --model minimax_music3 --prompt "Warm piano ballad with a gentle female vocal" --lyrics "[verse] Morning light across the sea" --music-duration 30 --seed 42 --out music3.wav
 ```
+
+For Vulkan, add `--inference-backend vulkan --vulkan-arithmetic portable` to either model's command:
+
+```powershell
+build/Release/slopfab.exe generate --model yue2 --inference-backend vulkan --vulkan-arithmetic portable --prompt "Gentle instrumental piano and strings" --music-planning off --music-duration 8 --seed 42 --out yue-vulkan.wav
+build/Release/slopfab.exe generate --model minimax_music3 --inference-backend vulkan --vulkan-arithmetic portable --prompt "Gentle instrumental piano with warm strings" --music-duration 12 --seed 42 --out music3-vulkan.wav
+```
+
+Vulkan executes every neural stage, including autoregressive generation, flow synthesis and waveform decoding. It does not call CUDA. Builds with `-DSLOPFAB_ENABLE_CUDA=OFF` support both music models. Vulkan music requires portable arithmetic; exact arithmetic is rejected because cross-backend bit parity is not guaranteed. Music selects fixed attention kernels internally, so leave `--attention` unset.
 
 `--prompt` is the style/caption, and `--lyrics` supplies lyrics. Duration defaults to 30 seconds, accepts `(0,300]`, and limits generated acoustic frames: the model may emit EOS earlier. It is rounded up to acoustic frames at 25 Hz. YuE2 returns native 48 kHz audio; the supplied MiniMax DAV returns native 44.1 kHz audio. Codec framing and window crops can make the final WAV duration differ slightly from the requested limit. MiniMax's model card describes a 32 kHz service output; slopfab preserves this checkpoint's 44.1 kHz decoder output without resampling.
 
@@ -58,14 +67,14 @@ Use `dist/windows/slopfab.dll` with the matching `capi.h`. The existing C ABI re
 1. Set `SLOPFAB_MODEL_TRANSFORMER` to the YuE2 bundle or MiniMax flow checkpoint with `slopfab_request_set_model_path`. MiniMax additionally needs `SLOPFAB_MODEL_TEXT_ENCODER` and `SLOPFAB_MODEL_AUDIO_VAE`.
 2. Set family `yue2` or `minimax_music3`, or leave it empty for checkpoint detection. Unlike the CLI, the C API requires explicit model paths.
 3. Set the caption with `slopfab_request_set_prompt` and music controls with `slopfab_request_set_music_settings(request, json)`. The JSON setter replaces all music settings; a rejected call leaves the previous settings intact.
-4. Select CUDA and leave attention at its default `flash2` selector. Music chooses its own kernels internally, including FP32 softmax/PV for the MiniMax flow transformer.
+4. Select CUDA or select `SLOPFAB_INFERENCE_VULKAN` with `slopfab_request_set_inference_backend`. For Vulkan, also call `slopfab_request_set_vulkan_arithmetic(request, SLOPFAB_VULKAN_ARITHMETIC_PORTABLE)`. Leave attention unset or explicitly select `flash2`; music resolves this default even in Vulkan-only builds. Music chooses its own kernels internally, including FP32 softmax/PV for the MiniMax flow transformer.
 5. Start and wait using the existing generation API. Read the existing output structure: video is empty, audio is interleaved stereo float data, and `audio_sample_rate` reports the native rate. Copy audio before destroying the generation handle.
 
 Progress and cancellation are checked between transformer blocks and pipeline stages. Model memory is released between MiniMax AR, flow and decoding stages. When expanded weights are cached, their compressed GPU copies are released to avoid retaining both representations. Real generation was tested on an RTX 5090 with 32 GB VRAM; smaller GPUs have not been characterized.
 
 ## Limits and diagnostics
 
-Music currently requires CUDA. Vulkan, refmods, LoRA, reference audio, video/image controls, H3 sampling schedules/caches, precomputed prompt embeddings, upscaling and continuation/bridge controls are unsupported. MiniMax text is limited to 5000 tokens and the combined AR context to 10240 tokens. YuE2 uses its 24576-token context with flow chunking.
+Music requires CUDA or a Vulkan device with 16-bit storage, shader int64, timeline semaphores, 256-thread workgroups and the required FP32 arithmetic features. Cooperative BF16 matrix multiplication is used when supported; other devices use the portable scalar GEMM path. Hardware validation so far covers an RTX 5090, not AMD or Intel GPUs. Refmods, LoRA, reference audio, video/image controls, H3 sampling schedules/caches, precomputed prompt embeddings, upscaling and continuation/bridge controls are unsupported. MiniMax text is limited to 5000 tokens and the combined AR context to 10240 tokens. YuE2 uses its 24576-token context with flow chunking.
 
 `--dump-latents` saves FP32 values of the BF16 flow result: YuE2 `audio_latents` has shape `[acoustic_frames,64]`; MiniMax saves `audio_chunk_0`, `audio_chunk_1`, etc., each `[flow_latent_frames,128]`. These are diagnostic tensors, not resumable H3 latent archives. MiniMax latent frame counts are `floor(acoustic_frames * 441 / 128)` per window.
 
@@ -75,13 +84,14 @@ Portable music and C API tests cover settings, rejected controls, audio geometry
 
 ```powershell
 python tools/music_generation_smoke.py --library dist/windows/slopfab.dll
+python tools/music_generation_smoke.py --library dist/windows/slopfab.dll --backend vulkan
 ```
 
 The Windows release passed all eight selected unit, C API, tokenizer and CLI regression suites, including music CLI defaults. Both models passed DLL audio delivery, same-seed byte-for-byte repeatability and cancellation checks. Real CLI runs include YuE2 full ABC planning with 32 flow steps and an 8-second frame budget, and MiniMax with a 12-second frame budget, two overlapping windows and 30 flow steps per window. Example WAVs and logs are under `build/music-support/`.
 
 `tools/yue_reference.py`, `tools/yue_tokenizer_reference.py` and `tools/minimax_music_reference.py` provide independent PyTorch equation, tokenizer and upstream codec comparisons using `slopfab_musicprobe`. They require development dependencies and upstream decoder source paths; production inference does not.
 
-Measured relative RMS errors on fixed fixtures:
+CUDA relative RMS errors against independent reference implementations on fixed fixtures:
 
 | Stage | YuE2 | MiniMax Music3 |
 | --- | --- | --- |
@@ -102,6 +112,16 @@ The corrected 12-second sample is `build/music-support/music3-piano-fixed.wav`. 
 Validation now includes a complete 200-frame window (689 audio latent rows plus the timestep token), all 30 sampling steps, real piano conditioning, and identical starting noise. The corrected production sampler output differs by 2.635% relative RMS from the upstream FP16 flow implementation, with cosine similarity 0.999663. Upstream BF16 with prematurely rounded phases differed from FP16 by 65.5%; preserving phase precision reduced this to 2.8%. A teacher-forced 301-frame trajectory also matches the upstream Qwen3 global model within 1.52% and the upstream local decoder within 0.61% relative RMS.
 
 `tools/minimax_upstream_ar.py` checks the recorded autoregressive trajectory. `tools/minimax_upstream_flow.py --dtype fp16 --check-native` checks the complete sampling window against the upstream module; use `--help` for required local checkpoint, source and fixture paths. `slopfab_musicprobe mm-render DIT HIDDEN OUTPUT.wav VAE` replays captured conditioning through the production sampler and decoder, including overlapping windows. The portable positional test covers the 256/257 and 512/513 boundaries. The CLI test also verifies that music selects its required default attention mode.
+
+### Vulkan validation
+
+The CUDA-disabled CLI completed YuE2 with 200 semantic frames and all 32 midpoint steps, producing `build/music-support/yue-vulkan-piano.wav` (383936 stereo frames at 48 kHz). It also completed fresh MiniMax autoregressive generation for 300 acoustic frames and two overlapping 30-step flow windows, producing `build/music-support/music3-vulkan-piano.wav` (529408 stereo frames at 44.1 kHz). These are separate outputs from the existing CUDA examples.
+
+The full MiniMax sampling fixture uses the same captured piano conditioning and starting noise as CUDA. Across all 30 steps and 689 latent rows, Vulkan differs from CUDA by **1.318% relative RMS**, with cosine similarity **0.999913**. Relative to the upstream FP16 reference, the error is **2.717%**, cosine **0.999641**. This fixture crosses the positional precision boundaries that caused the earlier distorted sample. On the short fixed YuE2 fixture, flow prediction differs from CUDA by 3.593% relative RMS and the audio decoder matches exactly. The MiniMax decoder differs from the upstream fixture by 0.000187% relative RMS. Seeded trajectories can diverge across backends when near-tied token probabilities change.
+
+`slopfab_musicprobe_vulkan` accepts the same modes and fixtures as `slopfab_musicprobe`, including `mm-sample` for full-window comparisons and `mm-render` for production replay through overlap handling and waveform decoding. GPU regressions cover YuE's rounded inverse RMS, grouped-query attention with 256-wide heads and partially filled KV caches, and fused bias before BF16 rounding on full and tail GEMM tiles. The C API smoke harness checks both backends for geometry, finite samples, seeded repeatability and cancellation.
+
+CUDA and Vulkan share token sampling, prompt construction, flow integration, windowing and codec orchestration. Vulkan uses bounded command batches, caches expanded BF16 matrices without retaining compressed GPU duplicates, and tiles large vocabulary weights below storage-buffer limits. The shader sources and embedded SPIR-V binaries are checked by the build manifest.
 
 ## Upstream references
 

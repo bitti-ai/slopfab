@@ -12,7 +12,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* reque
           request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
-      slopfab::validate_generation_options(request->request, plan, request->options);
+      slopfab::validate_generation_options(request->request, plan, generation_options(*request, plan));
     } catch (const std::exception& e) {
       // Every throw out of resolve_plan is the request being unsatisfiable —
       // an aspect outside 1:4..4:1, too few frames, a schedule shorter than
@@ -50,7 +50,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* requ
           request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
-      slopfab::validate_generation_options(request->request, plan, request->options);
+      slopfab::validate_generation_options(request->request, plan, generation_options(*request, plan));
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
     }

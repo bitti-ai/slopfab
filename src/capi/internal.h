@@ -174,6 +174,7 @@ struct slopfab_request {
   std::shared_ptr<slopfab::GenerationSession> session;
   GenerateRequest request;
   RunOptions options;
+  bool attention_explicit = false;
 };
 
 struct slopfab_reference_video {
@@ -185,6 +186,14 @@ struct slopfab_session {
 };
 
 namespace slopfab::capi {
+
+inline RunOptions generation_options(const slopfab_request& request, const GeneratePlan& plan) {
+  auto options = request.options;
+  if (!request.attention_explicit &&
+      (plan.model.family == "yue2" || plan.model.family == "minimax_music3"))
+    options.attention_mode = slopfab::AttentionMode::kFlash2;
+  return options;
+}
 
 template <typename Fn> inline int reference_input_guarded(Fn&& body) {
   return guarded([&] {

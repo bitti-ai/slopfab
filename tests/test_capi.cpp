@@ -1044,6 +1044,8 @@ SLOPFAB_TEST(capi_request_geometry) {
 
 SLOPFAB_TEST(capi_music_plan) {
   Request request;
+  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_VULKAN) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_vulkan_arithmetic(request.handle, SLOPFAB_VULKAN_ARITHMETIC_PORTABLE) == SLOPFAB_OK);
   CHECK(slopfab_request_set_model_family(request.handle,"yue2")==SLOPFAB_OK);
   CHECK(slopfab_request_set_music_settings(request.handle,R"({"duration":8,"planning":"off","lyrics":"[verse] Hello"})")==SLOPFAB_OK);
   slopfab_plan plan{};
@@ -1056,6 +1058,13 @@ SLOPFAB_TEST(capi_music_plan) {
   CHECK(slopfab_request_set_music_settings(request.handle,R"({"duration":8.04,"flow_guidance":1.7})")==SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);
   CHECK(plan.num_audio_latents==692);CHECK(plan.num_model_evaluations==120);
+  CHECK(slopfab_request_set_attention(request.handle,"exact")==SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_attention(request.handle,"flash2")==SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);
+  CHECK(slopfab_request_set_vulkan_arithmetic(request.handle,SLOPFAB_VULKAN_ARITHMETIC_EXACT)==SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_ERR_INVALID_REQUEST);
+
 }
 
 SLOPFAB_TEST(capi_still_image_plan) {

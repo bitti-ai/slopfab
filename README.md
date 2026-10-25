@@ -106,7 +106,7 @@ licenses. Linux packages use external GPU and media runtimes.
 
 ## Models
 
-For YuE2 and MiniMax Music3 audio generation, see [music setup and usage](docs/music-models.md).
+For YuE2 and MiniMax Music3 audio generation on CUDA or Vulkan, see [music setup and usage](docs/music-models.md).
 
 For the H3 W4A8 ConvRot transformer, see [packed INT4 setup](docs/w4a8.md).
 For H3 W6A8 checkpoints, including the Singularity/PRISM merge, see [packed INT6 setup](docs/w6a8.md).

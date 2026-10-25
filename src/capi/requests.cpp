@@ -772,6 +772,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* re
                   "unknown attention mode '" + name +
                       "'; expected none, flash2, sage2, sol, sol-experimental, exact or veda");
     }
+    request->attention_explicit = true;
     return SLOPFAB_OK;
   });
 }
