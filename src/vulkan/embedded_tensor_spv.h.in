@@ -68,4 +68,5 @@ inline constexpr uint8_t kTensorAttentionSageSpirv[] = {@SLOPFAB_TENSOR_ATTENTIO
 inline constexpr uint8_t kTensorAttentionSageBandedSpirv[] = {@SLOPFAB_TENSOR_ATTENTION_SAGE_BANDED_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionSagePrepareSpirv[] = {@SLOPFAB_TENSOR_ATTENTION_SAGE_PREPARE_SPV_BYTES@};
 @SLOPFAB_SAGE_VARIANT_DECLARATIONS@
+inline constexpr uint8_t kTensorMusicSpirv[] = {@SLOPFAB_TENSOR_MUSIC_SPV_BYTES@};
 }  // namespace slopfab::vulkan::detail

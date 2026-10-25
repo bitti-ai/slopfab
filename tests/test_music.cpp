@@ -48,9 +48,8 @@ SLOPFAB_TEST(music_plan_and_guards) {
   r.music.abc.clear();
   RunOptions o;
   o.inference_backend = DeviceBackend::kVulkan;
-  CHECK(fails([&] {
-    validate_generation_options(r, p, o);
-  }));
+  o.attention_mode = AttentionMode::kFlash2;
+  validate_generation_options(r, p, o);
   CHECK(fails([] {
     parse_music_settings(R"({"top_k":1.5})");
   }));

@@ -14,6 +14,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--library", required=True, type=Path)
 p.add_argument("--weights", default="weights", type=Path)
 p.add_argument("--family", choices=("yue2", "minimax_music3", "both"), default="both")
+p.add_argument("--backend", choices=("cuda", "vulkan"), default="cuda")
 a = p.parse_args()
 dll = C.CDLL(str(a.library.resolve()))
 handle = C.c_void_p
@@ -66,6 +67,7 @@ for family in paths if a.family == "both" else [a.family]:
         check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, 1))
         check(bind("slopfab_request_set_seed", [handle, C.c_uint64])(request, 42))
         check(bind("slopfab_request_set_verbose", [handle, C.c_int])(request, 0))
+        check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, 1 if a.backend == "vulkan" else 0))
         digests = []
         for repeat in range(2):
             check(start(request, None, None, C.byref(generation)))
@@ -88,7 +90,7 @@ for family in paths if a.family == "both" else [a.family]:
         check(start(request, None, None, C.byref(generation)))
         bind("slopfab_generation_cancel", [handle], None)(generation)
         assert wait(generation, -1) == -8, "expected cancellation"
-        print(f"{family}: audio geometry, finite samples, seed repeatability and cancellation passed", flush=True)
+        print(f"{a.backend} {family}: audio geometry, finite samples, seed repeatability and cancellation passed", flush=True)
     finally:
         if generation:
             destroy(generation)

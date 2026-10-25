@@ -73,3 +73,7 @@ slopfab_shader("src/vulkan/tensor_w4a8.comp.spv" "21f2d9d86f839d68c2949ebd374783
 slopfab_shader("src/vulkan/tensor_w4a8_denorm.comp.spv" "d198157b55a5959b536ec3ba7c6119b3d70a7ad18e978078d37ed36ef823fb6b" BINARY SLOPFAB_TENSOR_W4A8_DENORM_SPV_BYTES)
 
 slopfab_shader("src/vulkan/tensor_w4a8_quant.comp.spv" "d82caccba072fbdccf23819ccdfb7046f12447ffb4e55587fba1ebd1db2ed382" BINARY SLOPFAB_TENSOR_W4A8_QUANT_SPV_BYTES)
+
+slopfab_shader("src/vulkan/tensor_music.comp" "54199f0067d4cd32c8fa65f5762917ac3fffd376b7fa9b471a9c3ace00f8cc01" SOURCE -)
+
+slopfab_shader("src/vulkan/tensor_music.comp.spv" "42ea1c0c9c0b5eaa5dddaecde96a3e8060bbd6b6f615d1a6e77fa752da557b9d" BINARY SLOPFAB_TENSOR_MUSIC_SPV_BYTES)

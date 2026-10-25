@@ -7,15 +7,22 @@
 #include "slopfab/sampler/noise.h"
 #include <filesystem>
 
+namespace mg = slopfab::SLOPFAB_MUSIC_NS;
+#ifdef SLOPFAB_MUSIC_VULKAN
+namespace tensor_ops = slopfab::music_gpu;
+#else
+namespace tensor_ops = slopfab::moss;
+#endif
 int main(int argc, char** argv) {
   try {
     if (argc != 5 && argc != 6 && !(argc == 7 && std::string(argv[1]) == "mm-hidden"))
       throw std::invalid_argument("musicprobe ar|flow|vae MODEL INPUT OUTPUT [TRACE_DIRECTORY]");
     using namespace slopfab;
-    music::Runtime rt(argv[2]);
+    mg::Runtime rt(argv[2]);
+    rt.cache_dense_weights = true;
     const std::string requested = argv[1];
     if (requested == "mm-prompt") {
-      auto ids = music::minimax_prompt(rt.checkpoint, "# Warm **piano**\n<|BPM 90|>",
+      auto ids = mg::minimax_prompt(rt.checkpoint, "# Warm **piano**\n<|BPM 90|>",
                                        "[Verse] Hello\n [Chorus] World");
       std::vector<float> values(ids.begin(), ids.end());
       write_safetensors(argv[4], {{"output", {int64_t(ids.size())}, values}});
@@ -25,16 +32,16 @@ int main(int argc, char** argv) {
       rt.cache_dense_weights = true;
       std::ifstream stream(argv[3], std::ios::binary);
       std::string caption((std::istreambuf_iterator<char>(stream)), {});
-      auto ids = music::minimax_prompt(rt.checkpoint, caption, "");
+      auto ids = mg::minimax_prompt(rt.checkpoint, caption, "");
       auto hidden =
-          music::minimax_hidden(rt, ids, MusicSettings{}, argc == 7 ? std::stoi(argv[6]) : 300,
+          mg::minimax_hidden(rt, ids, MusicSettings{}, argc == 7 ? std::stoi(argv[6]) : 300,
                                 42, {}, argc >= 6 ? argv[5] : "");
       write_safetensors(argv[4], {{"hidden", {int64_t(hidden.size() / 32768), 32768}, hidden}});
       return 0;
     }
     if (std::string(argv[1]) == "tokenize") {
       text::Tokenizer tokenizer;
-      music::load_yue_tokenizer(tokenizer, rt.checkpoint);
+      mg::load_yue_tokenizer(tokenizer, rt.checkpoint);
       std::ifstream stream(argv[3], std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(stream)), {});
       auto ids = tokenizer.encode(text, false);
@@ -56,8 +63,11 @@ int main(int argc, char** argv) {
       request.music.duration = double(hidden.size() / 32768) / 25;
       auto plan = resolve_music_plan(request);
       RunOptions options;
+#ifdef SLOPFAB_MUSIC_VULKAN
+      options.inference_backend = DeviceBackend::kVulkan;
+#endif
       options.dump_latents_path = std::filesystem::path(argv[4]).replace_extension(".safetensors").string();
-      auto result = music::run_minimax_from_hidden(request, plan, options, std::move(hidden));
+      auto result = mg::run_minimax_from_hidden(request, plan, options, std::move(hidden));
       if (!result.ok) throw std::runtime_error(result.message);
       return 0;
     }
@@ -65,22 +75,22 @@ int main(int argc, char** argv) {
     std::vector<float> result;
     std::vector<int64_t> shape;
     if (mode.rfind("mm-", 0) == 0) {
-      music::Tensor out;
+      mg::Tensor out;
       if (mode == "mm-sample") {
         rt.cache_dense_weights = true;
-        auto condition = music::minimax_condition(rt, to_f32(input.at("hidden")));
+        auto condition = mg::minimax_condition(rt, to_f32(input.at("hidden")));
         auto state = to_f32(input.at("audio_latents"));
         auto round = [](float v) {
-          return __bfloat162float(__float2bfloat16(v));
+          return mg::gpu_bf(v);
         };
         for (auto& v : state)
           v = round(v);
-        music::Tensor zero(condition.rows, condition.cols);
-        SLOPFAB_CUDA_CHECK(cudaMemset(zero.ptr(), 0, zero.data.nbytes()));
+        mg::Tensor zero(condition.rows, condition.cols);
+        mg::gpu_zero(zero);
         for (int step = 0; step < 30; ++step) {
-          auto x = moss::from_host(state, condition.rows, 128);
-          auto c = moss::to_host(music::minimax_prediction(rt, x, condition, step / 30.f));
-          auto u = moss::to_host(music::minimax_prediction(rt, x, zero, step / 30.f));
+          auto x = tensor_ops::from_host(state, condition.rows, 128);
+          auto c = tensor_ops::to_host(mg::minimax_prediction(rt, x, condition, step / 30.f));
+          auto u = tensor_ops::to_host(mg::minimax_prediction(rt, x, zero, step / 30.f));
           for (size_t i = 0; i < state.size(); ++i)
             state[i] = round(state[i] + round(u[i] + round(round(c[i] - u[i]) * 1.7f)) / 30.f);
         }
@@ -88,47 +98,47 @@ int main(int argc, char** argv) {
         shape = {condition.rows, 128};
       } else if (mode == "mm-noise") {
         const auto& t = input.at("hidden");
-        int length = music::minimax_latent_length(int(t.shape[0]));
+        int length = mg::minimax_latent_length(int(t.shape[0]));
         result.resize(size_t(length) * 128);
         sampler::fill_normal(42, sampler::NoiseStream::kAudioLatents, result.data(), result.size());
         shape = {length, 128};
       } else if (mode == "mm-vae") {
-        result = music::decode_minimax(rt, to_f32(input.at("audio_latents")));
+        result = mg::decode_minimax(rt, to_f32(input.at("audio_latents")));
         shape = {int64_t(result.size() / 2), 2};
       } else {
         if (mode == "mm-global") {
           std::vector<int32_t> ids;
           for (float id : to_f32(input.at("tokens")))
             ids.push_back(int32_t(id));
-          out = music::probe_minimax_global(rt, ids);
+          out = mg::probe_minimax_global(rt, ids);
         } else if (mode == "mm-depth") {
           const auto& t = input.at("sequence");
-          out = music::probe_minimax_depth(
-              rt, moss::from_host(to_f32(t), int(t.shape[0]), int(t.shape[1])));
+          out = mg::probe_minimax_depth(
+              rt, tensor_ops::from_host(to_f32(t), int(t.shape[0]), int(t.shape[1])));
         } else if (mode == "mm-condition")
-          out = music::minimax_condition(rt, to_f32(input.at("hidden")));
+          out = mg::minimax_condition(rt, to_f32(input.at("hidden")));
         else if (mode == "mm-flow") {
-          auto condition = music::minimax_condition(rt, to_f32(input.at("hidden")));
+          auto condition = mg::minimax_condition(rt, to_f32(input.at("hidden")));
           const auto& state = input.at("audio_latents");
-          out = music::minimax_prediction(
-              rt, moss::from_host(to_f32(state), int(state.shape[0]), 128), condition,
+          out = mg::minimax_prediction(
+              rt, tensor_ops::from_host(to_f32(state), int(state.shape[0]), 128), condition,
               input.find("time") ? to_f32(input.at("time"))[0] : .5f, {}, argc == 6 ? argv[5] : "");
         } else
           throw std::invalid_argument("unknown MiniMax probe mode");
-        result = moss::to_host(out);
+        result = tensor_ops::to_host(out);
         shape = {out.rows, out.cols};
       }
     } else if (mode == "vae") {
-      result = music::decode_yue(rt, to_f32(input.at("audio_latents")));
+      result = mg::decode_yue(rt, to_f32(input.at("audio_latents")));
       shape = {int64_t(result.size() / 2), 2};
     } else {
       std::vector<int32_t> ids;
       for (float id : to_f32(input.at("tokens")))
         ids.push_back(int32_t(id));
-      auto out = music::probe_yue(
+      auto out = mg::probe_yue(
           rt, ids, mode == "flow" ? to_f32(input.at("audio_latents")) : std::vector<float>{},
           argc == 6 ? argv[5] : "");
-      result = moss::to_host(out);
+      result = tensor_ops::to_host(out);
       shape = {out.rows, out.cols};
     }
     write_safetensors(argv[4], {{"output", shape, result}});

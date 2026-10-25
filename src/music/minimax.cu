@@ -11,18 +11,17 @@
 #include <random>
 #include <stdexcept>
 
-namespace slopfab::music {
+namespace slopfab::SLOPFAB_MUSIC_NS {
 namespace {
 float bf(float x) {
-  return __bfloat162float(__float2bfloat16(x));
+  return gpu_bf(x);
 }
 
 Tensor rows(const Tensor& x, int first, int count) {
   if (first < 0 || count < 1 || first + count > x.rows)
     throw std::invalid_argument("music row slice");
   Tensor out(count, x.cols);
-  SLOPFAB_CUDA_CHECK(cudaMemcpy(out.ptr(), x.ptr() + size_t(first) * x.cols, out.data.nbytes(),
-                                cudaMemcpyDeviceToDevice));
+  gpu_copy_rows(x, out, first, 0, count);
   return out;
 }
 
@@ -33,8 +32,7 @@ void append(Tensor& dest, Tensor source, int capacity) {
   }
   if (dest.rows + source.rows > capacity)
     throw std::invalid_argument("MiniMax Music3 KV capacity exceeded");
-  SLOPFAB_CUDA_CHECK(cudaMemcpy(dest.ptr() + size_t(dest.rows) * dest.cols, source.ptr(),
-                                size_t(source.rows) * source.cols * 2, cudaMemcpyDeviceToDevice));
+  gpu_copy_rows(source, dest, 0, dest.rows, source.rows);
   dest.rows += source.rows;
 }
 
@@ -131,40 +129,6 @@ int choose(const std::vector<float>& c, const std::vector<float>& u, float guida
   for (auto item : scores)
     weights.push_back(std::exp(double(item.first - scores[0].first)));
   return scores[std::discrete_distribution<size_t>(weights.begin(), weights.end())(rng)].second;
-}
-
-__global__ void layernorm(const BFloat* x, const BFloat* gamma, const BFloat* beta, BFloat* y,
-                          int width) {
-  __shared__ float sums[256], squares[256];
-  int t = threadIdx.x, r = blockIdx.x;
-  float sum = 0, sq = 0;
-  for (int c = t; c < width; c += 256) {
-    float v = __bfloat162float(x[size_t(r) * width + c]);
-    sum += v;
-    sq += v * v;
-  }
-  sums[t] = sum;
-  squares[t] = sq;
-  __syncthreads();
-  for (int d = 128; d; d /= 2) {
-    if (t < d) {
-      sums[t] += sums[t + d];
-      squares[t] += squares[t + d];
-    }
-    __syncthreads();
-  }
-  float mean = sums[0] / width, inv = rsqrtf(fmaxf(0, squares[0] / width - mean * mean) + 1e-5f);
-  for (int c = t; c < width; c += 256)
-    y[size_t(r) * width + c] = __float2bfloat16(
-        (__bfloat162float(x[size_t(r) * width + c]) - mean) * inv * __bfloat162float(gamma[c]) +
-        __bfloat162float(beta[c]));
-}
-
-Tensor ln(Runtime& rt, const Tensor& x, const std::string& p) {
-  Tensor y(x.rows, x.cols);
-  layernorm<<<x.rows, 256>>>(x.ptr(), rt.weight(p + ".gamma"), rt.weight(p + ".beta"), y.ptr(),
-                             x.cols);
-  return y;
 }
 
 void parent(const std::string& path) {
@@ -310,11 +274,9 @@ Tensor minimax_prediction(Runtime& rt, const Tensor& state, const Tensor& condit
     throw std::invalid_argument("MiniMax Music3 flow shape mismatch");
   const std::string p = "diffusion_transformer.", t = p + "transformer.";
   Tensor full(state.rows, 2304);
-  SLOPFAB_CUDA_CHECK(cudaMemset(full.ptr(), 0, full.data.nbytes()));
-  SLOPFAB_CUDA_CHECK(cudaMemcpy2D(full.ptr(), 2304 * 2, state.ptr(), 128 * 2, 128 * 2, state.rows,
-                                  cudaMemcpyDeviceToDevice));
-  SLOPFAB_CUDA_CHECK(cudaMemcpy2D(full.ptr() + 256, 2304 * 2, condition.ptr(), 2048 * 2, 2048 * 2,
-                                  state.rows, cudaMemcpyDeviceToDevice));
+  gpu_zero(full);
+  gpu_copy_columns(state, full, 0);
+  gpu_copy_columns(condition, full, 256);
   moss::residual(full, rt.project(full, p + "preprocess_conv"));
   dump(full, "preprocess");
   auto frequencies = to_f32(rt.checkpoint.at(p + "timestep_features.weight"));
@@ -339,7 +301,7 @@ Tensor minimax_prediction(Runtime& rt, const Tensor& state, const Tensor& condit
     if (hook)
       hook();
     auto b = t + "layers." + std::to_string(i) + ".";
-    auto normalized = ln(rt, x, b + "pre_norm");
+    auto normalized = gpu_ln(rt, x, b + "pre_norm");
     if (i == 0)
       dump(normalized, "norm0");
     auto qkv = rt.project(normalized, b + "self_attn.to_qkv");
@@ -355,7 +317,7 @@ Tensor minimax_prediction(Runtime& rt, const Tensor& state, const Tensor& condit
       dump(attn, "attn0");
     }
     moss::residual(x, rt.project(attn, b + "self_attn.to_out"));
-    auto vg = rt.project(ln(rt, x, b + "ff_norm"), b + "ff.ff.0.proj");
+    auto vg = rt.project(gpu_ln(rt, x, b + "ff_norm"), b + "ff.ff.0.proj");
     auto value = moss::slice(vg, 0, 8192), gate = moss::slice(vg, 8192, 8192);
     moss::residual(x, rt.project(moss::activate(value, &gate), b + "ff.ff.2"));
     dump(x, "layer" + std::to_string(i));
@@ -427,17 +389,12 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
         auto cond = minimax_condition(flow, window);
         int length = cond.rows;
         int overlap = std::min(int(previous.size() / 128), length);
-        if (overlap)
-          SLOPFAB_CUDA_CHECK(
-              cudaMemcpy(cond.ptr(),
-                         moss::from_host(std::vector<float>(previous_condition.begin(),
-                                                            previous_condition.begin() +
-                                                                size_t(overlap) * 2048),
-                                         overlap, 2048)
-                             .ptr(),
-                         size_t(overlap) * 2048 * 2, cudaMemcpyDeviceToDevice));
+        if (overlap) {
+          auto prior = moss::from_host(std::vector<float>(previous_condition.begin(), previous_condition.begin() + size_t(overlap) * 2048), overlap, 2048);
+          gpu_copy_rows(prior, cond, 0, 0, overlap);
+        }
         Tensor zero(length, 2048);
-        SLOPFAB_CUDA_CHECK(cudaMemset(zero.ptr(), 0, zero.data.nbytes()));
+        gpu_zero(zero);
         std::vector<float> state(size_t(length) * 128);
         sampler::fill_normal(r.seed + chunk, sampler::NoiseStream::kAudioLatents, state.data(),
                              state.size());

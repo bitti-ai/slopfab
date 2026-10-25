@@ -11,7 +11,7 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
       throw std::invalid_argument(message);
   };
   if (p.model.family == "yue2" || p.model.family == "minimax_music3") {
-    require(o.inference_backend == DeviceBackend::kCuda, "music requires the CUDA backend");
+    require(o.inference_backend == DeviceBackend::kCuda || o.inference_backend == DeviceBackend::kVulkan, "music requires CUDA or Vulkan");
     require(o.attention_mode == AttentionMode::kFlash2, "music uses fixed attention kernels; attention overrides are unsupported");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty() && o.prompt_embedding_path.empty(), "music requires native conditioning and fresh noise");
     require(!o.sampler && !o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty(), "music does not support H3 sampler overrides, sampling effects or LCS");

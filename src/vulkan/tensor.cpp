@@ -134,6 +134,11 @@ DeviceTensor TensorContext::allocate(const TensorLayout& layout, ScalarType type
   if (!impl_)
     throw std::logic_error("vulkan tensor: moved-from context");
   [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
+  return impl_->allocate_tensor(layout, type);
+}
+
+DeviceTensor TensorContext::Impl::allocate_tensor(const TensorLayout& layout, ScalarType type) {
+  auto* owner = this;
   if (!layout.is_contiguous())
     throw std::invalid_argument("vulkan tensor: contiguous layout required");
   const uint64_t logical_bytes = layout.bytes(type);
@@ -141,19 +146,24 @@ DeviceTensor TensorContext::allocate(const TensorLayout& layout, ScalarType type
     throw std::overflow_error("vulkan tensor: allocation size overflow");
   }
   const uint64_t bytes = std::max<uint64_t>(4, (logical_bytes + 3) & ~uint64_t{3});
-  if (bytes > impl_->max_storage_bytes) {
+  if (bytes > owner->max_storage_bytes) {
     throw std::out_of_range("vulkan tensor: tensor exceeds storage buffer limit");
   }
   auto tensor = std::make_unique<DeviceTensor::Impl>();
-  tensor->buffer = impl_->pool.allocate(bytes,
+  tensor->buffer = owner->pool.allocate(bytes,
                                         BufferUsage::kStorage | BufferUsage::kTransferSource |
                                             BufferUsage::kTransferDestination,
                                         MemoryUsage::kDevice);
   tensor->layout = layout;
   tensor->type = type;
   tensor->logical_bytes = logical_bytes;
-  tensor->context = impl_->context_id;
+  tensor->context = owner->context_id;
   return DeviceTensor(std::move(tensor));
+}
+
+DeviceTensor TensorBatch::allocate(const TensorLayout& layout, ScalarType type) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch allocation");
+  return impl_->owner->allocate_tensor(layout, type);
 }
 
 TensorBatch TensorContext::begin_batch() {

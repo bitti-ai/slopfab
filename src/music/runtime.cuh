@@ -1,12 +1,32 @@
 #pragma once
+#ifdef SLOPFAB_MUSIC_VULKAN
+#include "vulkan_runtime.h"
+#define SLOPFAB_MUSIC_NS music_vulkan
+#else
 #include "../moss/runtime.cuh"
+#define SLOPFAB_MUSIC_NS music
+#endif
 #include "slopfab/generate.h"
 #include <functional>
 
-namespace slopfab::music {
+namespace slopfab::SLOPFAB_MUSIC_NS {
+#ifdef SLOPFAB_MUSIC_VULKAN
+namespace moss = music_gpu;
+using namespace slopfab::music;
+#endif
 using moss::Tensor;
 using moss::Runtime;
+#ifndef SLOPFAB_MUSIC_VULKAN
 using moss::BFloat;
+#endif
+float gpu_bf(float);
+void gpu_copy_rows(const Tensor&,Tensor&,int,int,int);
+void gpu_copy_columns(const Tensor&,Tensor&,int);
+void gpu_zero(Tensor&);
+void gpu_condition(Runtime&,Tensor&,const Tensor&,const std::string&);
+Tensor gpu_yue_norm(Runtime&,const Tensor&,const std::string&,int);
+Tensor gpu_ln(Runtime&,const Tensor&,const std::string&);
+Tensor gpu_causal_attention(Runtime&,const Tensor&,const Tensor&,const Tensor&);
 using Hook = std::function<void()>;
 Tensor embedding(Runtime& rt, const std::string& name, const std::vector<int32_t>& ids);
 Tensor yue_norm(Runtime& rt, const Tensor& x, const std::string& name, int width = 0);

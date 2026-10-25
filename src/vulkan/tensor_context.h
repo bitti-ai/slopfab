@@ -167,6 +167,8 @@ struct TensorContext::Impl {
   ComputePipeline audio_pipeline;
   ComputePipeline keyframe_pipeline;
   ComputePipeline reference_pipeline;
+  ComputePipeline music_pipeline;
+  DeviceTensor allocate_tensor(const TensorLayout&, ScalarType);
   ComputePipeline dit_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;

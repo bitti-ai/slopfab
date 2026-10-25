@@ -1,13 +1,19 @@
 #include "runtime.cuh"
+#ifndef SLOPFAB_MUSIC_VULKAN
 #include "slopfab/cuda/audio_vae_kernels.cuh"
+#endif
+#include "slopfab/vae/audio_primitives.h"
 #include "slopfab/tensor_convert.h"
 #include <algorithm>
 #include <cmath>
 #include <map>
 #include <stdexcept>
 
-namespace slopfab::music {
+namespace slopfab::SLOPFAB_MUSIC_NS {
 namespace {
+#ifdef SLOPFAB_MUSIC_VULKAN
+#include "decoder_vulkan_impl.h"
+#else
 __global__ void raw_snake(float* x,const float* alpha,int length,int n) {
   int i=blockIdx.x*blockDim.x+threadIdx.x;
   if(i<n){float a=alpha[i/length],v=x[i],s=sinf(a*v);x[i]=v+s*s/(a+1e-9f);}
@@ -19,7 +25,7 @@ struct AudioTensor {
   int channels, length;
   cuda::DeviceBuffer<float> data;
 
-  AudioTensor(int c, int t) : channels(c), length(t), data(size_t(c) * t) {
+  AudioTensor(Runtime&, int c, int t) : channels(c), length(t), data(size_t(c) * t) {
   }
 };
 
@@ -65,7 +71,7 @@ public:
       throw std::invalid_argument("music VAE convolution shape: " + p);
     int pad = transpose ? (stride + 1) / 2 : dilation * (kernel - 1) / 2;
     int length = transpose ? (x.length - 1) * stride - 2 * pad + kernel : x.length;
-    AudioTensor y(channels, length);
+    AudioTensor y(rt, channels, length);
     auto bias = rt.checkpoint.find(p + ".bias") ? rt.float_weight(p + ".bias") : nullptr;
     if (transpose)
       cuda::launch_conv_transpose1d(x.data.get(), weight(p), bias, y.data.get(), 1, x.channels,
@@ -85,7 +91,7 @@ public:
   }
 
   AudioTensor residual(AudioTensor x, const std::string& p, int dilation) {
-    AudioTensor h(x.channels, x.length);
+    AudioTensor h(rt, x.channels, x.length);
     SLOPFAB_CUDA_CHECK(
         cudaMemcpy(h.data.get(), x.data.get(), x.data.nbytes(), cudaMemcpyDeviceToDevice));
     snake(h, p + "0");
@@ -96,6 +102,15 @@ public:
     return x;
   }
 };
+void audio_upload(AudioTensor& x,const std::vector<float>& v) {
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(x.data.get(),v.data(),x.data.nbytes(),cudaMemcpyHostToDevice));
+}
+std::vector<float> audio_download(AudioTensor& x) {
+  std::vector<float> v(x.data.size());
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(v.data(),x.data.get(),x.data.nbytes(),cudaMemcpyDeviceToHost));return v;
+}
+void audio_tanh(AudioTensor& x) {final_tanh<<<(x.length+255)/256,256>>>(x.data.get(),x.length);}
+#endif
 }
 
 std::vector<float> decode_yue(Runtime& rt, const std::vector<float>& latent, Hook hook) {
@@ -115,9 +130,8 @@ std::vector<float> decode_yue(Runtime& rt, const std::vector<float>& latent, Hoo
     for (int t = 0; t < count; ++t)
       for (int c = 0; c < 64; ++c)
         planar[size_t(c) * count + t] = latent[size_t(t + left) * 64 + c];
-    AudioTensor x(64, count);
-    SLOPFAB_CUDA_CHECK(
-        cudaMemcpy(x.data.get(), planar.data(), x.data.nbytes(), cudaMemcpyHostToDevice));
+    AudioTensor x(rt, 64, count);
+    audio_upload(x, planar);
     x = decoder.conv(x, base + "0");
     for (int i = 0; i < 6; ++i) {
       if (hook)
@@ -133,9 +147,7 @@ std::vector<float> decode_yue(Runtime& rt, const std::vector<float>& latent, Hoo
     int begin = start * 1920, finish = std::min(end * 1920, total), offset = (start - left) * 1920;
     if (x.channels != 2 || offset + finish - begin > x.length)
       throw std::runtime_error("YuE2 VAE tile extent mismatch");
-    planar.resize(x.data.size());
-    SLOPFAB_CUDA_CHECK(
-        cudaMemcpy(planar.data(), x.data.get(), x.data.nbytes(), cudaMemcpyDeviceToHost));
+    planar = audio_download(x);
     for (int t = begin; t < finish; ++t)
       for (int c = 0; c < 2; ++c)
         output[size_t(t) * 2 + c] = planar[size_t(c) * x.length + offset + t - begin];
@@ -151,7 +163,7 @@ std::vector<float> decode_minimax(Runtime& rt,const std::vector<float>& latent,H
     if(hook)hook();int end=std::min(frames,start+core),left=std::max(0,start-halo),right=std::min(frames,end+halo),count=right-left;
     std::vector<float> planar(size_t(count)*64);
     for(int t=0;t<count;++t)for(int c=0;c<64;++c)planar[size_t(c)*count+t]=latent[size_t(t+left)*128+channel*64+c];
-    AudioTensor x(64,count);SLOPFAB_CUDA_CHECK(cudaMemcpy(x.data.get(),planar.data(),x.data.nbytes(),cudaMemcpyHostToDevice));
+    AudioTensor x(rt,64,count);audio_upload(x,planar);
     x=decoder.conv(x,"dec_in_proj");x=decoder.conv(x,"decoder.model.0");
     for(int i=0;i<4;++i) {
       if(hook)hook();auto p="decoder.model."+std::to_string(i+1)+".block.";
@@ -159,10 +171,10 @@ std::vector<float> decode_minimax(Runtime& rt,const std::vector<float>& latent,H
       for(int j=0,d=1;j<3;++j,d*=3)x=decoder.residual(std::move(x),p+std::to_string(j+2)+".block.",d);
     }
     decoder.snake(x,"decoder.model.5");x=decoder.conv(x,"decoder.model.6");
-    final_tanh<<<(x.length+255)/256,256>>>(x.data.get(),x.length);
+    audio_tanh(x);
     int begin=start*512,finish=end*512,offset=(start-left)*512;
     if(x.channels!=1||offset+finish-begin>x.length)throw std::runtime_error("MiniMax Music3 VAE tile extent mismatch");
-    planar.resize(x.data.size());SLOPFAB_CUDA_CHECK(cudaMemcpy(planar.data(),x.data.get(),x.data.nbytes(),cudaMemcpyDeviceToHost));
+    planar=audio_download(x);
     for(int t=begin;t<finish;++t)output[size_t(t)*2+channel]=planar[offset+t-begin];
   }
   return output;

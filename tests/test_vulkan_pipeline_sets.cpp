@@ -42,7 +42,9 @@ SLOPFAB_TEST(vulkan_pipeline_sets_cache_and_recording_boundary) {
       rejected = true;
     }
     CHECK(rejected);
-    batch.add(a, b, output);
+    auto temporary = batch.allocate(layout);
+    batch.add(a, b, temporary);
+    batch.copy(temporary, output);
     batch.submit().wait();
   }
   float actual[4] = {};

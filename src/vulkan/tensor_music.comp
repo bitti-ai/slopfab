@@ -1,0 +1,136 @@
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+// BF16 transformer values and FP32 attention/codec workspaces share bindings.
+// No native BF16 arithmetic or subgroup width is required.
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X { uint16_t x[]; };
+layout(binding=1,std430) readonly buffer W { uint16_t w[]; };
+layout(binding=2,std430) readonly buffer B { uint16_t b[]; };
+layout(binding=3,std430) buffer Y { uint16_t y[]; };
+layout(push_constant) uniform Params { uint p[16]; };
+shared float s[512];
+shared float z[256];
+float xf(uint i) { return uintBitsToFloat(uint(x[i])<<16); }
+float wf(uint i) { return uintBitsToFloat(uint(w[i])<<16); }
+float bf_(uint i) { return uintBitsToFloat(uint(b[i])<<16); }
+float x32(uint i) { return uintBitsToFloat(uint(x[2*i])|(uint(x[2*i+1])<<16)); }
+float w32(uint i) { return uintBitsToFloat(uint(w[2*i])|(uint(w[2*i+1])<<16)); }
+uint narrow(float v) { uint u=floatBitsToUint(v); return (u+0x7fffu+((u>>16)&1u))>>16; }
+float bf(float v) { return uintBitsToFloat(narrow(v)<<16); }
+void put(uint i,float v) { y[i]=uint16_t(narrow(v)); }
+void put32(uint i,float v) { uint u=floatBitsToUint(v); y[2*i]=uint16_t(u); y[2*i+1]=uint16_t(u>>16); }
+float silu(float v) { return v/(1.0+exp(-v)); }
+void main() {
+  uint t=gl_LocalInvocationID.x, g=gl_WorkGroupID.x+gl_WorkGroupID.y*p[15];
+  uint i=g*256+t, op=p[0], n=p[1], cols=p[2];
+  if(op<=6) {
+    if(i>=n) return;
+    if(op==0) { uint c=i%cols, gw=cols/p[5]; y[i]=x[(i/cols)*p[3]+(c/gw)*(p[3]/p[5])+p[4]+c%gw]; }
+    if(op==1) y[(i/cols)*p[3]+p[4]+i%cols]=x[i];
+    if(op==2) put(i,xf(i)+wf(i));
+    if(op==3) put(i,p[3]!=0 ? xf(i)*bf(silu(wf(i))) : silu(xf(i)));
+    if(op==4) {
+      uint halfdim=p[4]/2, j=i%halfdim,h=(i/halfdim)%p[3],r=i/(halfdim*p[3]);
+      uint at=(r*p[3]+h)*cols+j;
+      float a=xf(at),v=xf(at+halfdim),sn=wf(r*p[4]+j),cs=wf(r*p[4]+halfdim+j);
+      put(at,bf(a*cs)-bf(v*sn)); put(at+halfdim,bf(v*cs)+bf(a*sn));
+    }
+    if(op==5) put(i,bf(xf(i)+wf(i%cols))+bf_(i));
+    if(op==6) y[i]=uint16_t(0);
+    return;
+  }
+  if(op==7 || op==8 || op==9) {
+    if(g>=n) return;
+    uint threads=op==8?p[3]:256;
+    for(uint lane=t;lane<threads;lane+=256) {
+      precise float sum=0, sq=0;
+      if(op==8) {
+        precise vec4 part=vec4(0);
+        for(uint first=(cols>128?lane*4:lane);first<cols;first+=threads*4)
+          for(uint j=0;j<4;++j) {
+            uint c=first+j*(cols>128?1:threads);
+            if(c<cols) { float a=xf(g*cols+c); part[j]=part[j]+a*a; }
+          }
+        sq=((part.x+part.y)+part.z)+part.w;
+      } else for(uint c=lane;c<cols;c+=threads) { float a=xf(g*cols+c); sum+=a; sq+=a*a; }
+      s[lane]=sq; if(op==9) z[lane]=sum;
+    }
+    barrier();
+    for(uint d=threads/2;d>=32;d/=2) {
+      if(t<d) { s[t]+=s[t+d]; if(op==9) z[t]+=z[t+d]; } barrier();
+    }
+    for(uint step=0;step<5;++step) {
+      uint d=op==8?(1u<<step):(16u>>step);
+      float a=t<32 && t+d<32?s[t+d]:0, c=op==9 && t<32 && t+d<32?z[t+d]:0;
+      barrier(); if(t<32) { s[t]+=a; if(op==9) z[t]+=c; } barrier();
+    }
+    precise float mean=op==9?z[0]/float(cols):0;
+    precise float inv=inversesqrt(max(0,s[0]/float(cols)-mean*mean)+(op==9?1e-5:1e-6));
+    if(op==8) inv=bf(inv);
+    for(uint c=t;c<cols;c+=256) {
+      precise float a=xf(g*cols+c);
+      if(op==9) { precise float v=(a-mean)*inv*wf(c)+bf_(c); put(g*cols+c,v); }
+      else put(g*cols+c,bf(a*inv)*wf(c));
+    }
+    return;
+  }
+  if(op==10) {
+    if(g>=n) return;
+    if(t<cols) s[t]=xf(g*cols+t); barrier();
+    for(uint stride=1;stride<cols;stride*=4) {
+      uint j=(t/(4*stride))*4*stride+t%stride, lane=(t/stride)%4;
+      precise float a=s[j],v=s[j+stride],c=s[j+2*stride],d=s[j+3*stride];
+      precise float r=lane==0?a+v+c-d:lane==1?a+v-c+d:lane==2?a-v+c+d:-a+v+c+d;
+      barrier(); if(t<cols) s[t]=r; barrier();
+    }
+    if(t<cols) put(g*cols+t,s[t]*inversesqrt(float(cols)));
+    return;
+  }
+  // Attention scores [heads, query tile, keys], FP32 throughout softmax/PV
+  // for MiniMax flow. Other paths round normalized probabilities to BF16.
+  if(op==11) {
+    if(i>=n) return;
+    uint key=i%p[3],q=(i/p[3])%p[4]+p[5],head=i/(p[3]*p[4]);
+    precise float sum=0;
+    for(uint c=0;c<cols;++c) sum=fma(xf(q*p[6]*cols+head*cols+c),wf(key*p[7]*cols+(head/(p[6]/p[7]))*cols+c),sum);
+    put32(i,p[8]!=0 && key>q ? -uintBitsToFloat(0x7f800000) : sum*inversesqrt(float(cols)));
+    return;
+  }
+  if(op==12) {
+    if(g>=n) return;
+    float mx=-uintBitsToFloat(0x7f800000);
+    for(uint k=t;k<cols;k+=256) mx=max(mx,x32(g*cols+k));
+    s[t]=mx; barrier();
+    for(uint d=128;d>0;d/=2) { if(t<d) s[t]=max(s[t],s[t+d]); barrier(); }
+    mx=s[0]; float sum=0;
+    for(uint k=t;k<cols;k+=256) sum+=exp(x32(g*cols+k)-mx);
+    s[t]=sum; barrier();
+    for(uint d=128;d>0;d/=2) { if(t<d) s[t]+=s[t+d]; barrier(); }
+    for(uint k=t;k<cols;k+=256) { float a=exp(x32(g*cols+k)-mx)/s[0]; put32(g*cols+k,p[3]!=0?a:bf(a)); }
+    return;
+  }
+  if(op==13) {
+    if(i>=n) return;
+    uint c=i%cols,q=(i/cols)%p[4],h=i/(cols*p[4]);
+    precise float sum=0;
+    for(uint k=0;k<p[3];++k) sum=fma(x32((h*p[4]+q)*p[3]+k),wf(k*p[7]*cols+(h/(p[6]/p[7]))*cols+c),sum);
+    put(((q+p[5])*p[6]+h)*cols+c,sum); return;
+  }
+  if(op==14) {
+    if(g>=n) return;
+    uint row=g/p[3],outcol=g%p[3];
+    precise float sum=0;
+    for(uint c=t;c<cols;c+=256) sum=fma(xf(row*cols+c),wf(outcol*cols+c),sum);
+    s[t]=sum; barrier();
+    for(uint d=128;d>0;d/=2) { if(t<d) s[t]+=s[t+d]; barrier(); }
+    if(t==0) put(g,p[4]==1?s[0]+bf_(outcol):p[4]==2?bf(s[0])+bf_(outcol):s[0]); return;
+  }
+  if(op==17) { if(i<n) put(i,xf(i)+wf(i%cols)); return; }
+  if(op==15 || op==16) {
+    if(i>=n) return;
+    float a=x32(i);
+    if(op==15) { float alpha=w32(i/cols),v=sin(alpha*a); a+=v*v/(alpha+1e-9); }
+    else a=tanh(a);
+    put32(i,a); return;
+  }
+}

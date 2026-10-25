@@ -166,6 +166,17 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     vae_denorm_pipeline =
         make_pointwise(detail::kTensorVaeDenormSpirv, sizeof(detail::kTensorVaeDenormSpirv));
   }
+  if (has(TensorPipelineSet::kMusic)) {
+    if (!input.info().storage_buffer_16bit_enabled || input.info().max_compute_workgroup_invocations < 256)
+      throw std::runtime_error("Vulkan music requires 16-bit storage and 256-thread workgroups");
+    std::vector<uint32_t> module(sizeof(detail::kTensorMusicSpirv) / 4);
+    std::memcpy(module.data(), detail::kTensorMusicSpirv, sizeof(detail::kTensorMusicSpirv));
+    ComputePipelineOptions options;
+    options.storage_binding_count = 4;
+    options.push_constant_bytes = 64;
+    options.local_size[0] = 256;
+    music_pipeline = ComputePipeline::create(input, module, options);
+  }
   if (has(TensorPipelineSet::kReference)) {
     if (input.info().max_compute_workgroup_invocations < 256 ||
         input.info().max_compute_workgroup_size[0] < 16 ||

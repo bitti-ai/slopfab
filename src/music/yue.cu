@@ -1,5 +1,4 @@
 #include "runtime.cuh"
-#include "slopfab/cuda/gemm.cuh"
 #include "slopfab/int8_weight.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/text/tokenizer.h"
@@ -16,110 +15,10 @@
 #include <random>
 #include <stdexcept>
 
-namespace slopfab::music {
+namespace slopfab::SLOPFAB_MUSIC_NS {
 namespace {
 float bf(float v) {
-  return __bfloat162float(__float2bfloat16(v));
-}
-
-__global__ void rms(const BFloat* x, const BFloat* w, BFloat* y, int width) {
-  __shared__ float sums[512];
-  const int t = threadIdx.x, row = blockIdx.x;
-  float partial[4] = {};
-  if (width > 128) {
-    for (int first = t * 4; first < width; first += int(blockDim.x) * 4)
-      for (int j = 0; j < 4; ++j) {
-        float a = __bfloat162float(x[size_t(row) * width + first + j]);
-        partial[j] = __fadd_rn(partial[j], __fmul_rn(a, a));
-      }
-  } else {
-    for (int first = t; first < width; first += int(blockDim.x) * 4)
-      for (int j = 0; j < 4 && first + j * int(blockDim.x) < width; ++j) {
-        float a = __bfloat162float(x[size_t(row) * width + first + j * blockDim.x]);
-        partial[j] = __fadd_rn(partial[j], __fmul_rn(a, a));
-      }
-  }
-  float sum = ((partial[0] + partial[1]) + partial[2]) + partial[3];
-  sums[t] = sum;
-  __syncthreads();
-  for (int d = int(blockDim.x) / 2; d >= 32; d /= 2) {
-    if (t < d) {
-      sum += sums[t + d];
-      sums[t] = sum;
-    }
-    __syncthreads();
-  }
-  if (t < 32) {
-    for (int d = 1; d < 32; d *= 2)
-      sum += __shfl_down_sync(0xffffffff, sum, d);
-    if (t == 0)
-      sums[0] = sum;
-  }
-  __syncthreads();
-  // YuE rounds the inverse RMS before multiplying, unlike Qwen3.
-  const BFloat inv = __float2bfloat16(rsqrtf(__fadd_rn(__fmul_rn(sums[0], 1.f / width), 1e-6f)));
-  for (int c = t; c < width; c += blockDim.x)
-    y[size_t(row) * width + c] = (x[size_t(row) * width + c] * inv) * w[c];
-}
-
-__global__ void add_condition(BFloat* x, const BFloat* t, const BFloat* pe, int n, int width) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n)
-    x[i] = (x[i] + t[i % width]) + pe[i];
-}
-
-__global__ void causal_probabilities(const float* scores, BFloat* probabilities, int keys,
-                                     int first) {
-  __shared__ float reduction[256];
-  int q = blockIdx.x, t = threadIdx.x, limit = first + q + 1;
-  float maximum = -INFINITY;
-  for (int k = t; k < limit; k += 256)
-    maximum = fmaxf(maximum, scores[size_t(q) * keys + k]);
-  reduction[t] = maximum;
-  __syncthreads();
-  for (int d = 128; d; d /= 2) {
-    if (t < d)
-      reduction[t] = fmaxf(reduction[t], reduction[t + d]);
-    __syncthreads();
-  }
-  maximum = reduction[0];
-  float sum = 0;
-  for (int k = t; k < limit; k += 256)
-    sum += expf(scores[size_t(q) * keys + k] - maximum);
-  reduction[t] = sum;
-  __syncthreads();
-  for (int d = 128; d; d /= 2) {
-    if (t < d)
-      reduction[t] += reduction[t + d];
-    __syncthreads();
-  }
-  sum = reduction[0];
-  for (int k = t; k < keys; k += 256)
-    probabilities[size_t(q) * keys + k] =
-        __float2bfloat16(k < limit ? expf(scores[size_t(q) * keys + k] - maximum) / sum : 0);
-}
-
-Tensor causal_attention(Runtime& rt, const Tensor& q, const Tensor& k, const Tensor& v) {
-  const int dim = 128, tile = 128;
-  Tensor out(q.rows, q.cols);
-  cuda::DeviceBuffer<float> scores(size_t(std::min(tile, q.rows)) * k.rows);
-  cuda::DeviceBuffer<BFloat> probabilities(scores.size());
-  const float scale = 1 / std::sqrt(float(dim)), one = 1, zero = 0;
-  for (int head = 0; head < 16; ++head)
-    for (int first = 0; first < q.rows; first += tile) {
-      int count = std::min(tile, q.rows - first), kh = head / 2;
-      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
-          rt.blas, CUBLAS_OP_T, CUBLAS_OP_N, k.rows, count, dim, &scale, k.ptr() + kh * dim,
-          CUDA_R_16BF, k.cols, q.ptr() + size_t(first) * q.cols + head * dim, CUDA_R_16BF, q.cols,
-          &zero, scores.get(), CUDA_R_32F, k.rows, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
-      causal_probabilities<<<count, 256>>>(scores.get(), probabilities.get(), k.rows, first);
-      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
-          rt.blas, CUBLAS_OP_N, CUBLAS_OP_N, dim, count, k.rows, &one, v.ptr() + kh * dim,
-          CUDA_R_16BF, v.cols, probabilities.get(), CUDA_R_16BF, k.rows, &zero,
-          out.ptr() + size_t(first) * out.cols + head * dim, CUDA_R_16BF, out.cols,
-          CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
-    }
-  return out;
+  return gpu_bf(v);
 }
 
 struct Cache {
@@ -133,8 +32,7 @@ Tensor row_range(const Tensor& x, int start, int count) {
   if (start < 0 || count < 1 || start + count > x.rows)
     throw std::invalid_argument("music row range");
   Tensor out(count, x.cols);
-  SLOPFAB_CUDA_CHECK(cudaMemcpy(out.ptr(), x.ptr() + size_t(start) * x.cols, out.data.nbytes(),
-                                cudaMemcpyDeviceToDevice));
+  gpu_copy_rows(x, out, start, 0, count);
   return out;
 }
 
@@ -145,8 +43,7 @@ void append(Tensor& dest, Tensor source, int capacity) {
   }
   if (dest.rows + source.rows > capacity)
     throw std::invalid_argument("YuE2 context capacity exceeded");
-  SLOPFAB_CUDA_CHECK(cudaMemcpy(dest.ptr() + size_t(dest.rows) * dest.cols, source.ptr(),
-                                size_t(source.rows) * source.cols * 2, cudaMemcpyDeviceToDevice));
+  gpu_copy_rows(source, dest, 0, dest.rows, source.rows);
   dest.rows += source.rows;
 }
 
@@ -186,7 +83,7 @@ Tensor layers(Runtime& rt, Tensor x, const std::string& prefix, int offset, Cach
     } else {
       append(cache[i].k, std::move(k), capacity);
       append(cache[i].v, std::move(v), capacity);
-      a = offset == 0 && x.rows > 1 ? causal_attention(rt, q, cache[i].k, cache[i].v)
+      a = offset == 0 && x.rows > 1 ? gpu_causal_attention(rt, q, cache[i].k, cache[i].v)
                                     : rt.attend(q, cache[i].k, cache[i].v, 16, 8);
     }
     moss::residual(x, rt.project(a, p + "self_attn.o_proj"));
@@ -327,8 +224,7 @@ Tensor velocity(Runtime& rt, const std::vector<float>& state, float time, Caches
   auto t = rt.project(
       moss::activate(rt.project(moss::from_host(sinusoid, 1, 256), nar + "time_embedder.mlp.0")),
       nar + "time_embedder.mlp.2");
-  add_condition<<<(count * 2048 + 255) / 256, 256>>>(
-      x.ptr(), t.ptr(), rt.weight(nar + "latent_pos_embed.pe"), count * 2048, 2048);
+  gpu_condition(rt, x, t, nar + "latent_pos_embed.pe");
   auto h =
       layers(rt, std::move(x), nar + "model.", cache.front().k.rows, cache, 0, true, hook, trace);
   return row_range(rt.project(yue_norm(rt, h, nar + "model.norm.weight"), nar + "llm2vae"), 1,
@@ -343,14 +239,7 @@ Tensor yue_norm(Runtime& rt, const Tensor& x, const std::string& name, int width
     width = x.cols;
   if (x.cols % width || rt.checkpoint.at(name).numel() != width)
     throw std::invalid_argument("YuE2 norm shape: " + name);
-  const int rows = x.rows * x.cols / width;
-  int outputs = 1;
-  while (outputs * 2 <= rows && outputs < 512)
-    outputs *= 2;
-  const int threads = std::min(width > 128 ? width / 4 : width, 512 / std::min(outputs, 16));
-  Tensor y(x.rows, x.cols);
-  rms<<<rows, threads>>>(x.ptr(), rt.weight(name), y.ptr(), width);
-  return y;
+  return gpu_yue_norm(rt, x, name, width);
 }
 
 Tensor embedding(Runtime& rt, const std::string& name, const std::vector<int32_t>& ids) {

@@ -9,6 +9,9 @@ for family, rate in (("yue2", "48000"), ("minimax_music3", "44100")):
     default = subprocess.run(base, capture_output=True, text=True)
     assert default.returncode == 0, default.stderr
     assert rate in default.stdout and "12.000000" in default.stdout
+    vulkan = subprocess.run(base + ["--inference-backend", "vulkan"], capture_output=True, text=True)
+    assert vulkan.returncode == 0, vulkan.stderr
     explicit = subprocess.run(base + ["--attention", "sage2"], capture_output=True, text=True)
     assert explicit.returncode != 0 and "attention overrides" in explicit.stderr
 print("Music CLI defaults and attention validation passed")
+

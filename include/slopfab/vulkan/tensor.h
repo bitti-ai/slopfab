@@ -33,6 +33,7 @@ class PreparedNVFP4WeightView;
 class StreamedNVFP4WeightCache;
 
 enum class TensorPipelineSet : uint32_t {
+  kMusic = 1u << 10,
   kCore = 1u << 0, // storage, conversion, GEMM, normalization and positions
   kVideo = 1u << 1,
   kAudio = 1u << 2,
@@ -44,7 +45,7 @@ enum class TensorPipelineSet : uint32_t {
   kSageAttention = 1u << 8,
   kTextAttention = 1u << 9,
   kLegacy = 0x3efu, // all historical defaults, excluding reference encoding
-  kAll = 0x3ffu,
+  kAll = 0x7ffu,
 };
 
 constexpr TensorPipelineSet operator|(TensorPipelineSet a, TensorPipelineSet b) {
@@ -328,6 +329,12 @@ public:
   void audio_aa_downsample(DeviceTensor& input, DeviceTensor& filter, DeviceTensor& output,
                            uint32_t batch, uint32_t channels, uint32_t length_in,
                            uint32_t length_out);
+  // Internal music kernels. Four contiguous device buffers, with logical shapes
+  // validated by the music runtime; parameters are 16 uint32 words.
+  void music_operation(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
+                       DeviceTensor& output, const uint32_t* parameters, uint32_t groups);
+  // Allocate while holding this batch's exclusive recorder lease.
+  DeviceTensor allocate(const TensorLayout&, ScalarType type = ScalarType::kFloat32);
   Submission submit();
   uint32_t remaining_operator_capacity() const noexcept;
   // Host-only transactional preflight for graph orchestrators. Failure does
