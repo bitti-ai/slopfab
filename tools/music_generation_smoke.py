@@ -8,6 +8,7 @@ import ctypes as C
 import hashlib
 import json
 import math
+import threading
 from pathlib import Path
 
 p = argparse.ArgumentParser(description=__doc__)
@@ -19,7 +20,10 @@ p.add_argument("--output-dir", type=Path, help="Save raw float32 audio for repea
 p.add_argument("--backend", choices=("cuda", "vulkan"), default="cuda")
 p.add_argument("--duration", type=float, default=.08, help="Audio frame budget in seconds")
 p.add_argument("--steps", type=int, default=1, help="Flow integration steps")
+p.add_argument("--planning", choices=("off", "melody", "full"), default="off", help="YuE2 ABC planning")
+p.add_argument("--abc-max-tokens", type=int, default=4096, help="YuE2 ABC planning token budget")
 p.add_argument("--timings-json", type=Path, help="Save per-stage timings for performance comparisons")
+p.add_argument("--cancel-stages", action="store_true", help="Also cancel inside conditioning/flow and check recovery")
 a = p.parse_args()
 if not math.isfinite(a.duration) or not 0 < a.duration <= 300 or a.steps < 1 or a.repeats < 2:
     p.error("duration must be in (0,300], steps positive, and repeats at least two")
@@ -52,8 +56,15 @@ class Output(C.Structure):
                 ("steps_computed", C.c_int32), ("steps_skipped", C.c_int32)]
 
 
+class Progress(C.Structure):
+    _fields_ = [("stage", C.c_int32), ("step", C.c_int32), ("total_steps", C.c_int32),
+                ("elapsed_seconds", C.c_double)]
+
+
+ProgressCallback = C.CFUNCTYPE(None, C.POINTER(Progress), handle)
 create = bind("slopfab_request_create", [], handle)
 destroy = bind("slopfab_generation_destroy", [handle], None)
+cancel = bind("slopfab_generation_cancel", [handle], None)
 start = bind("slopfab_generation_start", [handle, handle, handle, C.POINTER(handle)])
 wait = bind("slopfab_generation_wait", [handle, C.c_int])
 paths = {"yue2": [(0, "yue2_3b_int8_convrot.safetensors")], "minimax_music3": [
@@ -70,7 +81,7 @@ for family in paths if a.family == "both" else [a.family]:
         check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, b"Warm instrumental piano"))
         settings = {"duration": a.duration}
         if family == "yue2":
-            settings["planning"] = "off"
+            settings.update(planning=a.planning, abc_max_tokens=a.abc_max_tokens)
         check(bind("slopfab_request_set_music_settings", [handle, C.c_char_p])(request, json.dumps(settings).encode()))
         check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, a.steps))
         check(bind("slopfab_request_set_seed", [handle, C.c_uint64])(request, 42))
@@ -98,8 +109,12 @@ for family in paths if a.family == "both" else [a.family]:
             samples = output.audio[:output.audio_float_count]
             assert all(math.isfinite(v) for v in samples) and max(samples) != min(samples)
             assert output.steps_computed >= a.steps and output.steps_skipped == 0
+            if a.duration == .08:
+                assert output.steps_computed == a.steps
             timing = {"family": family, "backend": a.backend, "repeat": repeat,
                       "duration": a.duration, "steps": a.steps, "audio_frames": output.audio_frames}
+            if family == "yue2":
+                timing.update(planning=a.planning, abc_max_tokens=a.abc_max_tokens)
             timing.update({name: getattr(output, name) for name in
                            ("seconds_conditioning", "seconds_denoise", "seconds_audio_decode", "seconds_total")})
             timings.append(timing)
@@ -117,8 +132,40 @@ for family in paths if a.family == "both" else [a.family]:
             generation = handle()
         assert len(digests) >= 2, "at least two repeats required"
         check(start(request, None, None, C.byref(generation)))
-        bind("slopfab_generation_cancel", [handle], None)(generation)
+        cancel(generation)
         assert wait(generation, -1) == -8, "expected cancellation"
+        destroy(generation)
+        generation = handle()
+        if a.cancel_stages:
+            settings = {"duration": .08}
+            if family == "yue2":
+                settings["planning"] = "off"
+            check(bind("slopfab_request_set_music_settings", [handle, C.c_char_p])(request, json.dumps(settings).encode()))
+            check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, 1))
+            for stage in (2, 4):  # conditioning, denoising
+                ready = threading.Event()
+                visits = [0]
+
+                @ProgressCallback
+                def on_progress(progress, _):
+                    if progress.contents.stage == stage:
+                        visits[0] += 1
+                        # Cancel after several blocks, with active GPU temporaries.
+                        if visits[0] == 8:
+                            ready.wait()
+                            cancel(generation)
+
+                check(start(request, C.cast(on_progress, handle), None, C.byref(generation)))
+                ready.set()
+                assert wait(generation, -1) == -8 and visits[0] >= 8, f"expected cancellation inside stage {stage}"
+                destroy(generation)
+                generation = handle()
+            # Ensure cancellation released the generation claim and GPU state.
+            check(start(request, None, None, C.byref(generation)))
+            check(wait(generation, -1))
+            destroy(generation)
+            generation = handle()
+            print(f"{a.backend} {family}: in-stage cancellation and recovery passed", flush=True)
         print(f"{a.backend} {family}: audio geometry, finite samples, seed repeatability and cancellation passed", flush=True)
     finally:
         if generation:
