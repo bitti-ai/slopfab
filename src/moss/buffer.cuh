@@ -19,6 +19,7 @@ public:
   const std::shared_ptr<cuda::ReferenceBufferPool>& activations() const {
     return activations_;
   }
+
   const std::shared_ptr<cuda::ReferenceBufferPool>& temporaries() const {
     return temporaries_;
   }
@@ -37,6 +38,7 @@ std::shared_ptr<cuda::ReferenceBufferPool> temporary_buffer_pool(TemporaryBuffer
 template <typename T> class TemporaryBuffer {
 public:
   TemporaryBuffer() = default;
+
   explicit TemporaryBuffer(size_t count,
                            TemporaryBufferKind kind = TemporaryBufferKind::kActivation)
       : pool_(temporary_buffer_pool(kind)), count_(count) {
@@ -54,6 +56,7 @@ public:
   TemporaryBuffer(TemporaryBuffer&& other) noexcept {
     *this = std::move(other);
   }
+
   TemporaryBuffer& operator=(TemporaryBuffer&& other) noexcept {
     if (this != &other) {
       // Release the old lease before its final pool owner, including when
@@ -71,15 +74,19 @@ public:
   T* get() {
     return pool_ ? pooled_.get() : plain_.get();
   }
+
   const T* get() const {
     return pool_ ? pooled_.get() : plain_.get();
   }
+
   size_t size() const {
     return count_;
   }
+
   size_t nbytes() const {
     return count_ * sizeof(T);
   }
+
   bool empty() const {
     return count_ == 0;
   }

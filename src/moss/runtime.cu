@@ -249,7 +249,7 @@ Tensor Runtime::project(const Tensor& x, const std::string& name, bool fuse_bias
       input = rotated;
     }
     TemporaryBuffer<float> accumulator(size_t(x.rows) * w.out_features,
-                                        TemporaryBufferKind::kScratch);
+                                       TemporaryBufferKind::kScratch);
     const float alpha = 1.f, beta = 0.f;
     SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
         blas, CUBLAS_OP_T, CUBLAS_OP_N, w.out_features, x.rows, w.in_features, &alpha, dense,
@@ -342,7 +342,7 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
     const int dim = q.cols / heads, tile = 128;
     Tensor out(q.rows, q.cols);
     TemporaryBuffer<float> scores(size_t(std::min(tile, q.rows)) * k.rows,
-                                    TemporaryBufferKind::kScratch);
+                                  TemporaryBufferKind::kScratch);
     TemporaryBuffer<BFloat> probabilities(scores.size(), TemporaryBufferKind::kScratch);
     TemporaryBuffer<float> fp, fv, fo;
     if (float_probabilities) {

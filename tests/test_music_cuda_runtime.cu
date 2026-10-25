@@ -76,8 +76,8 @@ SLOPFAB_TEST_CATEGORY(music_cuda_pool_reuse_and_scope_lifetime, "synthetic") {
   CHECK(!temporary_buffer_pool(TemporaryBufferKind::kActivation));
   CHECK(!weak.expired());
   std::vector<uint32_t> actual(count);
-  SLOPFAB_CUDA_CHECK(cudaMemcpy(actual.data(), survivor.get(), survivor.nbytes(),
-                                cudaMemcpyDeviceToHost));
+  SLOPFAB_CUDA_CHECK(
+      cudaMemcpy(actual.data(), survivor.get(), survivor.nbytes(), cudaMemcpyDeviceToHost));
   std::vector<uint32_t> expected(count);
   std::iota(expected.begin(), expected.end(), uint32_t(1));
   CHECK(actual == expected);
@@ -101,13 +101,16 @@ SLOPFAB_TEST_CATEGORY(music_cuda_pool_preserves_projection_and_attention, "synth
               ("slopfab_music_cuda_pool_" +
                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
                ".safetensors");
+
   struct Cleanup {
     std::filesystem::path path;
+
     ~Cleanup() {
       std::error_code error;
       std::filesystem::remove(path, error);
     }
   } cleanup{path};
+
   const int heads = 4, kv_heads = 2, dim = 128, rows = 3, keys = 317;
   auto values = [](size_t size, int modulus) {
     std::vector<float> v(size);
@@ -115,10 +118,10 @@ SLOPFAB_TEST_CATEGORY(music_cuda_pool_preserves_projection_and_attention, "synth
       v[i] = float(int(i % modulus) - modulus / 2) / 32;
     return v;
   };
-  write_safetensors(path.string(),
-                    {{"proj.weight", {heads * dim, heads * dim},
-                      values(size_t(heads * dim) * heads * dim, 13)},
-                     {"proj.bias", {heads * dim}, values(heads * dim, 7)}});
+  write_safetensors(
+      path.string(),
+      {{"proj.weight", {heads * dim, heads * dim}, values(size_t(heads * dim) * heads * dim, 13)},
+       {"proj.bias", {heads * dim}, values(heads * dim, 7)}});
   Runtime rt(path.string());
   rt.cache_dense_weights = true;
   auto q = from_host(values(rows * heads * dim, 17), rows, heads * dim);
