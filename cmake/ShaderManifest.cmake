@@ -38,12 +38,12 @@ slopfab_shader("src/vulkan/tensor_vae_rope.comp.spv" "e51ae5f500a65b87b5fd1af440
 slopfab_shader("src/vulkan/tensor_weight.comp" "55fadb68982abcdb0079c8d9b0a84e77f64d268e63e7227f2a2bc770ed60307f" SOURCE -)
 slopfab_shader("src/vulkan/tensor_weight.comp.spv" "da6454d969f13f02f6571eaa5850e7cd757e9ab0df68e005557b277c4d73f30e" BINARY SLOPFAB_TENSOR_WEIGHT_SPV_BYTES)
 slopfab_shader("src/vulkan/tensor_weight_denorm.comp.spv" "d67d8f272b694181a350760c29c4adaccaff692b043e6fa8a619d0a8cb807dae" BINARY SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES)
-slopfab_shader("src/vulkan/tensor_gemm.hlsl" "86e608b81ba51dd0f827aa53a07d91cc8b2c0542c764dec3d16c937afcdb2f31" SOURCE -)
-slopfab_shader("src/vulkan/tensor_gemm.comp.spv" "f91563d2de7553c84059a416812e2a4241c3f500206d57fa1655af0e3d3061b1" BINARY SLOPFAB_TENSOR_GEMM_SPV_BYTES)
-slopfab_shader("src/vulkan/tensor_gemm_denorm.comp.spv" "d606a8e6ee510b8d32de4341af977d478121e0101cb8274c23640feabe1c83f9" BINARY SLOPFAB_TENSOR_GEMM_DENORM_SPV_BYTES)
-slopfab_shader("src/vulkan/tensor_gemm_coop.comp" "76589b0446b567f2fdad655cc337ee96cdc2e22f909994815891f84a3e4c5691" SOURCE -)
-slopfab_shader("src/vulkan/tensor_gemm_coop.comp.spv" "b9719969312c4962006cd0877dbdadb2aab8e4c8232be84d593f4267f7597cf9" BINARY SLOPFAB_TENSOR_GEMM_COOP_SPV_BYTES)
-slopfab_shader("src/vulkan/tensor_gemm_coop_denorm.comp.spv" "b5b80ac23262aab3285aac2f763910d56d6aaed256da920274fd6d7778ac4ea9" BINARY SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_gemm.hlsl" "04b22bb57af85926abd98b28f95f6265ef9ead3d52b9c1b91399ffd2d837a8f3" SOURCE -)
+slopfab_shader("src/vulkan/tensor_gemm.comp.spv" "7d3690a0452dfc03f423d86d3dca86ca04f35342ddd4a1649695d5bdb54a2cfa" BINARY SLOPFAB_TENSOR_GEMM_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_gemm_denorm.comp.spv" "8a0e3228aaef07965db60d3a14d3642e4832767b5a3bd97ce24aa402d69db4be" BINARY SLOPFAB_TENSOR_GEMM_DENORM_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_gemm_coop.comp" "8ff6591d720994008709d7ba9035d9033ca9ed9540ed34beb668e410a527996a" SOURCE -)
+slopfab_shader("src/vulkan/tensor_gemm_coop.comp.spv" "220552b39ddfba0934e194f2acc24dde7928af42f7151e689ea8e7d413c699c0" BINARY SLOPFAB_TENSOR_GEMM_COOP_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_gemm_coop_denorm.comp.spv" "d08b1a81659343fc698a855abc1766fa9c0c48afb44e7a03ed292fb3b564cbee" BINARY SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES)
 slopfab_shader("src/vulkan/tensor_gemm_prepare.hlsl" "c8914cf9427fd5a904b7c503de1f5f1b63e2bb9ec37dca46aa6823b96acc8063" SOURCE -)
 slopfab_shader("src/vulkan/tensor_gemm_prepare.comp.spv" "d716981e9734554c9e18e9587959fa70770e768df94f1aa88478192b4727aa59" BINARY SLOPFAB_TENSOR_GEMM_PREPARE_SPV_BYTES)
 slopfab_shader("src/vulkan/tensor_gemm_coop_f16.comp" "11b75eefefaef0eff8266bae7d5e4ce0d1b6ebaa43c29f2d0cb9da5b12e6203f" SOURCE -)
@@ -74,6 +74,6 @@ slopfab_shader("src/vulkan/tensor_w4a8_denorm.comp.spv" "d198157b55a5959b536ec3b
 
 slopfab_shader("src/vulkan/tensor_w4a8_quant.comp.spv" "d82caccba072fbdccf23819ccdfb7046f12447ffb4e55587fba1ebd1db2ed382" BINARY SLOPFAB_TENSOR_W4A8_QUANT_SPV_BYTES)
 
-slopfab_shader("src/vulkan/tensor_music.comp" "54199f0067d4cd32c8fa65f5762917ac3fffd376b7fa9b471a9c3ace00f8cc01" SOURCE -)
+slopfab_shader("src/vulkan/tensor_music.comp" "948f4022fb247f29b28797b883cf432839627f356a37f171e6ff3d8cd03e13f5" SOURCE -)
 
-slopfab_shader("src/vulkan/tensor_music.comp.spv" "42ea1c0c9c0b5eaa5dddaecde96a3e8060bbd6b6f615d1a6e77fa752da557b9d" BINARY SLOPFAB_TENSOR_MUSIC_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_music.comp.spv" "ed947e22a59525761dafdeb61c31c3b884389892fea5ee286e588d75c5cdc4e2" BINARY SLOPFAB_TENSOR_MUSIC_SPV_BYTES)

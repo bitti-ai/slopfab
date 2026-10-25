@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 37
+#define SLOPFAB_CAPI_VERSION_MINOR 38
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -844,7 +844,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_req
  * other platforms default to EXACT. PORTABLE uses device feature checks and
  * does not promise CUDA bit parity. EXACT requires a qualified device/driver.
  * This is separate from the attention algorithm selected by set_attention.
- * CUDA inference ignores this option. Unknown policies are rejected. */
+ * CUDA inference ignores this option. Music requires PORTABLE (since 1.38).
+ * Unknown policies are rejected. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_vulkan_arithmetic(slopfab_request* request,
                                                                      int32_t policy);
 

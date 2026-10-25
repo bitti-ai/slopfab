@@ -45,7 +45,7 @@ uint bf16_rte(float value) {
 }
 float apply_bias(float value, uint column) {
   if (p.mode == 1u) return value + uintBitsToFloat(bias_data.words[column]);
-  if (p.mode == 2u) return value + load_bf16_bias(column);
+  if ((p.mode == 2u || p.mode == 6u)) return value + load_bf16_bias(column);
   return value;
 }
 
@@ -77,9 +77,9 @@ void main() {
     uint output_column = column + tile_column;
     uint output_index = output_row * p.out_features + output_column;
     uint item = tile_row * 16u + tile_column;
-    float lo = uintBitsToFloat(
+    float lo = p.mode == 6u ? accumulator[subgroup * 256u + item] : uintBitsToFloat(
         bf16_rte(accumulator[subgroup * 256u + item]) << 16u);
-    float hi = uintBitsToFloat(
+    float hi = p.mode == 6u ? accumulator[subgroup * 256u + item + 1u] : uintBitsToFloat(
         bf16_rte(accumulator[subgroup * 256u + item + 1u]) << 16u);
     uint lo_bits = bf16_rte(apply_bias(lo, output_column));
     uint hi_bits = bf16_rte(apply_bias(hi, output_column + 1u));

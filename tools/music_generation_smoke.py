@@ -68,6 +68,8 @@ for family in paths if a.family == "both" else [a.family]:
         check(bind("slopfab_request_set_seed", [handle, C.c_uint64])(request, 42))
         check(bind("slopfab_request_set_verbose", [handle, C.c_int])(request, 0))
         check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, 1 if a.backend == "vulkan" else 0))
+        if a.backend == "vulkan":
+            check(bind("slopfab_request_set_vulkan_arithmetic", [handle, C.c_int])(request, 1))
         digests = []
         for repeat in range(2):
             check(start(request, None, None, C.byref(generation)))

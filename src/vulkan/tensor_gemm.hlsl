@@ -50,19 +50,19 @@ float round_f16(float value) {
 }
 
 float load_input(uint index) {
-  if (p.mode <= 2) return load_bf16(input_data, index);
+  if ((p.mode <= 2 || p.mode == 6)) return load_bf16(input_data, index);
   return p.mode == 3 ? load_f16(input_data, index) : load_f32(input_data, index);
 }
 
 float load_weight(uint index) {
-  if (p.mode <= 2) return load_bf16(weight_data, index);
+  if ((p.mode <= 2 || p.mode == 6)) return load_bf16(weight_data, index);
   if (p.mode == 3) return load_f16(weight_data, index);
   return load_f32(weight_data, index);
 }
 
 float apply_bias(float value, uint column) {
   if (p.mode == 1) return value + load_f32(bias_data, column);
-  if (p.mode == 2) return value + load_bf16(bias_data, column);
+  if ((p.mode == 2 || p.mode == 6)) return value + load_bf16(bias_data, column);
   if (p.mode == 5) return value + load_f32(bias_data, column);
   return value;
 }
@@ -85,10 +85,10 @@ void store_bf16(uint index, uint bits) {
 
 void store_pair(uint row, uint column, float lo, float hi) {
   const uint first = row * p.out_features + column;
-  const uint lo_bits = bf16_rte(apply_bias(asfloat(bf16_rte(lo) << 16), column));
+  const uint lo_bits = bf16_rte(apply_bias(p.mode == 6 ? lo : asfloat(bf16_rte(lo) << 16), column));
   if (column + 1 < p.out_features) {
     const uint hi_bits = bf16_rte(
-        apply_bias(asfloat(bf16_rte(hi) << 16), column + 1));
+        apply_bias(p.mode == 6 ? hi : asfloat(bf16_rte(hi) << 16), column + 1));
     if ((p.out_features & 1) == 0) {
       output_data.Store((first >> 1) * 4, lo_bits | (hi_bits << 16));
     } else {
@@ -145,7 +145,7 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     GroupMemoryBarrierWithGroupSync();
   }
 
-  const bool bf16_output = p.mode <= 2;
+  const bool bf16_output = (p.mode <= 2 || p.mode == 6);
   if (row0 < p.rows && col0 < p.out_features) {
     const uint output_row = p.output_row_offset + row0;
     if (bf16_output) store_pair(output_row, col0, sum00, sum01);

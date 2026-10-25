@@ -43,8 +43,12 @@ __global__ void deterministic_bf16_gemm_kernel(const __nv_bfloat16* input,
     const uint32_t tile_row = pair >> 3;
     const uint32_t tile_column = (pair & 7) * 2;
     const uint32_t item = tile_row * 16 + tile_column;
-    float lo = __bfloat162float(__float2bfloat16_rn(accumulator[warp][item]));
-    float hi = __bfloat162float(__float2bfloat16_rn(accumulator[warp][item + 1]));
+    float lo = bias_type == uint32_t(DenseGemmBias::kBFloat16Fused)
+                   ? accumulator[warp][item]
+                   : __bfloat162float(__float2bfloat16_rn(accumulator[warp][item]));
+    float hi = bias_type == uint32_t(DenseGemmBias::kBFloat16Fused)
+                   ? accumulator[warp][item + 1]
+                   : __bfloat162float(__float2bfloat16_rn(accumulator[warp][item + 1]));
     if (bias_type != static_cast<uint32_t>(DenseGemmBias::kNone)) {
       lo += load_bias(column + tile_column);
       hi += load_bias(column + tile_column + 1);
@@ -111,10 +115,12 @@ __global__ void deterministic_scalar_gemm_kernel(const void* input, const void* 
   }
   const size_t oi = size_t(output_row_offset + row) * out_features + column;
   if (mode == static_cast<uint32_t>(DenseGemmMode::kBFloat16)) {
-    sum = __bfloat162float(__float2bfloat16_rn(sum));
+    if (bias_type != uint32_t(DenseGemmBias::kBFloat16Fused))
+      sum = __bfloat162float(__float2bfloat16_rn(sum));
     if (bias_type == static_cast<uint32_t>(DenseGemmBias::kFloat32))
       sum += static_cast<const float*>(bias)[column];
-    else if (bias_type == static_cast<uint32_t>(DenseGemmBias::kBFloat16))
+    else if (bias_type == static_cast<uint32_t>(DenseGemmBias::kBFloat16) ||
+             bias_type == uint32_t(DenseGemmBias::kBFloat16Fused))
       sum += __bfloat162float(static_cast<const __nv_bfloat16*>(bias)[column]);
     static_cast<__nv_bfloat16*>(output)[oi] = __float2bfloat16_rn(sum);
   } else {
@@ -137,7 +143,7 @@ void launch_deterministic_bf16_gemm_nt(const __nv_bfloat16* input, const __nv_bf
     throw std::invalid_argument("deterministic CUDA BF16 GEMM: invalid full-tile arguments");
   }
   if (bias_type != DenseGemmBias::kNone && bias_type != DenseGemmBias::kFloat32 &&
-      bias_type != DenseGemmBias::kBFloat16) {
+      bias_type != DenseGemmBias::kBFloat16 && bias_type != DenseGemmBias::kBFloat16Fused) {
     throw std::invalid_argument("deterministic CUDA BF16 GEMM: invalid bias type");
   }
   deterministic_bf16_gemm_kernel<<<dim3(out_features / 16, rows / 64), 128, 0, stream>>>(
@@ -168,7 +174,8 @@ void launch_deterministic_scalar_gemm_nt(const void* input, const void* weight, 
   const bool bias_valid =
       bias_type == DenseGemmBias::kNone ||
       (mode == DenseGemmMode::kBFloat16 &&
-       (bias_type == DenseGemmBias::kFloat32 || bias_type == DenseGemmBias::kBFloat16)) ||
+       (bias_type == DenseGemmBias::kFloat32 ||
+        (bias_type == DenseGemmBias::kBFloat16 || bias_type == DenseGemmBias::kBFloat16Fused))) ||
       (mode == DenseGemmMode::kFloat32 && bias_type == DenseGemmBias::kFloat32);
   if (!input || !weight || !output || rows == 0 || out_features == 0 || in_features == 0 ||
       !mode_valid || !bias_valid || ((bias_type == DenseGemmBias::kNone) != (bias == nullptr))) {

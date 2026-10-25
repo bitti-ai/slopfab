@@ -2,6 +2,7 @@
 #include "slopfab/cuda/gemm.cuh"
 #include <algorithm>
 #include <cmath>
+
 namespace slopfab::music {
 __global__ void rms(const BFloat* x, const BFloat* w, BFloat* y, int width) {
   __shared__ float sums[512];
@@ -137,25 +138,36 @@ Tensor gpu_ln(Runtime& rt, const Tensor& x, const std::string& p) {
   return y;
 }
 
+float gpu_bf(float x) {
+  return __bfloat162float(__float2bfloat16(x));
+}
 
-float gpu_bf(float x) { return __bfloat162float(__float2bfloat16(x)); }
 void gpu_copy_rows(const Tensor& x, Tensor& y, int first, int dest, int count) {
-  SLOPFAB_CUDA_CHECK(cudaMemcpy(y.ptr()+size_t(dest)*y.cols, x.ptr()+size_t(first)*x.cols, size_t(count)*x.cols*2, cudaMemcpyDeviceToDevice));
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(y.ptr() + size_t(dest) * y.cols, x.ptr() + size_t(first) * x.cols,
+                                size_t(count) * x.cols * 2, cudaMemcpyDeviceToDevice));
 }
+
 void gpu_copy_columns(const Tensor& x, Tensor& y, int offset) {
-  SLOPFAB_CUDA_CHECK(cudaMemcpy2D(y.ptr()+offset, y.cols*2, x.ptr(), x.cols*2, x.cols*2, x.rows, cudaMemcpyDeviceToDevice));
+  SLOPFAB_CUDA_CHECK(cudaMemcpy2D(y.ptr() + offset, y.cols * 2, x.ptr(), x.cols * 2, x.cols * 2,
+                                  x.rows, cudaMemcpyDeviceToDevice));
 }
-void gpu_zero(Tensor& x) { SLOPFAB_CUDA_CHECK(cudaMemset(x.ptr(),0,x.data.nbytes())); }
+
+void gpu_zero(Tensor& x) {
+  SLOPFAB_CUDA_CHECK(cudaMemset(x.ptr(), 0, x.data.nbytes()));
+}
+
 void gpu_condition(Runtime& rt, Tensor& x, const Tensor& t, const std::string& name) {
-  int n=x.rows*x.cols;
-  add_condition<<<(n+255)/256,256>>>(x.ptr(),t.ptr(),rt.weight(name),n,x.cols);
+  int n = x.rows * x.cols;
+  add_condition<<<(n + 255) / 256, 256>>>(x.ptr(), t.ptr(), rt.weight(name), n, x.cols);
 }
-Tensor gpu_yue_norm(Runtime& rt,const Tensor& x,const std::string& name,int width) {
-  int rows=x.rows*x.cols/width, outputs=1;
-  while(outputs*2<=rows && outputs<512) outputs*=2;
-  int threads=std::min(width>128 ? width/4 : width,512/std::min(outputs,16));
-  Tensor y(x.rows,x.cols);
-  rms<<<rows,threads>>>(x.ptr(),rt.weight(name),y.ptr(),width);
+
+Tensor gpu_yue_norm(Runtime& rt, const Tensor& x, const std::string& name, int width) {
+  int rows = x.rows * x.cols / width, outputs = 1;
+  while (outputs * 2 <= rows && outputs < 512)
+    outputs *= 2;
+  int threads = std::min(width > 128 ? width / 4 : width, 512 / std::min(outputs, 16));
+  Tensor y(x.rows, x.cols);
+  rms<<<rows, threads>>>(x.ptr(), rt.weight(name), y.ptr(), width);
   return y;
 }
 }

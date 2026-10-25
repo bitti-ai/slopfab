@@ -116,16 +116,6 @@ void main() {
     for(uint k=0;k<p[3];++k) sum=fma(x32((h*p[4]+q)*p[3]+k),wf(k*p[7]*cols+(h/(p[6]/p[7]))*cols+c),sum);
     put(((q+p[5])*p[6]+h)*cols+c,sum); return;
   }
-  if(op==14) {
-    if(g>=n) return;
-    uint row=g/p[3],outcol=g%p[3];
-    precise float sum=0;
-    for(uint c=t;c<cols;c+=256) sum=fma(xf(row*cols+c),wf(outcol*cols+c),sum);
-    s[t]=sum; barrier();
-    for(uint d=128;d>0;d/=2) { if(t<d) s[t]+=s[t+d]; barrier(); }
-    if(t==0) put(g,p[4]==1?s[0]+bf_(outcol):p[4]==2?bf(s[0])+bf_(outcol):s[0]); return;
-  }
-  if(op==17) { if(i<n) put(i,xf(i)+wf(i%cols)); return; }
   if(op==15 || op==16) {
     if(i>=n) return;
     float a=x32(i);

@@ -1,2 +1,2 @@
 #define SLOPFAB_MUSIC_VULKAN 1
-#include "minimax.cu"
+#include "minimax_pipeline.inc"

@@ -13,9 +13,11 @@ if(SLOPFAB_BUILD_TESTS)
     add_test(NAME music_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_music_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(music_cli PROPERTIES LABELS synthetic TIMEOUT 60)
-    add_test(NAME moss_cli COMMAND ${Python3_EXECUTABLE}
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_moss_cli.py" "$<TARGET_FILE:slopfab>")
-    set_tests_properties(moss_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+    if(SLOPFAB_ENABLE_CUDA)
+      add_test(NAME moss_cli COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_moss_cli.py" "$<TARGET_FILE:slopfab>")
+      set_tests_properties(moss_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+    endif()
     add_test(NAME conditioning_assets_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_assets_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(conditioning_assets_cli PROPERTIES LABELS synthetic TIMEOUT 60)
@@ -165,6 +167,7 @@ if(SLOPFAB_BUILD_TESTS)
     target_link_libraries(slopfab_vulkan_w4a8probe PRIVATE slopfab_vulkan)
     add_executable(slopfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp
       tests/test_vulkan_pipeline_sets.cpp
+      tests/test_music_vulkan.cpp
       tests/test_vulkan_conditioner_synthetic.cpp
       tests/test_vulkan_conditioner_checkpoint.cpp
       tests/test_vulkan_conditioner_integration.cpp

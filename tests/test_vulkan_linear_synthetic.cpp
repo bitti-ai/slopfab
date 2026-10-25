@@ -1,5 +1,61 @@
 #include "detail/vulkan_fixture.h"
 
+SLOPFAB_TEST_CATEGORY(vulkan_music_fused_bias_rounding, "synthetic") {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!Instance::available()) {
+    SKIP_UNSUPPORTED_HARDWARE("Vulkan unavailable");
+    return;
+  }
+  auto instance = Instance::create();
+  auto devices = instance.enumerate_devices();
+  if (devices.empty() || !devices[0].info().timeline_semaphore) {
+    SKIP_UNSUPPORTED_HARDWARE("Vulkan timeline unavailable");
+    return;
+  }
+  DeviceOptions options;
+  options.portable_arithmetic = true;
+  options.enable_timeline_semaphore = true;
+  options.enable_storage_buffer_16bit = devices[0].info().storage_buffer_16bit;
+  options.enable_cooperative_matrix = devices[0].info().cooperative_matrix;
+  auto device = devices[0].create_device(options);
+  TensorContextOptions co;
+  co.pipeline_sets = TensorPipelineSet::kCore;
+  TensorContext context(device, co);
+  for (uint32_t rows : {3u, 64u}) {
+    uint32_t n = rows == 3 ? 11 : 16, k = 16;
+    uint64_t xs[] = {rows, k}, ws[] = {n, k}, ys[] = {rows, n}, bs[] = {n};
+    auto x = context.allocate(TensorLayout::contiguous(xs, 2), ScalarType::kBFloat16);
+    auto w = context.allocate(TensorLayout::contiguous(ws, 2), ScalarType::kBFloat16);
+    auto y = context.allocate(TensorLayout::contiguous(ys, 2), ScalarType::kBFloat16);
+    auto b = context.allocate(TensorLayout::contiguous(bs, 1), ScalarType::kBFloat16);
+    std::vector<uint16_t> xv(rows * k), wv(n * k, 0x3f80), bv(n, 0x3b80), yv(rows * n);
+    for (uint32_t r = 0; r < rows; ++r) {
+      xv[r * k] = 0x3f80;
+      xv[r * k + 1] = 0x3b80;
+    }
+    context.upload_bytes(x, xv.data(), xv.size() * 2);
+    context.upload_bytes(w, wv.data(), wv.size() * 2);
+    context.upload_bytes(b, bv.data(), bv.size() * 2);
+    for (auto mode : {DenseGemmBias::kBFloat16, DenseGemmBias::kBFloat16Fused}) {
+      DenseGemmPlanDesc d;
+      d.max_rows = rows;
+      d.out_features = n;
+      d.in_features = k;
+      d.bias = mode;
+      auto plan = DenseGemmPlan::create(context, d);
+      auto batch = context.begin_batch();
+      plan.record(batch, x, w, y, rows, 0, 0, &b);
+      batch.submit().wait();
+      context.download_bytes(y, yv.data(), yv.size() * 2);
+      // 1 + 1/256 rounds to 1 in BF16. Adding another 1/256 before
+      // rounding must instead produce 1 + 1/128, on full and tail tiles.
+      for (auto v : yv)
+        CHECK(v == (mode == DenseGemmBias::kBFloat16Fused ? 0x3f81 : 0x3f80));
+    }
+  }
+}
+
 SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
   using namespace slopfab;
   using namespace slopfab::vulkan;
@@ -528,7 +584,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     // Software Vulkan remains useful for runtime, BF16 and FP16 coverage, but
     // its FP32 FMA rounding has not passed the physical-GPU parity contract.
     if (mode == DenseGemmMode::kFloat32 && device.info().software) {
-      SKIP_UNSUPPORTED_HARDWARE("exact FP32 GEMM requires a qualified physical GPU; software Vulkan FMA rounding differs");
+      SKIP_UNSUPPORTED_HARDWARE(
+          "exact FP32 GEMM requires a qualified physical GPU; software Vulkan FMA rounding differs");
       return;
     }
     const uint64_t fs[] = {rows, k}, fws[] = {n, k}, fos[] = {rows, n};
@@ -951,19 +1008,27 @@ static void vulkan_packed_integer_linear(int bits, uint32_t group_size) {
         levels[o * k + i] = code; // W4 uses the codebook below.
     }
   const uint8_t group_values[] = {0, 0x38, 0x48, 0x78};
-  for (size_t i = 0; i < groups.size(); ++i) groups[i] = group_values[i % 4];
-  for (uint32_t i = 0; i < n; ++i) channel[i] = std::ldexp(1.0f, int(i % 4) - 3);
-  for (uint32_t i = 0; i < 16; ++i) codebook[i] = (float(i) - 7.0f) * 0.5f;
+  for (size_t i = 0; i < groups.size(); ++i)
+    groups[i] = group_values[i % 4];
+  for (uint32_t i = 0; i < n; ++i)
+    channel[i] = std::ldexp(1.0f, int(i % 4) - 3);
+  for (uint32_t i = 0; i < 16; ++i)
+    codebook[i] = (float(i) - 7.0f) * 0.5f;
   LinearWeightUpload u;
   u.format = bits == 6 ? LinearWeightFormat::kW6A8 : LinearWeightFormat::kW4A8;
   u.packed_group_size = group_size;
-  u.out_features = n; u.in_features = k;
-  u.data = packed.data(); u.data_bytes = packed.size();
-  u.block_scale = groups.data(); u.block_scale_count = groups.size();
-  u.weight_scale = channel.data(); u.weight_scale_count = channel.size();
+  u.out_features = n;
+  u.in_features = k;
+  u.data = packed.data();
+  u.data_bytes = packed.size();
+  u.block_scale = groups.data();
+  u.block_scale_count = groups.size();
+  u.weight_scale = channel.data();
+  u.weight_scale_count = channel.size();
   u.w4_codebook = bits == 4 ? codebook.data() : nullptr;
   u.w4_codebook_count = bits == 4 ? codebook.size() : 0;
-  u.convrot = true; u.convrot_group = 256;
+  u.convrot = true;
+  u.convrot_group = 256;
   auto weight = LinearWeight::upload(context, u);
   CHECK(weight.stored_bytes() == packed.size());
   CHECK(weight.resident_bytes() == packed.size() + groups.size() + n * 4 + (bits == 4 ? 64 : 0));
@@ -981,7 +1046,7 @@ static void vulkan_packed_integer_linear(int bits, uint32_t group_size) {
     x[i] = reference_bf16(float(int((i * 37) % 53) - 26) / 8.0f);
   std::fill(x.begin() + 4 * k, x.end(), reference_bf16(-0.5f));
   context.upload_bytes(input, x.data(), x.size() * 2);
-  const int h[4][4] = {{1,1,1,-1}, {1,1,-1,1}, {1,-1,1,1}, {-1,1,1,1}};
+  const int h[4][4] = {{1, 1, 1, -1}, {1, 1, -1, 1}, {1, -1, 1, 1}, {-1, 1, 1, 1}};
   for (uint32_t r = 0; r < rows; ++r) {
     std::vector<float> rotated_ref(k);
     float maximum = 0;
@@ -1056,12 +1121,17 @@ static void vulkan_packed_integer_linear(int bits, uint32_t group_size) {
   std::vector<float> large_scales(large_n);
   std::array<float, 16> large_book{};
   large_book[0] = 1.0f;
-  for (uint32_t c = 0; c < large_n; ++c) large_scales[c] = c % 2 ? 0.5f : 1.0f;
+  for (uint32_t c = 0; c < large_n; ++c)
+    large_scales[c] = c % 2 ? 0.5f : 1.0f;
   auto big = u;
-  big.out_features = large_n; big.in_features = large_k;
-  big.data = large_codes.data(); big.data_bytes = large_codes.size();
-  big.block_scale = large_groups.data(); big.block_scale_count = large_groups.size();
-  big.weight_scale = large_scales.data(); big.weight_scale_count = large_scales.size();
+  big.out_features = large_n;
+  big.in_features = large_k;
+  big.data = large_codes.data();
+  big.data_bytes = large_codes.size();
+  big.block_scale = large_groups.data();
+  big.block_scale_count = large_groups.size();
+  big.weight_scale = large_scales.data();
+  big.weight_scale_count = large_scales.size();
   big.w4_codebook = large_book.data();
   auto large_weight = LinearWeight::upload(context, big);
   auto large_input = matrix(large_rows, large_k, ScalarType::kBFloat16);
@@ -1094,15 +1164,29 @@ static void vulkan_packed_integer_linear(int bits, uint32_t group_size) {
   }
   CHECK_MSG(large_matches, "large W4A8 mismatch at %zu: %g", first_mismatch,
             first_mismatch < large_y.size() ? bf16_to_f32(large_y[first_mismatch]) : 0);
-  auto rejected = [](auto fn) { try { fn(); return false; } catch (const std::exception&) { return true; } };
-  CHECK(rejected([&] { auto b = context.begin_batch(); weight.forward_w4a8(b, rotated, output, output); }));
+  auto rejected = [](auto fn) {
+    try {
+      fn();
+      return false;
+    } catch (const std::exception&) {
+      return true;
+    }
+  };
+  CHECK(rejected([&] {
+    auto b = context.begin_batch();
+    weight.forward_w4a8(b, rotated, output, output);
+  }));
   u.w4_codebook_count = 15;
   const auto before = context.reserved_bytes();
-  CHECK(rejected([&] { LinearWeight::upload(context, u); }));
+  CHECK(rejected([&] {
+    LinearWeight::upload(context, u);
+  }));
   CHECK(context.reserved_bytes() == before);
   u.w4_codebook_count = 16;
   groups[0] = 0x7f;
-  CHECK(rejected([&] { LinearWeight::upload(context, u); }));
+  CHECK(rejected([&] {
+    LinearWeight::upload(context, u);
+  }));
 }
 
 SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {

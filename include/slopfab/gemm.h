@@ -17,6 +17,7 @@ enum class DenseGemmBias : uint32_t {
   kNone = 0,
   kFloat32 = 1,
   kBFloat16 = 2,
+  kBFloat16Fused = 3, // add to the FP32 accumulator before BF16 rounding
 };
 
 struct DenseGemmPlanDesc {

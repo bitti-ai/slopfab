@@ -49,7 +49,17 @@ SLOPFAB_TEST(music_plan_and_guards) {
   RunOptions o;
   o.inference_backend = DeviceBackend::kVulkan;
   o.attention_mode = AttentionMode::kFlash2;
+  o.vulkan_portable_arithmetic = true;
   validate_generation_options(r, p, o);
+  o.vulkan_portable_arithmetic = false;
+  CHECK(fails([&] {
+    validate_generation_options(r, p, o);
+  }));
+  o.vulkan_portable_arithmetic = true;
+  r.model_family = "minimax_music3";
+  r.music.planning = "full";
+  auto mm = resolve_plan(r);
+  validate_generation_options(r, mm, o);
   CHECK(fails([] {
     parse_music_settings(R"({"top_k":1.5})");
   }));

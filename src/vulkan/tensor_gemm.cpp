@@ -54,7 +54,8 @@ DenseGemmPlan DenseGemmPlan::create(TensorContext& context, const DenseGemmPlanD
   const bool valid_bias =
       desc.bias == DenseGemmBias::kNone ||
       (desc.mode == DenseGemmMode::kBFloat16 &&
-       (desc.bias == DenseGemmBias::kFloat32 || desc.bias == DenseGemmBias::kBFloat16)) ||
+       (desc.bias == DenseGemmBias::kFloat32 ||
+        (desc.bias == DenseGemmBias::kBFloat16 || desc.bias == DenseGemmBias::kBFloat16Fused))) ||
       (desc.mode == DenseGemmMode::kFloat32 && desc.bias == DenseGemmBias::kFloat32);
   if (!valid_bias) {
     throw std::invalid_argument("vulkan gemm: bias is invalid for this mode");
@@ -164,7 +165,9 @@ void DenseGemmPlan::record_impl(TensorBatch& batch, DeviceTensor& input,
   const ScalarType output_type =
       desc.mode == DenseGemmMode::kBFloat16 ? ScalarType::kBFloat16 : ScalarType::kFloat32;
   const ScalarType bias_type =
-      desc.bias == DenseGemmBias::kBFloat16 ? ScalarType::kBFloat16 : ScalarType::kFloat32;
+      (desc.bias == DenseGemmBias::kBFloat16 || desc.bias == DenseGemmBias::kBFloat16Fused)
+          ? ScalarType::kBFloat16
+          : ScalarType::kFloat32;
   const bool aliases =
       src.get() == weight.get() || src.get() == dst.get() || weight.get() == dst.get() ||
       (bias_tensor && (bias_tensor.get() == src.get() || bias_tensor.get() == weight.get() ||
@@ -212,9 +215,10 @@ void DenseGemmPlan::record_impl(TensorBatch& batch, DeviceTensor& input,
   parameters.input_row_offset = input_row_offset;
   parameters.output_row_offset = output_row_offset;
   if (desc.mode == DenseGemmMode::kBFloat16) {
-    parameters.mode = desc.bias == DenseGemmBias::kNone      ? 0u
-                      : desc.bias == DenseGemmBias::kFloat32 ? 1u
-                                                             : 2u;
+    parameters.mode = desc.bias == DenseGemmBias::kNone            ? 0u
+                      : desc.bias == DenseGemmBias::kBFloat16Fused ? 6u
+                      : desc.bias == DenseGemmBias::kFloat32       ? 1u
+                                                                   : 2u;
   } else if (desc.mode == DenseGemmMode::kFloat16Vae) {
     parameters.mode = 3u;
     parameters.input_row_offset = 0;

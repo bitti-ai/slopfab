@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
     const std::string requested = argv[1];
     if (requested == "mm-prompt") {
       auto ids = mg::minimax_prompt(rt.checkpoint, "# Warm **piano**\n<|BPM 90|>",
-                                       "[Verse] Hello\n [Chorus] World");
+                                    "[Verse] Hello\n [Chorus] World");
       std::vector<float> values(ids.begin(), ids.end());
       write_safetensors(argv[4], {{"output", {int64_t(ids.size())}, values}});
       return 0;
@@ -34,8 +34,8 @@ int main(int argc, char** argv) {
       std::string caption((std::istreambuf_iterator<char>(stream)), {});
       auto ids = mg::minimax_prompt(rt.checkpoint, caption, "");
       auto hidden =
-          mg::minimax_hidden(rt, ids, MusicSettings{}, argc == 7 ? std::stoi(argv[6]) : 300,
-                                42, {}, argc >= 6 ? argv[5] : "");
+          mg::minimax_hidden(rt, ids, MusicSettings{}, argc == 7 ? std::stoi(argv[6]) : 300, 42, {},
+                             argc >= 6 ? argv[5] : "");
       write_safetensors(argv[4], {{"hidden", {int64_t(hidden.size() / 32768), 32768}, hidden}});
       return 0;
     }
@@ -52,7 +52,8 @@ int main(int argc, char** argv) {
     SafeTensors input;
     input.open(argv[3]);
     if (requested == "mm-render") {
-      if (argc != 6) throw std::invalid_argument("mm-render DIT HIDDEN OUTPUT.wav VAE");
+      if (argc != 6)
+        throw std::invalid_argument("mm-render DIT HIDDEN OUTPUT.wav VAE");
       GenerateRequest request;
       request.model_family = "minimax_music3";
       request.transformer_path = argv[2];
@@ -65,10 +66,13 @@ int main(int argc, char** argv) {
       RunOptions options;
 #ifdef SLOPFAB_MUSIC_VULKAN
       options.inference_backend = DeviceBackend::kVulkan;
+      options.vulkan_portable_arithmetic = true;
 #endif
-      options.dump_latents_path = std::filesystem::path(argv[4]).replace_extension(".safetensors").string();
+      options.dump_latents_path =
+          std::filesystem::path(argv[4]).replace_extension(".safetensors").string();
       auto result = mg::run_minimax_from_hidden(request, plan, options, std::move(hidden));
-      if (!result.ok) throw std::runtime_error(result.message);
+      if (!result.ok)
+        throw std::runtime_error(result.message);
       return 0;
     }
     std::string mode = argv[1];
