@@ -198,6 +198,7 @@ struct GeneratePlan {
   int canvas_width = 0;
   int aligned_frames = 0;
   double duration_seconds = 0.0;
+  int music_frames = 0; // autoregressive 25 Hz frame ceiling, zero for image/video
 
   // aligned_frames/duration describe delivered output; layout describes only
   // the bounded sampling window. Equal for ordinary generations.
@@ -224,7 +225,10 @@ struct GeneratePlan {
   int num_inference_steps = 0;
 
   int num_model_evaluations() const {
-    if (model.family == "yue2") return num_inference_steps * 2;
+    if (model.family == "yue2")
+      return num_inference_steps * 2;
+    if (model.family == "minimax_music3")
+      return num_inference_steps * 2 * (music_frames <= 200 ? 1 : (music_frames - 1) / 100);
     if (audio_timesteps.empty())
       return static_cast<int>(video_timesteps.size());
     return static_cast<int>(

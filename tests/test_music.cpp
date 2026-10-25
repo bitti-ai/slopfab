@@ -71,3 +71,38 @@ SLOPFAB_TEST(music_unicode_nfc) {
   CHECK(normalize_nfc("\xe2\x84\xab") == "\xc3\x85");
   CHECK(normalize_nfc("\xcc\x81\xcc\xa7") == "\xcc\xa7\xcc\x81");
 }
+
+SLOPFAB_TEST(music_minimax_geometry_and_sampling) {
+  using namespace slopfab;
+  GenerateRequest r;
+  r.model_family = "minimax_music3";
+  r.music.duration = 8;
+  auto p = resolve_plan(r);
+  CHECK(p.music_frames == 200);
+  CHECK(p.layout.num_audio_latents == 689);
+  CHECK(p.layout.num_audio_rows == 689);
+  CHECK(p.layout.num_video_rows == 0);
+  CHECK(p.geometry.audio_sample_rate == 44100);
+  CHECK(p.num_inference_steps == 30);
+  CHECK(p.num_model_evaluations() == 60);
+  r.music.duration = 8.04;
+  p = resolve_plan(r);
+  CHECK(p.music_frames == 201);
+  CHECK(p.num_model_evaluations() == 120);
+  r.music.duration = 12;
+  p = resolve_plan(r);
+  CHECK(p.num_model_evaluations() == 120);
+  r.music.duration = 12.04;
+  p = resolve_plan(r);
+  CHECK(p.num_model_evaluations() == 180);
+  CHECK(music::minimax_latent_length(1) == 3);
+  CHECK(music::minimax_latent_length(7500) == 25839);
+  r.music.planning = "off";
+  bool rejected = false;
+  try {
+    resolve_plan(r);
+  } catch (const std::exception&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+}

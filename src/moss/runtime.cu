@@ -46,7 +46,8 @@ __device__ float sum_block(float x) {
 }
 
 __global__ void norm_kernel(const BFloat* x, const BFloat* w, BFloat* y, int width, int cols,
-                            bool offset, const BFloat* mod, int shift, const BFloat* gate, float epsilon) {
+                            bool offset, const BFloat* mod, int shift, const BFloat* gate,
+                            float epsilon) {
   const int row = blockIdx.x;
   float sum = 0;
   for (int i = threadIdx.x; i < width; i += blockDim.x) {
@@ -162,7 +163,7 @@ const float* Runtime::float_weight(const std::string& name) {
   return static_cast<const float*>(upload(key, values.data(), values.size() * 4));
 }
 
-Tensor Runtime::project(const Tensor& x, const std::string& name) {
+Tensor Runtime::project(const Tensor& x, const std::string& name, bool fuse_bias) {
   auto it = linears_.find(name);
   if (it == linears_.end()) {
     const auto& tensor = checkpoint.at(name + ".weight");
@@ -210,7 +211,7 @@ Tensor Runtime::project(const Tensor& x, const std::string& name) {
     }
     cached = prepared->second.get();
   }
-  if (w.has_bias()) {
+  if (w.has_bias() && fuse_bias) {
     // torch.nn.Linear adds bias to the FP32 accumulator before BF16 rounding.
     // H3's existing runner deliberately uses its own post-rounding bias contract.
     const auto* dense = cached ? cached : linear.prepare(w, scratch);
@@ -253,17 +254,45 @@ Tensor Runtime::norm(const Tensor& x, const std::string& name, int width, bool o
 }
 
 namespace {
-__global__ void cross_softmax(const float* scores, BFloat* probabilities, int keys) {
- __shared__ float reduce[256];int q=blockIdx.x,t=threadIdx.x;
- float maximum=-INFINITY;for(int k=t;k<keys;k+=256)maximum=fmaxf(maximum,scores[size_t(q)*keys+k]);
- reduce[t]=maximum;__syncthreads();for(int d=128;d;d/=2){if(t<d)reduce[t]=fmaxf(reduce[t],reduce[t+d]);__syncthreads();}maximum=reduce[0];
- float sum=0;for(int k=t;k<keys;k+=256)sum+=expf(scores[size_t(q)*keys+k]-maximum);
- reduce[t]=sum;__syncthreads();for(int d=128;d;d/=2){if(t<d)reduce[t]+=reduce[t+d];__syncthreads();}sum=reduce[0];
- for(int k=t;k<keys;k+=256)probabilities[size_t(q)*keys+k]=__float2bfloat16(expf(scores[size_t(q)*keys+k]-maximum)/sum);
+template <typename T>
+__global__ void cross_softmax(const float* scores, T* probabilities, int keys) {
+  __shared__ float reduce[256];
+  int q = blockIdx.x, t = threadIdx.x;
+  float maximum = -INFINITY;
+  for (int k = t; k < keys; k += 256)
+    maximum = fmaxf(maximum, scores[size_t(q) * keys + k]);
+  reduce[t] = maximum;
+  __syncthreads();
+  for (int d = 128; d; d /= 2) {
+    if (t < d)
+      reduce[t] = fmaxf(reduce[t], reduce[t + d]);
+    __syncthreads();
+  }
+  maximum = reduce[0];
+  float sum = 0;
+  for (int k = t; k < keys; k += 256)
+    sum += expf(scores[size_t(q) * keys + k] - maximum);
+  reduce[t] = sum;
+  __syncthreads();
+  for (int d = 128; d; d /= 2) {
+    if (t < d)
+      reduce[t] += reduce[t + d];
+    __syncthreads();
+  }
+  sum = reduce[0];
+  for (int k = t; k < keys; k += 256)
+    probabilities[size_t(q) * keys + k] = T(expf(scores[size_t(q) * keys + k] - maximum) / sum);
+}
+
+template <typename T, typename U> __global__ void cast_attention(const T* x, U* y, int n) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n)
+    y[i] = U(x[i]);
 }
 }
+
 Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int kv_heads,
-                       bool causal) {
+                       bool causal, bool float_probabilities) {
   if ((causal && q.rows != k.rows) || k.rows != v.rows || k.cols != v.cols || q.cols % heads ||
       k.cols % kv_heads || q.cols / heads != k.cols / kv_heads)
     throw std::invalid_argument("attention tensor shape mismatch");
@@ -280,21 +309,44 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
                                    scratch);
     return out;
   }
-  if (q.rows != k.rows) {
-    const int dim=q.cols/heads,tile=128;Tensor out(q.rows,q.cols);
-    cuda::DeviceBuffer<float> scores(size_t(std::min(tile,q.rows))*k.rows);
+  if (q.rows != k.rows || float_probabilities) {
+    const int dim = q.cols / heads, tile = 128;
+    Tensor out(q.rows, q.cols);
+    cuda::DeviceBuffer<float> scores(size_t(std::min(tile, q.rows)) * k.rows);
     cuda::DeviceBuffer<BFloat> probabilities(scores.size());
-    const float scale=1/std::sqrt(float(dim)),one=1,zero=0;
-    for(int head=0;head<heads;++head)for(int first=0;first<q.rows;first+=tile){
-      const int count=std::min(tile,q.rows-first),kh=head/(heads/kv_heads);
-      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(blas,CUBLAS_OP_T,CUBLAS_OP_N,k.rows,count,dim,&scale,
-        k.ptr()+kh*dim,CUDA_R_16BF,k.cols,q.ptr()+size_t(first)*q.cols+head*dim,CUDA_R_16BF,q.cols,
-        &zero,scores.get(),CUDA_R_32F,k.rows,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT));
-      cross_softmax<<<count,256>>>(scores.get(),probabilities.get(),k.rows);
-      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(blas,CUBLAS_OP_N,CUBLAS_OP_N,dim,count,k.rows,&one,
-        v.ptr()+kh*dim,CUDA_R_16BF,v.cols,probabilities.get(),CUDA_R_16BF,k.rows,
-        &zero,out.ptr()+size_t(first)*out.cols+head*dim,CUDA_R_16BF,out.cols,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT));
+    cuda::DeviceBuffer<float> fp, fv, fo;
+    if (float_probabilities) {
+      fp = cuda::DeviceBuffer<float>(scores.size());
+      fv = cuda::DeviceBuffer<float>(size_t(v.rows) * v.cols);
+      fo = cuda::DeviceBuffer<float>(size_t(q.rows) * q.cols);
+      cast_attention<<<(v.rows * v.cols + 255) / 256, 256>>>(v.ptr(), fv.get(), v.rows * v.cols);
     }
+    const float scale = 1 / std::sqrt(float(dim)), one = 1, zero = 0;
+    for (int head = 0; head < heads; ++head)
+      for (int first = 0; first < q.rows; first += tile) {
+        const int count = std::min(tile, q.rows - first), kh = head / (heads / kv_heads);
+        SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
+            blas, CUBLAS_OP_T, CUBLAS_OP_N, k.rows, count, dim, &scale, k.ptr() + kh * dim,
+            CUDA_R_16BF, k.cols, q.ptr() + size_t(first) * q.cols + head * dim, CUDA_R_16BF, q.cols,
+            &zero, scores.get(), CUDA_R_32F, k.rows, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+        if (float_probabilities) {
+          cross_softmax<<<count, 256>>>(scores.get(), fp.get(), k.rows);
+          SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
+              blas, CUBLAS_OP_N, CUBLAS_OP_N, dim, count, k.rows, &one, fv.get() + kh * dim,
+              CUDA_R_32F, v.cols, fp.get(), CUDA_R_32F, k.rows, &zero,
+              fo.get() + size_t(first) * out.cols + head * dim, CUDA_R_32F, out.cols,
+              CUBLAS_COMPUTE_32F_PEDANTIC, CUBLAS_GEMM_DEFAULT));
+        } else {
+          cross_softmax<<<count, 256>>>(scores.get(), probabilities.get(), k.rows);
+          SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
+              blas, CUBLAS_OP_N, CUBLAS_OP_N, dim, count, k.rows, &one, v.ptr() + kh * dim,
+              CUDA_R_16BF, v.cols, probabilities.get(), CUDA_R_16BF, k.rows, &zero,
+              out.ptr() + size_t(first) * out.cols + head * dim, CUDA_R_16BF, out.cols,
+              CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+        }
+      }
+    if (float_probabilities)
+      cast_attention<<<(q.rows * q.cols + 255) / 256, 256>>>(fo.get(), out.ptr(), q.rows * q.cols);
     return out;
   }
   AttentionDescriptor desc;
@@ -315,12 +367,21 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
 
 void Runtime::release_prefix(const std::string& prefix) {
   for (auto it = prepared_.begin(); it != prepared_.end();)
-    if (it->first.rfind(prefix, 0) == 0) it = prepared_.erase(it); else ++it;
+    if (it->first.rfind(prefix, 0) == 0)
+      it = prepared_.erase(it);
+    else
+      ++it;
   // DeviceBuffer destruction waits for outstanding uses before freeing storage.
   for (auto it = linears_.begin(); it != linears_.end();)
-    if (it->first.rfind(prefix, 0) == 0) it = linears_.erase(it); else ++it;
+    if (it->first.rfind(prefix, 0) == 0)
+      it = linears_.erase(it);
+    else
+      ++it;
   for (auto it = storage_.begin(); it != storage_.end();)
-    if (it->first.rfind(prefix, 0) == 0) it = storage_.erase(it); else ++it;
+    if (it->first.rfind(prefix, 0) == 0)
+      it = storage_.erase(it);
+    else
+      ++it;
 }
 
 Tensor from_host(const std::vector<float>& values, int rows, int cols) {

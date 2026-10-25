@@ -433,7 +433,8 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
     text::Tokenizer tokenizer;
     load_yue_tokenizer(tokenizer, rt.checkpoint);
     auto s = request.music;
-    if (!s.top_k) s.top_k = 100;
+    if (!s.top_k)
+      s.top_k = 100;
     if (s.semantic_guidance == 0)
       s.semantic_guidance = s.planning == "off" ? 1.01f : 1.f;
     const auto instruction = yue_instruction(s.planning);
@@ -462,8 +463,8 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
       negative.push_back(abc_end);
     }
     negative.push_back(music_start);
-    auto codes = generate_tokens(rt, prefix, negative, false, plan.layout.num_audio_rows, s,
-                                 request.seed, conditioning);
+    auto codes = generate_tokens(rt, prefix, negative, false, plan.music_frames, s, request.seed,
+                                 conditioning);
     if (codes.empty())
       throw std::runtime_error("YuE2 produced no audio tokens");
     result.conditioner_executed = true;
@@ -514,10 +515,14 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
     result.seconds_denoise = result.seconds_denoise_loop = elapsed(start);
     rt.release_prefix("text_encoders.");
     rt.release_prefix("model.diffusion_model.");
-    if (!options.dump_latents_path.empty())
+    if (!options.dump_latents_path.empty()) {
+      auto parent = std::filesystem::path(options.dump_latents_path).parent_path();
+      if (!parent.empty())
+        std::filesystem::create_directories(parent);
       write_safetensors(options.dump_latents_path,
                         {{"audio_latents", {int64_t(codes.size()), 64}, latent}},
                         {{"slopfab.model_family", "yue2"}});
+    }
     notify(RunStage::kAudioDecode);
     start = Clock::now();
     auto audio = decode_yue(rt, latent, [&] {

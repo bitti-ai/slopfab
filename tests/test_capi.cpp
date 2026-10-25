@@ -1042,6 +1042,22 @@ SLOPFAB_TEST(capi_request_geometry) {
   CHECK(plan.num_model_evaluations == 7);
 }
 
+SLOPFAB_TEST(capi_music_plan) {
+  Request request;
+  CHECK(slopfab_request_set_model_family(request.handle,"yue2")==SLOPFAB_OK);
+  CHECK(slopfab_request_set_music_settings(request.handle,R"({"duration":8,"planning":"off","lyrics":"[verse] Hello"})")==SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);
+  CHECK(plan.num_video_rows==0);CHECK(plan.num_audio_rows==200);CHECK(plan.num_audio_latents==200);
+  CHECK(plan.num_model_evaluations==64);
+  CHECK(slopfab_request_set_music_settings(request.handle,R"({"duration":-1})")!=SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);CHECK(plan.duration_seconds==8);
+  CHECK(slopfab_request_set_model_family(request.handle,"minimax_music3")==SLOPFAB_OK);
+  CHECK(slopfab_request_set_music_settings(request.handle,R"({"duration":8.04,"flow_guidance":1.7})")==SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);
+  CHECK(plan.num_audio_latents==692);CHECK(plan.num_model_evaluations==120);
+}
+
 SLOPFAB_TEST(capi_still_image_plan) {
   Request request;
   CHECK(slopfab_request_set_prompt(request.handle, "a still life") == SLOPFAB_OK);

@@ -43,12 +43,13 @@ public:
   bool cache_dense_weights = false;
   const BFloat* weight(const std::string& name);
   const float* float_weight(const std::string& name);
-  Tensor project(const Tensor& x, const std::string& name);
+  Tensor project(const Tensor& x, const std::string& name, bool fused_bias = true);
   Tensor norm(const Tensor& x, const std::string& name, int width = 0, bool unit_offset = false,
               const Tensor* modulation = nullptr, int shift = 0, const Tensor* gate = nullptr,
               float epsilon = 1e-6f);
+  // float_probabilities keeps softmax/PV in FP32 for the sensitive music flow stack.
   Tensor attend(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int kv_heads,
-                bool causal = false);
+                bool causal = false, bool float_probabilities = false);
   void release_prefix(const std::string& prefix);
 
 private:
@@ -75,5 +76,5 @@ Tensor image_prediction(Runtime& rt, const Tensor& latent, const Tensor& text, i
 std::vector<float> decode_image(const std::string& path, const std::vector<float>& latent,
                                 int height, int width);
 std::vector<float> encode_flux_image(const std::string& path, const std::vector<uint8_t>& pixels,
-                                    int height, int width);
+                                     int height, int width);
 } // namespace slopfab::moss

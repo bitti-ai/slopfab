@@ -63,8 +63,8 @@ GeneratePlan resolve_music_plan(const GenerateRequest& r) {
   validate_music_settings(r.music);
   if (r.has_references() || r.continuation || r.bridge || r.image_edit.image || r.animate ||
       r.video_transition || r.preserve_driving_audio || !r.loras.empty() || r.still_image ||
-      r.canvas_width || r.canvas_height || r.cache_threshold || r.skip_every || r.block_cache_span ||
-      r.motion_cache.active() || !r.negative_prompt.empty() ||
+      r.canvas_width || r.canvas_height || r.cache_threshold || r.skip_every ||
+      r.block_cache_span || r.motion_cache.active() || !r.negative_prompt.empty() ||
       r.schedule != sampler::ScheduleKind::kDefault)
     throw std::invalid_argument(
         "music generation does not support video/image controls, references, adapters or caches");
@@ -84,8 +84,10 @@ GeneratePlan resolve_music_plan(const GenerateRequest& r) {
   if (!minimax && r.music.flow_guidance != 0)
     throw std::invalid_argument("flow_guidance is only supported by MiniMax Music3");
   if (minimax && (r.music.planning != "full" || !r.music.abc.empty() || r.music.temperature != 1 ||
-                 r.music.top_p != .95f || r.music.repetition_penalty != 1.2f || r.music.abc_max_tokens != 4096))
-    throw std::invalid_argument("MiniMax Music3 uses top-k sampling; YuE2 planning and sampling controls are unsupported");
+                  r.music.top_p != .95f || r.music.repetition_penalty != 1.2f ||
+                  r.music.abc_max_tokens != 4096))
+    throw std::invalid_argument(
+        "MiniMax Music3 uses top-k sampling; YuE2 planning and sampling controls are unsupported");
   if (minimax && r.music.top_k > 1024)
     throw std::invalid_argument("MiniMax Music3 top_k must be at most 1024");
   p.model.origin = "music checkpoint";
@@ -96,8 +98,13 @@ GeneratePlan resolve_music_plan(const GenerateRequest& r) {
     p.checkpoint_available = true;
   }
   p.duration_seconds = std::ceil(r.music.duration * 25) / 25;
-  p.layout.num_audio_rows = int(std::ceil(r.music.duration * 25));
-  p.num_inference_steps = r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(minimax ? 30 : 32);
+  p.music_frames = int(std::ceil(r.music.duration * 25));
+  p.layout.num_audio_latents =
+      minimax ? music::minimax_latent_length(p.music_frames) : p.music_frames;
+  p.layout.num_audio_rows = p.layout.num_audio_latents;
+  p.num_inference_steps = r.num_inference_steps
+                              ? r.num_inference_steps
+                              : r.sampling.default_steps.value_or(minimax ? 30 : 32);
   if (p.num_inference_steps < 1 || p.num_inference_steps > 1000)
     throw std::invalid_argument("music flow steps must be in [1,1000]");
   p.geometry.audio_features = minimax ? 128 : 64;
@@ -108,9 +115,11 @@ GeneratePlan resolve_music_plan(const GenerateRequest& r) {
 }
 
 int music::minimax_latent_length(int frames) {
-  if (frames < 1 || frames > 7500) throw std::invalid_argument("MiniMax Music3 frame count out of range");
+  if (frames < 1 || frames > 7500)
+    throw std::invalid_argument("MiniMax Music3 frame count out of range");
   return std::max(1, frames * 441 / 128);
 }
+
 std::string music::yue_instruction(const std::string& mode) {
   if (mode == "off")
     return "Generate music with codec tokens from the given conditions.";

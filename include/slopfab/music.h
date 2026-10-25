@@ -23,7 +23,7 @@ struct MusicSettings {
   int top_k = 0; // zero selects 100 for YuE2, 50 for MiniMax Music3
   float repetition_penalty = 1.2f;
   float semantic_guidance = 0.f; // zero selects the model's recipe
-  float flow_guidance = 0.f; // MiniMax Music3: zero selects 1.7
+  float flow_guidance = 0.f;     // MiniMax Music3: zero selects 1.7
   int abc_max_tokens = 4096;
 };
 
@@ -33,7 +33,8 @@ GeneratePlan resolve_music_plan(const GenerateRequest& request);
 
 namespace music {
 void load_yue_tokenizer(text::Tokenizer&, const SafeTensors&);
-std::vector<int32_t> minimax_prompt(const SafeTensors&, const std::string& caption, const std::string& lyrics);
+std::vector<int32_t> minimax_prompt(const SafeTensors&, const std::string& caption,
+                                    const std::string& lyrics);
 int minimax_latent_length(int frames);
 constexpr int eod = 151643, abc_start = 151847, abc_end = 151848;
 constexpr int music_start = 151851, music_end = 151852;
