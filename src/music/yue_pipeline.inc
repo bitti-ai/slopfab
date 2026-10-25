@@ -409,7 +409,10 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
       if (!parent.empty())
         std::filesystem::create_directories(parent);
       write_safetensors(options.dump_latents_path,
-                        {{"audio_latents", {int64_t(codes.size()), 64}, latent}},
+                        {{"audio_latents", {int64_t(codes.size()), 64}, latent},
+                         {"semantic_tokens",
+                          {int64_t(codes.size())},
+                          std::vector<float>(codes.begin(), codes.end())}},
                         {{"slopfab.model_family", "yue2"}});
     }
     notify(RunStage::kAudioDecode);

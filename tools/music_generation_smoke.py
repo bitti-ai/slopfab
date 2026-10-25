@@ -14,6 +14,8 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--library", required=True, type=Path)
 p.add_argument("--weights", default="weights", type=Path)
 p.add_argument("--family", choices=("yue2", "minimax_music3", "both"), default="both")
+p.add_argument("--repeats", type=int, default=2)
+p.add_argument("--output-dir", type=Path, help="Save raw float32 audio for repeatability diagnosis")
 p.add_argument("--backend", choices=("cuda", "vulkan"), default="cuda")
 a = p.parse_args()
 dll = C.CDLL(str(a.library.resolve()))
@@ -71,7 +73,8 @@ for family in paths if a.family == "both" else [a.family]:
         if a.backend == "vulkan":
             check(bind("slopfab_request_set_vulkan_arithmetic", [handle, C.c_int])(request, 1))
         digests = []
-        for repeat in range(2):
+        first_samples = None
+        for repeat in range(a.repeats):
             check(start(request, None, None, C.byref(generation)))
             if wait(generation, -1):
                 raise RuntimeError(bind("slopfab_generation_error", [handle], C.c_char_p)(generation).decode())
@@ -86,9 +89,17 @@ for family in paths if a.family == "both" else [a.family]:
             assert all(math.isfinite(v) for v in samples) and max(samples) != min(samples)
             assert output.steps_computed == 1
             digests.append(hashlib.sha256(C.string_at(output.audio, output.audio_float_count * 4)).hexdigest())
+            if a.output_dir:
+                a.output_dir.mkdir(parents=True, exist_ok=True)
+                (a.output_dir / f"{a.backend}-{family}-{repeat}.f32").write_bytes(C.string_at(output.audio, output.audio_float_count * 4))
+            if first_samples is None:
+                first_samples = samples
+            elif digests[-1] != digests[0]:
+                difference = max(abs(x - y) for x, y in zip(first_samples, samples))
+                raise AssertionError(f"{a.backend} {family}: same-seed samples differ on repeat {repeat}; max error {difference}")
             destroy(generation)
             generation = handle()
-        assert digests[0] == digests[1], "same-seed samples differ"
+        assert len(digests) >= 2, "at least two repeats required"
         check(start(request, None, None, C.byref(generation)))
         bind("slopfab_generation_cancel", [handle], None)(generation)
         assert wait(generation, -1) == -8, "expected cancellation"

@@ -76,7 +76,7 @@ Progress and cancellation are checked between transformer blocks and pipeline st
 
 Music requires CUDA or a Vulkan device with 16-bit storage, shader int64, timeline semaphores, 256-thread workgroups and the required FP32 arithmetic features. Cooperative BF16 matrix multiplication is used when supported; other devices use the portable scalar GEMM path. Hardware validation so far covers an RTX 5090, not AMD or Intel GPUs. Refmods, LoRA, reference audio, video/image controls, H3 sampling schedules/caches, precomputed prompt embeddings, upscaling and continuation/bridge controls are unsupported. MiniMax text is limited to 5000 tokens and the combined AR context to 10240 tokens. YuE2 uses its 24576-token context with flow chunking.
 
-`--dump-latents` saves FP32 values of the BF16 flow result: YuE2 `audio_latents` has shape `[acoustic_frames,64]`; MiniMax saves `audio_chunk_0`, `audio_chunk_1`, etc., each `[flow_latent_frames,128]`. These are diagnostic tensors, not resumable H3 latent archives. MiniMax latent frame counts are `floor(acoustic_frames * 441 / 128)` per window.
+`--dump-latents` saves FP32 values of the BF16 flow result: YuE2 `audio_latents` has shape `[acoustic_frames,64]` and `semantic_tokens` records the generated token IDs; MiniMax saves `audio_chunk_0`, `audio_chunk_1`, etc., each `[flow_latent_frames,128]`. These are diagnostic tensors, not resumable H3 latent archives. MiniMax latent frame counts are `floor(acoustic_frames * 441 / 128)` per window.
 
 ## Validation
 
@@ -84,10 +84,10 @@ Portable music and C API tests cover settings, rejected controls, audio geometry
 
 ```powershell
 python tools/music_generation_smoke.py --library dist/windows/slopfab.dll
-python tools/music_generation_smoke.py --library dist/windows/slopfab.dll --backend vulkan
+python tools/music_generation_smoke.py --library dist/windows/slopfab.dll --backend vulkan --repeats 5
 ```
 
-The Windows release passed all eight selected unit, C API, tokenizer and CLI regression suites, including music CLI defaults. Both models passed DLL audio delivery, same-seed byte-for-byte repeatability and cancellation checks. Real CLI runs include YuE2 full ABC planning with 32 flow steps and an 8-second frame budget, and MiniMax with a 12-second frame budget, two overlapping windows and 30 flow steps per window. Example WAVs and logs are under `build/music-support/`.
+The Windows release passed all nine selected unit, C API, tokenizer, shader-control and CLI regression suites, including music CLI defaults. Both models passed DLL audio delivery, same-seed byte-for-byte repeatability and cancellation checks. Real CLI runs include YuE2 full ABC planning with 32 flow steps and an 8-second frame budget, and MiniMax with a 12-second frame budget, two overlapping windows and 30 flow steps per window. Example WAVs and logs are under `build/music-support/`.
 
 `tools/yue_reference.py`, `tools/yue_tokenizer_reference.py` and `tools/minimax_music_reference.py` provide independent PyTorch equation, tokenizer and upstream codec comparisons using `slopfab_musicprobe`. They require development dependencies and upstream decoder source paths; production inference does not.
 
@@ -121,7 +121,7 @@ The full MiniMax sampling fixture uses the same captured piano conditioning and 
 
 `slopfab_musicprobe_vulkan` accepts the same modes and fixtures as `slopfab_musicprobe`, including `mm-sample` for full-window comparisons and `mm-render` for production replay through overlap handling and waveform decoding. GPU regressions cover YuE's rounded inverse RMS, grouped-query attention with 256-wide heads and partially filled KV caches, and fused bias before BF16 rounding on full and tail GEMM tiles. The C API smoke harness checks both backends for geometry, finite samples, seeded repeatability and cancellation.
 
-CUDA and Vulkan share token sampling, prompt construction, flow integration, windowing and codec orchestration. Vulkan uses bounded command batches, caches expanded BF16 matrices without retaining compressed GPU duplicates, and tiles large vocabulary weights below storage-buffer limits. The shader sources and embedded SPIR-V binaries are checked by the build manifest.
+CUDA and Vulkan share token sampling, prompt construction, flow integration, windowing and codec orchestration. Vulkan caches expanded BF16 matrices without retaining compressed GPU duplicates and tiles large vocabulary weights below storage-buffer limits. It currently waits for each music GPU operator before submitting the next. Repeated seeded tests exposed intermittent corruption in batched music execution; batching remains disabled until that path is reliable. This conservative submission path passed five consecutive generations for each model with byte-identical audio, plus cancellation checks. It adds CPU submission overhead. The shader sources and embedded SPIR-V binaries are checked by the build manifest. Cooperative pipelines explicitly enable their Vulkan memory-model and full-subgroup requirements. Shader-control tests check capability declarations and reject duplicate execution modes; GPU regressions also pass with synchronization and shader race validation enabled.
 
 ## Upstream references
 

@@ -65,7 +65,10 @@ Engine::~Engine() {
 }
 
 vk::TensorBatch& Engine::batch() {
-  if (pending && pending.remaining_operator_capacity() < 4)
+  // Complete each operation before submitting its consumers. Batched music
+  // graphs showed intermittent corruption during repeated seeded generation;
+  // keep the conservative submission path until batching is validated.
+  if (pending && pending.remaining_operator_capacity() < 128)
     flush();
   if (!pending)
     pending = context.begin_batch();

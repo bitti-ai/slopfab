@@ -68,8 +68,9 @@ void main() {
   }
   coopMatStore(sum, accumulator, subgroup * 256u, 16,
                gl_CooperativeMatrixLayoutRowMajor);
-  subgroupMemoryBarrierShared();
-  subgroupBarrier();
+  // Use a workgroup barrier so shared accumulator stores are also visible to
+  // shader race instrumentation, which cannot model subgroup-only barriers.
+  barrier();
   for (uint pair = gl_SubgroupInvocationID; pair < 128u; pair += 32u) {
     uint tile_row = pair >> 3u;
     uint tile_column = (pair & 7u) * 2u;

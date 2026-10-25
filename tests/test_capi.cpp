@@ -1182,6 +1182,8 @@ SLOPFAB_TEST(capi_moss_plan_and_guidance) {
 SLOPFAB_TEST(capi_fibo_plan_and_mask) {
   Request request;
   CHECK(slopfab_request_set_model_family(request.handle, "fibo2") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_CUDA) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_attention(request.handle, "flash2") == SLOPFAB_OK);
   std::vector<uint8_t> pixels(63 * 45 * 3, 128), mask(63 * 45, 255);
   CHECK(slopfab_request_set_image_edit_rgb24(request.handle, pixels.data(), pixels.size(),
       63, 45, 63 * 3, 0, 0, 63, 45, 1, 0) == SLOPFAB_OK);

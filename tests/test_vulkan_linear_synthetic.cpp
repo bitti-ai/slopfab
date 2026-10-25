@@ -18,6 +18,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_music_fused_bias_rounding, "synthetic") {
   options.enable_timeline_semaphore = true;
   options.enable_storage_buffer_16bit = devices[0].info().storage_buffer_16bit;
   options.enable_cooperative_matrix = devices[0].info().cooperative_matrix;
+  options.enable_shader_float16 = devices[0].info().shader_float16;
   auto device = devices[0].create_device(options);
   TensorContextOptions co;
   co.pipeline_sets = TensorPipelineSet::kCore;
