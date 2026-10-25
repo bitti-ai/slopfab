@@ -415,6 +415,10 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   const bool enable_bfloat16 = options.enable_cooperative_matrix &&
                                impl_->info.shader_bfloat16_type &&
                                impl_->info.shader_bfloat16_cooperative_matrix;
+  // The cooperative BF16 modules also declare SPIR-V Float16. Enable this
+  // dependency even when the caller only requested cooperative matrices.
+  const bool enable_float16 = options.enable_shader_float16 || enable_bfloat16;
+  require(enable_float16, impl_->info.shader_float16, "shaderFloat16 for cooperative BF16");
 
   std::vector<std::string> names = options.extensions;
   if (options.enable_cooperative_matrix) {
@@ -450,7 +454,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
   features11.pNext = &features12;
   features12.storageBuffer8BitAccess = options.enable_storage_buffer_8bit;
-  features12.shaderFloat16 = options.enable_shader_float16;
+  features12.shaderFloat16 = enable_float16;
   features12.shaderInt8 = options.enable_shader_int8;
   features12.timelineSemaphore = options.enable_timeline_semaphore;
   features12.bufferDeviceAddress = options.enable_buffer_device_address;
@@ -548,7 +552,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     auto result = std::make_shared<Device::Impl>();
     result->state = std::move(state);
     result->info = impl_->info;
-    result->info.shader_float16_enabled = options.enable_shader_float16;
+    result->info.shader_float16_enabled = enable_float16;
     result->info.shader_int8_enabled = options.enable_shader_int8;
     result->info.shader_int64_enabled = options.enable_shader_int64;
     result->info.portable_arithmetic = options.portable_arithmetic;
