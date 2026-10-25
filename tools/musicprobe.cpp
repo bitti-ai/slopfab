@@ -5,10 +5,11 @@
 #include <fstream>
 #include "slopfab/text/tokenizer.h"
 #include "slopfab/sampler/noise.h"
+#include <filesystem>
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 5 && argc != 6)
+    if (argc != 5 && argc != 6 && !(argc == 7 && std::string(argv[1]) == "mm-hidden"))
       throw std::invalid_argument("musicprobe ar|flow|vae MODEL INPUT OUTPUT [TRACE_DIRECTORY]");
     using namespace slopfab;
     music::Runtime rt(argv[2]);
@@ -26,7 +27,8 @@ int main(int argc, char** argv) {
       std::string caption((std::istreambuf_iterator<char>(stream)), {});
       auto ids = music::minimax_prompt(rt.checkpoint, caption, "");
       auto hidden =
-          music::minimax_hidden(rt, ids, MusicSettings{}, 300, 42, {}, argc == 6 ? argv[5] : "");
+          music::minimax_hidden(rt, ids, MusicSettings{}, argc == 7 ? std::stoi(argv[6]) : 300,
+                                42, {}, argc >= 6 ? argv[5] : "");
       write_safetensors(argv[4], {{"hidden", {int64_t(hidden.size() / 32768), 32768}, hidden}});
       return 0;
     }
@@ -42,6 +44,23 @@ int main(int argc, char** argv) {
     }
     SafeTensors input;
     input.open(argv[3]);
+    if (requested == "mm-render") {
+      if (argc != 6) throw std::invalid_argument("mm-render DIT HIDDEN OUTPUT.wav VAE");
+      GenerateRequest request;
+      request.model_family = "minimax_music3";
+      request.transformer_path = argv[2];
+      request.audio_vae_path = argv[5];
+      request.out_path = argv[4];
+      request.seed = 42;
+      auto hidden = to_f32(input.at("hidden"));
+      request.music.duration = double(hidden.size() / 32768) / 25;
+      auto plan = resolve_music_plan(request);
+      RunOptions options;
+      options.dump_latents_path = std::filesystem::path(argv[4]).replace_extension(".safetensors").string();
+      auto result = music::run_minimax_from_hidden(request, plan, options, std::move(hidden));
+      if (!result.ok) throw std::runtime_error(result.message);
+      return 0;
+    }
     std::string mode = argv[1];
     std::vector<float> result;
     std::vector<int64_t> shape;

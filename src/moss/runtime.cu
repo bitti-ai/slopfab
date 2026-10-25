@@ -194,7 +194,7 @@ Tensor Runtime::project(const Tensor& x, const std::string& name, bool fuse_bias
     }
     it = linears_.emplace(name, w).first;
   }
-  const auto& w = it->second;
+  auto& w = it->second;
   if (x.cols != w.in_features)
     throw std::invalid_argument("linear input mismatch: " + name);
   Tensor y(x.rows, w.out_features);
@@ -208,6 +208,13 @@ Tensor Runtime::project(const Tensor& x, const std::string& name, bool fuse_bias
       cuda::DeviceBuffer<BFloat> copy(size_t(w.in_features) * w.out_features);
       SLOPFAB_CUDA_CHECK(cudaMemcpy(copy.get(), dense, copy.nbytes(), cudaMemcpyDeviceToDevice));
       prepared = prepared_.emplace(name, std::move(copy)).first;
+      if (w.format == cuda::QuantFormat::kI8) {
+        // The cached matrix replaces the compressed device copy. Keep ConvRot
+        // metadata: inputs still rotate before multiplying the expanded weight.
+        w.data = prepared->second.get();
+        w.format = cuda::QuantFormat::kBF16;
+        storage_.erase(name + ":int8");
+      }
     }
     cached = prepared->second.get();
   }

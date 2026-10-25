@@ -24,4 +24,7 @@ Tensor minimax_prediction(Runtime&, const Tensor&, const Tensor&, float time, Ho
 Tensor probe_minimax_global(Runtime&, const std::vector<int32_t>&);
 Tensor probe_minimax_depth(Runtime&, const Tensor&);
 RunResult run_yue(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+// Developer replay of captured AR output through the production flow/decoder.
+RunResult run_minimax_from_hidden(const GenerateRequest&, const GeneratePlan&, const RunOptions&,
+                                  std::vector<float> hidden);
 }

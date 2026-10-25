@@ -380,8 +380,8 @@ Tensor probe_minimax_depth(Runtime& rt, const Tensor& sequence) {
   return depth(rt, sequence, {});
 }
 
-RunResult run_minimax(const GenerateRequest& r, const GeneratePlan& plan,
-                      const RunOptions& options) {
+RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& plan,
+                                  const RunOptions& options, std::vector<float> hidden) {
   RunResult result;
   using Clock = std::chrono::steady_clock;
   auto notify = [&](RunStage stage, int step = -1, int total = 0) {
@@ -394,9 +394,8 @@ RunResult run_minimax(const GenerateRequest& r, const GeneratePlan& plan,
   try {
     validate_generation_options(r, plan, options);
     notify(RunStage::kStarting);
-    std::vector<float> hidden;
     auto start = Clock::now();
-    {
+    if (hidden.empty()) {
       Runtime ar(r.text_encoder_path);
       ar.cache_dense_weights = true;
       auto tokens = minimax_prompt(ar.checkpoint, r.prompt, r.music.lyrics);
@@ -526,5 +525,8 @@ RunResult run_minimax(const GenerateRequest& r, const GeneratePlan& plan,
     result.message = e.what();
   }
   return result;
+}
+RunResult run_minimax(const GenerateRequest& r, const GeneratePlan& plan, const RunOptions& options) {
+  return run_minimax_from_hidden(r, plan, options, {});
 }
 }

@@ -61,7 +61,7 @@ Use `dist/windows/slopfab.dll` with the matching `capi.h`. The existing C ABI re
 4. Select CUDA and leave attention at its default `flash2` selector. Music chooses its own kernels internally, including FP32 softmax/PV for the MiniMax flow transformer.
 5. Start and wait using the existing generation API. Read the existing output structure: video is empty, audio is interleaved stereo float data, and `audio_sample_rate` reports the native rate. Copy audio before destroying the generation handle.
 
-Progress and cancellation are checked between transformer blocks and pipeline stages. Model memory is released between MiniMax AR, flow and decoding stages. Real generation was tested on an RTX 5090 with 32 GB VRAM; smaller GPUs have not been characterized.
+Progress and cancellation are checked between transformer blocks and pipeline stages. Model memory is released between MiniMax AR, flow and decoding stages. When expanded weights are cached, their compressed GPU copies are released to avoid retaining both representations. Real generation was tested on an RTX 5090 with 32 GB VRAM; smaller GPUs have not been characterized.
 
 ## Limits and diagnostics
 
@@ -77,7 +77,7 @@ Portable music and C API tests cover settings, rejected controls, audio geometry
 python tools/music_generation_smoke.py --library dist/windows/slopfab.dll
 ```
 
-The Windows release passed all seven selected unit, C API, tokenizer and existing CLI regression suites. Both models passed DLL audio delivery, same-seed byte-for-byte repeatability and cancellation checks. Real CLI runs include YuE2 full ABC planning with 32 flow steps and an 8-second frame budget, and MiniMax with a 12-second frame budget, two overlapping windows and 30 flow steps per window. Example WAVs and logs are under `build/music-support/` (`yue-full.wav` and `music3-piano.wav`).
+The Windows release passed all eight selected unit, C API, tokenizer and CLI regression suites, including music CLI defaults. Both models passed DLL audio delivery, same-seed byte-for-byte repeatability and cancellation checks. Real CLI runs include YuE2 full ABC planning with 32 flow steps and an 8-second frame budget, and MiniMax with a 12-second frame budget, two overlapping windows and 30 flow steps per window. Example WAVs and logs are under `build/music-support/`.
 
 `tools/yue_reference.py`, `tools/yue_tokenizer_reference.py` and `tools/minimax_music_reference.py` provide independent PyTorch equation, tokenizer and upstream codec comparisons using `slopfab_musicprobe`. They require development dependencies and upstream decoder source paths; production inference does not.
 
@@ -88,10 +88,20 @@ Measured relative RMS errors on fixed fixtures:
 | Global autoregressive transformer | 0.414% | 1.171% |
 | Local codebook transformer | Not applicable | 1.082% |
 | Acoustic conditioning projection | Not applicable | Exact for equivalent GEMM convolution |
-| Flow transformer | 1.294% | 3.416% |
+| Flow transformer, single prediction | 1.294% | See full-window validation below |
 | Waveform decoder | 0.000333% | 0.000202% |
 
-MiniMax flow uses PyTorch math attention as the numerical reference. PyTorch's math and default cuDNN attention themselves differed by 3.987% after the full BF16 flow stack on the same fixture. The native comparison had cosine similarity 0.999416. Convolution comparisons use equivalent GEMM equations; cuDNN may accumulate products in a different order. These checks validate implementation arithmetic and are not perceptual music-quality benchmarks.
+Convolution comparisons use equivalent GEMM equations; cuDNN may accumulate products in a different order. These checks validate implementation arithmetic and are not perceptual music-quality benchmarks.
+
+### MiniMax positional precision correction
+
+The initial `music3-piano.wav` contained garbled audio. The original BF16 rotary phase calculation merged adjacent positions beyond 256, corrupting full music windows. The earlier short synthetic fixtures did not cross that precision boundary. Rotary phases and Fourier timestep features now evaluate in FP32 before narrowing their sine/cosine outputs. Transformer matrix operations remain BF16.
+
+The corrected 12-second sample is `build/music-support/music3-piano-fixed.wav`. The original filename also receives the corrected audio; `music3-piano-before-fix.wav` preserves the faulty sample for comparison. The replacement uses the same caption, seed and 30 steps per window.
+
+Validation now includes a complete 200-frame window (689 audio latent rows plus the timestep token), all 30 sampling steps, real piano conditioning, and identical starting noise. The corrected production sampler output differs by 2.635% relative RMS from the upstream FP16 flow implementation, with cosine similarity 0.999663. Upstream BF16 with prematurely rounded phases differed from FP16 by 65.5%; preserving phase precision reduced this to 2.8%. A teacher-forced 301-frame trajectory also matches the upstream Qwen3 global model within 1.52% and the upstream local decoder within 0.61% relative RMS.
+
+`tools/minimax_upstream_ar.py` checks the recorded autoregressive trajectory. `tools/minimax_upstream_flow.py --dtype fp16 --check-native` checks the complete sampling window against the upstream module; use `--help` for required local checkpoint, source and fixture paths. `slopfab_musicprobe mm-render DIT HIDDEN OUTPUT.wav VAE` replays captured conditioning through the production sampler and decoder, including overlapping windows. The portable positional test covers the 256/257 and 512/513 boundaries. The CLI test also verifies that music selects its required default attention mode.
 
 ## Upstream references
 
