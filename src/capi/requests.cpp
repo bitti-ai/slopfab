@@ -16,6 +16,18 @@ int attach_bridge(slopfab_request* request, slopfab::LatentBridge bridge) {
   request->request.bridge = std::move(bridge);
   return SLOPFAB_OK;
 }
+
+int attach_end_anchor(slopfab_request* request, std::shared_ptr<const slopfab::LatentClip> clip,
+                       int context) {
+  try {
+    (void)slopfab::plan_latent_end_anchor(*clip, context, 17);
+  } catch (const std::exception& e) {
+    return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
+  }
+  request->request.end_anchor_latents = std::move(clip);
+  request->request.end_anchor_context_frames = context;
+  return SLOPFAB_OK;
+}
 }
 extern "C" {
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs(slopfab_request* request, const char* path,
@@ -702,6 +714,40 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor(slopfab_request* r
     request->request.end_anchor_path = path ? path : "";
     return SLOPFAB_OK;
   });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor_file(
+    slopfab_request* request, const char* path, int32_t context_frames) {
+  if (!request || !path || !*path || context_frames < 5 || context_frames % 17 != 5)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "latent ending anchor needs a request, archive path and 17*k+5 context >=5");
+  return guarded([&] {
+    return attach_end_anchor(request, slopfab::LatentClip::load(path), context_frames);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor_generation(
+    slopfab_request* request, const slopfab_generation* source, int32_t context_frames) {
+  if (!request || !source || context_frames < 5 || context_frames % 17 != 5)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "latent ending anchor needs a request, source generation and 17*k+5 context >=5");
+  const int terminal = report_terminal_status(source);
+  if (terminal != SLOPFAB_OK)
+    return terminal;
+  return guarded([&] {
+    if (!source->latents)
+      return fail(SLOPFAB_ERR_INVALID_REQUEST,
+                  "enable latent retention before starting the ending generation");
+    return attach_end_anchor(request, source->latents, context_frames);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_end_anchor_latents(slopfab_request* request) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear latent ending anchor: null request");
+  request->request.end_anchor_latents.reset();
+  request->request.end_anchor_context_frames = 22;
+  return SLOPFAB_OK;
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request) {

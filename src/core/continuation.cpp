@@ -503,4 +503,167 @@ LatentClip join_bridge(const LatentBridge& b, const BridgePlan& p, const std::ve
   out.validate();
   return out;
 }
+LatentEndAnchorPlan plan_latent_end_anchor(const LatentClip& ending, int context, int added,
+                                          const LatentClip* beginning, int overlap) {
+  ending.validate();
+  require(ending.sampled && ending.frames >= 22, "ending anchor needs completed video latents");
+  require(context >= 5 && context % 17 == 5 && context <= ending.frames,
+          "ending context must be 17*k+5 frames and fit in the ending clip");
+  if (beginning) {
+    beginning->validate();
+    require(beginning->sampled && beginning->frames >= 22,
+            "beginning needs completed video latents");
+    require(beginning->width == ending.width && beginning->height == ending.height &&
+                beginning->geometry.fingerprint() == ending.geometry.fingerprint(),
+            "beginning and ending must have matching canvas and latent geometry");
+    require(overlap >= 5 && overlap % 17 == 5 && overlap <= beginning->frames,
+            "beginning overlap must be 17*k+5 frames and fit in the beginning clip");
+  }
+  require(beginning ? added >= 0 : added > 0,
+          "lead-in must be positive; a gap between two clips must be nonnegative");
+  const int64_t aligned = beginning
+      ? (added <= 12 ? 12 : ((int64_t(added) - 12 + 16) / 17) * 17 + 12)
+      : ((int64_t(added) + 16) / 17) * 17;
+  const int64_t total = aligned + ending.frames + (beginning ? beginning->frames : 0);
+  require(total <= std::numeric_limits<int>::max(), "ending anchor duration overflows");
+  LatentClip shape;
+  shape.width = ending.width;
+  shape.height = ending.height;
+  shape.geometry = ending.geometry;
+  shape.frames = int(total);
+  const auto output = shape.layout(); // validate tensor limits before allocation
+  LatentEndAnchorPlan p;
+  p.context_frames = context;
+  p.overlap_frames = beginning ? overlap : 0;
+  p.new_frames = int(aligned);
+  p.window_frames = p.new_frames + context + p.overlap_frames;
+  p.output_frames = int(total);
+  p.prefix_video_latents = beginning ? dit::video_latent_num_frames(overlap) : 0;
+  p.suffix_video_latents = dit::video_latent_num_frames(context);
+  p.generated_video_latents = dit::video_latent_num_frames(p.window_frames) -
+                              p.prefix_video_latents - p.suffix_video_latents;
+  const auto audio_at = [](int frames) { return int((int64_t(frames) * 5 + 1) / 3); };
+  const int left_audio = beginning ? beginning->layout().num_audio_latents : 0;
+  p.prefix_audio_latents = beginning ? left_audio - audio_at(beginning->frames - overlap) : 0;
+  p.suffix_audio_latents = audio_at(context);
+  // Preserve both source clocks exactly. All fractional-clock rounding belongs
+  // to the newly generated interval, not to either retained stereo segment.
+  p.generated_audio_latents = output.num_audio_latents - left_audio - ending.layout().num_audio_latents;
+  p.window_audio_latents = p.prefix_audio_latents + p.generated_audio_latents + p.suffix_audio_latents;
+  return p;
+}
+
+namespace {
+void validate_end_anchor_plan(const LatentClip& ending, const LatentClip* beginning,
+                               const LatentEndAnchorPlan& p) {
+  const auto expected = plan_latent_end_anchor(ending, p.context_frames, p.new_frames,
+                                               beginning, p.overlap_frames);
+#define END_CHECK(field) require(p.field == expected.field, "ending anchor plan does not match sources")
+  END_CHECK(context_frames);
+  END_CHECK(overlap_frames);
+  END_CHECK(new_frames);
+  END_CHECK(window_frames);
+  END_CHECK(output_frames);
+  END_CHECK(prefix_video_latents);
+  END_CHECK(suffix_video_latents);
+  END_CHECK(generated_video_latents);
+  END_CHECK(prefix_audio_latents);
+  END_CHECK(suffix_audio_latents);
+  END_CHECK(generated_audio_latents);
+  END_CHECK(window_audio_latents);
+#undef END_CHECK
+}
+}
+
+ContinuationConstraint make_latent_end_anchor_constraint(
+    const LatentClip& ending, const LatentClip* beginning, const LatentEndAnchorPlan& p) {
+  validate_end_anchor_plan(ending, beginning, p);
+  ContinuationConstraint out;
+  const size_t frame = size_t(ending.layout().rows_per_frame()) * 96;
+  out.video.target_values_per_channel = size_t(dit::video_latent_num_frames(p.window_frames)) * frame;
+  out.video.suffix_values_per_channel = size_t(p.suffix_video_latents) * frame;
+  if (beginning)
+    append_rows(out.video.original, beginning->video_rows,
+                beginning->layout().num_latent_frames - p.prefix_video_latents,
+                p.prefix_video_latents, frame);
+  append_rows(out.video.original, ending.video_rows, 0, p.suffix_video_latents, frame);
+  out.audio.channels = 2;
+  out.audio.target_values_per_channel = size_t(p.window_audio_latents) * 32;
+  out.audio.suffix_values_per_channel = size_t(p.suffix_audio_latents) * 32;
+  for (int c = 0; c < 2; ++c) {
+    if (beginning)
+      append_rows(out.audio.original, beginning->audio_rows,
+                  size_t(c + 1) * beginning->layout().num_audio_latents - p.prefix_audio_latents,
+                  p.prefix_audio_latents, 32);
+    append_rows(out.audio.original, ending.audio_rows, size_t(c) * ending.layout().num_audio_latents,
+                p.suffix_audio_latents, 32);
+  }
+  return out;
+}
+
+void append_latent_end_anchor_guides(const LatentClip& ending, const LatentClip* beginning,
+                                     const LatentEndAnchorPlan& p, uint64_t seed,
+                                     std::vector<dit::ReferenceGeometry>& geometry,
+                                     std::vector<float>& video, std::vector<float>& audio) {
+  validate_end_anchor_plan(ending, beginning, p);
+  const auto target = ending.layout();
+  const size_t frame = size_t(target.rows_per_frame()) * 96;
+  for (int side = beginning ? 0 : 1; side < 2; ++side) {
+    const auto& source = side ? ending : *beginning;
+    const auto l = source.layout();
+    const int v = side ? p.suffix_video_latents : p.prefix_video_latents;
+    const int a = side ? p.suffix_audio_latents : p.prefix_audio_latents;
+    const size_t start = side ? 0 : size_t(l.num_latent_frames - v) * frame;
+    auto guide_layout = l;
+    guide_layout.num_latent_frames = v;
+    guide_layout.num_video_rows = v * l.rows_per_frame();
+    const auto noise = sampler::video_noise(seed + side, v, l.latent_height, l.latent_width);
+    std::vector<float> packed(size_t(v) * frame);
+    dit::patchify_video(noise.data(), guide_layout, packed.data());
+    for (size_t i = 0; i < packed.size(); ++i)
+      video.push_back(.999f * source.video_rows[start + i] + (1.f - .999f) * packed[i]);
+    for (int c = 0; c < 2; ++c)
+      append_rows(audio, source.audio_rows, size_t(c) * l.num_audio_latents +
+                  (side ? 0 : l.num_audio_latents - a), a, 32);
+    dit::ReferenceGeometry guide{dit::ReferenceKind::kVideo, v, l.latent_height, l.latent_width, a, true};
+    if (side)
+      guide.target_time_offset = double(p.prefix_video_latents + p.generated_video_latents) / 5 *
+                                  (17.0 * 5.0 / 3.0);
+    guide.target_audio_time_offset = side ? p.prefix_audio_latents + p.generated_audio_latents : 0;
+    geometry.push_back(guide);
+  }
+}
+
+LatentClip join_latent_end_anchor(const LatentClip& ending, const LatentClip* beginning,
+                                  const LatentEndAnchorPlan& p, const std::vector<float>& video,
+                                  const std::vector<float>& audio) {
+  validate_end_anchor_plan(ending, beginning, p);
+  const size_t frame = size_t(ending.layout().rows_per_frame()) * 96;
+  require(video.size() == size_t(dit::video_latent_num_frames(p.window_frames)) * frame &&
+              audio.size() == size_t(p.window_audio_latents) * 64,
+          "sampled ending anchor window has the wrong shape");
+  LatentClip out;
+  out.width = ending.width;
+  out.height = ending.height;
+  out.geometry = ending.geometry;
+  out.frames = p.output_frames;
+  out.transformer = ending.transformer;
+  out.video_vae = ending.video_vae;
+  out.audio_vae = ending.audio_vae;
+  if (beginning)
+    out.video_rows = beginning->video_rows;
+  append_rows(out.video_rows, video, p.prefix_video_latents, p.generated_video_latents, frame);
+  out.video_rows.insert(out.video_rows.end(), ending.video_rows.begin(), ending.video_rows.end());
+  for (int c = 0; c < 2; ++c) {
+    if (beginning)
+      append_rows(out.audio_rows, beginning->audio_rows, size_t(c) * beginning->layout().num_audio_latents,
+                  beginning->layout().num_audio_latents, 32);
+    append_rows(out.audio_rows, audio, size_t(c) * p.window_audio_latents + p.prefix_audio_latents,
+                p.generated_audio_latents, 32);
+    append_rows(out.audio_rows, ending.audio_rows, size_t(c) * ending.layout().num_audio_latents,
+                ending.layout().num_audio_latents, 32);
+  }
+  out.validate();
+  return out;
+}
 } // namespace slopfab

@@ -432,6 +432,7 @@ inline void run_worker(slopfab_generation* gen) {
   gen->request.reference_media.clear();
   gen->request.refmods.clear();
   gen->request.continuation.reset();
+  gen->request.end_anchor_latents.reset();
   gen->request.bridge.reset();
   gen->request.image_edit.image.reset();
   gen->request.image_edit.mask.reset();

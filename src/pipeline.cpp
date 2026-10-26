@@ -53,12 +53,19 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
     if (request.continuation && !request.has_explicit_canvas())
       key += ":continuation-canvas:" + std::to_string(request.continuation->width) + "x" +
              std::to_string(request.continuation->height);
+    if (request.end_anchor_latents && !request.has_explicit_canvas())
+      key += ":latent-ending-canvas:" + std::to_string(request.end_anchor_latents->width) + "x" +
+             std::to_string(request.end_anchor_latents->height);
   }
   if (request.reference_media.empty())
     return;
   key.push_back('\0');
   const int frames =
-      request.bridge ? plan_bridge(*request.bridge, request.num_frames).window_frames
+      request.end_anchor_latents
+          ? plan_latent_end_anchor(*request.end_anchor_latents, request.end_anchor_context_frames,
+                                  request.num_frames, request.continuation.get(),
+                                  request.continuation_overlap_frames).window_frames
+      : request.bridge ? plan_bridge(*request.bridge, request.num_frames).window_frames
       : request.continuation
           ? plan_continuation(*request.continuation, request.continuation_overlap_frames,
                               request.num_frames)
@@ -76,6 +83,13 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (request.end_anchor_latents &&
+      (request_model_family(request) != "h3" || request.still_image || request.bridge ||
+       request.video_transition || request.animate || request.image_edit.image ||
+       !request.end_anchor_path.empty() || request.cache_threshold > 0 || request.skip_every > 0 ||
+       request.block_cache_span > 0 || request.motion_cache.active()))
+    throw std::invalid_argument(
+        "latent ending anchor requires H3 video without image anchors, bridges, transitions, edits or approximate caches");
   if (!request.end_anchor_path.empty() &&
       (request_model_family(request) != "h3" || request.still_image || request.bridge ||
        request.video_transition || request.animate || request.image_edit.image))
@@ -126,12 +140,12 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     const bool fl2va = plan.model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable &&
                        !plan.model.compressed_attention;
     if ((request.has_references() && !plan.model.supports_references) ||
-        ((request.continuation || request.bridge || !request.end_anchor_path.empty()) &&
+        ((request.continuation || request.bridge || request.end_anchor_latents || !request.end_anchor_path.empty()) &&
          !plan.model.supports_references && !fl2va))
       throw std::invalid_argument("selected model does not support reference conditioning");
     if (plan.model.compressed_attention && plan.model.pdd_steps == 1 &&
         (request.has_references() || request.continuation || request.bridge ||
-         !request.end_anchor_path.empty() || request.image_edit.invert_mask))
+         request.end_anchor_latents || !request.end_anchor_path.empty() || request.image_edit.invert_mask))
       throw std::invalid_argument(
           "compressed attention currently supports unconditioned media layouts only");
   }
@@ -143,7 +157,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::invalid_argument(
         "MotionCache is incompatible with the resolved conditioning or attention contract");
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
-    bool has_video = bool(request.continuation) || bool(request.bridge) || !request.end_anchor_path.empty();
+    bool has_video = bool(request.continuation) || bool(request.bridge) ||
+                     bool(request.end_anchor_latents) || !request.end_anchor_path.empty();
     for (const auto& media : request.reference_media)
       has_video |= media->is_video();
     for (const auto& ref : request.refmods)
@@ -167,6 +182,9 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     dit::validate_canvas_size(request.canvas_height, request.canvas_width, plan.geometry);
     plan.canvas_height = request.canvas_height;
     plan.canvas_width = request.canvas_width;
+  } else if (request.end_anchor_latents) {
+    plan.canvas_height = request.end_anchor_latents->height;
+    plan.canvas_width = request.end_anchor_latents->width;
   } else if (request.bridge) {
     plan.canvas_height = request.bridge->left->height;
     plan.canvas_width = request.bridge->left->width;
@@ -189,7 +207,17 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
 
   dit::validate_canvas_size(plan.canvas_height, plan.canvas_width, plan.geometry);
 
-  if (request.bridge) {
+  if (request.end_anchor_latents) {
+    if (plan.canvas_width != request.end_anchor_latents->width ||
+        plan.canvas_height != request.end_anchor_latents->height)
+      throw std::invalid_argument("ending anchor canvas must match the saved latents");
+    plan.latent_end_anchor = plan_latent_end_anchor(
+        *request.end_anchor_latents, request.end_anchor_context_frames, request.num_frames,
+        request.continuation.get(), request.continuation_overlap_frames);
+    plan.aligned_frames = plan.latent_end_anchor.output_frames;
+    plan.sampling_frames = plan.latent_end_anchor.window_frames;
+    plan.duration_seconds = double(plan.aligned_frames) / plan.geometry.fps;
+  } else if (request.bridge) {
     if (plan.canvas_width != request.bridge->left->width ||
         plan.canvas_height != request.bridge->left->height)
       throw std::invalid_argument("bridge canvas must match the saved latents");
@@ -225,7 +253,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     }
   }
 
-  if (!request.continuation && !request.bridge)
+  if (!request.continuation && !request.bridge && !request.end_anchor_latents)
     plan.sampling_frames = plan.aligned_frames;
   if (plan.conditioning.max_frames > 0 && plan.aligned_frames > plan.conditioning.max_frames)
     throw std::invalid_argument("aligned frame count exceeds conditioning max_frames");
@@ -236,7 +264,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   plan.layout.latent_height = plan.canvas_height / plan.geometry.spatial_compression;
   plan.layout.latent_width = plan.canvas_width / plan.geometry.spatial_compression;
   plan.layout.num_audio_latents =
-      request.bridge ? plan.bridge.window_audio_latents
+      request.end_anchor_latents ? plan.latent_end_anchor.window_audio_latents
+      : request.bridge ? plan.bridge.window_audio_latents
       : request.continuation
           ? plan.continuation.window_audio_latents
           : (request.still_image
@@ -278,7 +307,14 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     plan.layout.num_condition_audio += ref.mod->geometry().audio_rows() * ref.copies;
   }
 
-  if (request.continuation) {
+  if (request.end_anchor_latents) {
+    const auto& end = plan.latent_end_anchor;
+    plan.layout.condition_audio_is_explicit = true;
+    plan.layout.num_condition_video +=
+        (end.prefix_video_latents + end.suffix_video_latents) * plan.layout.rows_per_frame(plan.geometry);
+    plan.layout.num_condition_audio +=
+        plan.geometry.audio_channels * (end.prefix_audio_latents + end.suffix_audio_latents);
+  } else if (request.continuation) {
     plan.layout.condition_audio_is_explicit = true;
     plan.layout.num_condition_video +=
         plan.continuation.overlap_video_latents * plan.layout.rows_per_frame(plan.geometry);
@@ -589,7 +625,18 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
         "  sampling window     " + std::to_string(plan.sampling_frames) +
         " frames; locked video/audio context on both sides; output is full joined clip\n";
   }
-  if (request.continuation) {
+  if (request.end_anchor_latents) {
+    const auto& end = plan.latent_end_anchor;
+    description += "  latent ending       " + std::to_string(request.end_anchor_latents->frames) +
+                   " retained frames; " + std::to_string(end.new_frames) +
+                   (request.continuation ? " new gap frames\n" : " new lead-in frames\n");
+    description += "  sampling window     " + std::to_string(end.window_frames) +
+                   " frames; locked ending video/audio context " + std::to_string(end.context_frames) + "\n";
+    if (request.continuation)
+      description += "  beginning           " + std::to_string(request.continuation->frames) +
+                     " retained frames; locked context " + std::to_string(end.overlap_frames) + "\n";
+    description += "  output              full joined clip; source latents preserved\n";
+  } else if (request.continuation) {
     description += "  continuation        " + std::to_string(request.continuation->frames) +
                    " source + " + std::to_string(plan.continuation.extension_frames) +
                    " new frames\n" + "  sampling window     " +

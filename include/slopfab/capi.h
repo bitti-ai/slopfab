@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 39
+#define SLOPFAB_CAPI_VERSION_MINOR 40
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -914,6 +914,27 @@ slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t 
  * Independent of continuation: clearing either leaves the other intact. */
 SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_end_anchor(slopfab_request* request, const char* path);
+
+/* Since 1.40. Preserve a completed ending segment's video AND audio latents.
+ * context_frames is 17*k+5 (>=5), fitting in the source; its opening context
+ * is locked during sampling. Without continuation, frames means NEW lead-in
+ * frames (>0), rounded up to a multiple of 17. With continuation, frames means
+ * a NEW gap, rounded up to 17*k+12 (minimum 12); both sources are retained in full and
+ * both boundary contexts are locked, regardless of continuation_lock_overlap.
+ * Output/save/retention contain the full joined clip. Canvas is inherited;
+ * any beginning must match. Use compatible H3 VAE normalization throughout.
+ * File sources load now; generation sources require successful completion and
+ * retained latents. Ownership survives file deletion/source destruction.
+ * Failed setters leave the previous anchor intact. Other references and
+ * continuation remain attached. Incompatible with the image ending anchor,
+ * explicit bridge, transitions, still images, Animate, pinned audio, initial
+ * latents, synthetic generation and approximate caches. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor_file(
+    slopfab_request* request, const char* path, int32_t context_frames);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor_generation(
+    slopfab_request* request, const slopfab_generation* source, int32_t context_frames);
+/* Clears only the latent ending source/context. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_end_anchor_latents(slopfab_request* request);
 
 /* Since 1.26. Bridge retained clips without VAE re-encoding. Margins replace
  * the left tail/right head and must be nonnegative multiples of 17 frames.

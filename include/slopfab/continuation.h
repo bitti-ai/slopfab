@@ -89,4 +89,28 @@ void append_bridge_guides(const LatentBridge& bridge, const BridgePlan& plan, ui
 LatentClip join_bridge(const LatentBridge& bridge, const BridgePlan& plan,
                        const std::vector<float>& video, const std::vector<float>& audio);
 
+// Preserve an entire ending clip, and optionally an entire beginning clip.
+// Only the opening context of the ending is included in the sampling window.
+struct LatentEndAnchorPlan {
+  int context_frames = 0, overlap_frames = 0, new_frames = 0;
+  int window_frames = 0, output_frames = 0;
+  int prefix_video_latents = 0, suffix_video_latents = 0, generated_video_latents = 0;
+  int prefix_audio_latents = 0, suffix_audio_latents = 0, generated_audio_latents = 0;
+  int window_audio_latents = 0;
+};
+
+// Without a beginning, new_frames > 0 rounds up to 17*k. With a beginning,
+// new_frames >= 0 rounds up to 17*k+12, as for a bridge with zero margins.
+LatentEndAnchorPlan plan_latent_end_anchor(const LatentClip& ending, int context, int new_frames,
+                                          const LatentClip* beginning = nullptr, int overlap = 22);
+ContinuationConstraint make_latent_end_anchor_constraint(
+    const LatentClip& ending, const LatentClip* beginning, const LatentEndAnchorPlan& plan);
+void append_latent_end_anchor_guides(const LatentClip& ending, const LatentClip* beginning,
+                                     const LatentEndAnchorPlan& plan, uint64_t seed,
+                                     std::vector<dit::ReferenceGeometry>& geometry,
+                                     std::vector<float>& video, std::vector<float>& audio);
+LatentClip join_latent_end_anchor(const LatentClip& ending, const LatentClip* beginning,
+                                  const LatentEndAnchorPlan& plan,
+                                  const std::vector<float>& video, const std::vector<float>& audio);
+
 } // namespace slopfab

@@ -402,7 +402,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   if (request.bridge)
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_bridge_constraint(*request.bridge, plan.bridge));
-  if (request.continuation_lock_overlap)
+  if (request.end_anchor_latents)
+    continuation_constraint = std::make_shared<ContinuationConstraint>(
+        make_latent_end_anchor_constraint(*request.end_anchor_latents, request.continuation.get(),
+                                          plan.latent_end_anchor));
+  else if (request.continuation_lock_overlap)
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_continuation_constraint(*request.continuation, plan.continuation));
   if (!options.init_latents_path.empty()) {
@@ -736,7 +740,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
                                condition_video_rows, condition_audio_rows);
     }
 
-    if (request.continuation) {
+    if (request.end_anchor_latents) {
+      append_latent_end_anchor_guides(*request.end_anchor_latents, request.continuation.get(),
+                                      plan.latent_end_anchor, request.seed, reference_geometry,
+                                      condition_video_rows, condition_audio_rows);
+    } else if (request.continuation) {
       append_continuation_guide(*request.continuation, plan.continuation, request.seed,
                                 reference_geometry, condition_video_rows, condition_audio_rows);
     }
@@ -1219,7 +1227,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // Preserve normalized sampler output, join in latent space, then decode the
   // cumulative stream so the VAE sees context on both sides of the join.
   auto completed = std::make_shared<LatentClip>();
-  if (request.bridge) {
+  if (request.end_anchor_latents) {
+    *completed = join_latent_end_anchor(*request.end_anchor_latents, request.continuation.get(),
+                                       plan.latent_end_anchor, video_rows, audio_rows);
+    video_rows.clear();
+    audio_rows.clear();
+  } else if (request.bridge) {
     *completed = join_bridge(*request.bridge, plan.bridge, video_rows, audio_rows);
     video_rows.clear();
     audio_rows.clear();

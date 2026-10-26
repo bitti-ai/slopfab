@@ -943,6 +943,53 @@ SLOPFAB_TEST(capi_audio_steps) {
   CHECK(plan.num_model_evaluations == 2);
 }
 
+SLOPFAB_TEST(capi_latent_ending_snapshot_and_lifecycle) {
+  Request request;
+  LatentFixture fixture;
+  fixture.write(39);
+  const auto path = fixture.path.string();
+  CHECK(slopfab_request_set_end_anchor_file(nullptr, path.c_str(), 22) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_end_anchor_file(request.handle, "", 22) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_end_anchor_generation(request.handle, nullptr, 22) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_clear_end_anchor_latents(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_end_anchor_file(request.handle, path.c_str(), 22) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_frames(request.handle, 17) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 56 && plan.canvas_width == 64 && plan.canvas_height == 32);
+  CHECK(slopfab_request_set_end_anchor_file(request.handle, path.c_str(), 6) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_end_anchor_file(request.handle, path.c_str(), 56) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 56);
+  CHECK(slopfab_request_set_continuation_file(request.handle, path.c_str(), 5) == SLOPFAB_OK);
+  std::filesystem::remove(fixture.path); // source data was copied/retained by both setters
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 107);
+  {
+    OwnedString text;
+    CHECK(slopfab_describe_plan(request.handle, &text.text) == SLOPFAB_OK);
+    CHECK(std::strstr(text.text, "29 new gap frames") != nullptr);
+    CHECK(std::strstr(text.text, "locked context 5") != nullptr);
+  }
+  CHECK(slopfab_request_set_synthetic_latents(request.handle, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_synthetic_latents(request.handle, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_end_anchor(request.handle, "image.png") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_end_anchor(request.handle, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_request_clear_continuation(request.handle) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 56);
+  fixture.write(39);
+  CHECK(slopfab_request_set_continuation_file(request.handle, path.c_str(), 22) == SLOPFAB_OK);
+  CHECK(slopfab_request_clear_end_anchor_latents(request.handle) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 56); // clearing ending retained the beginning
+  CHECK(slopfab_request_clear_continuation(request.handle) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_synthetic_latents(request.handle, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+}
+
 SLOPFAB_TEST(capi_ending_anchor_lifecycle) {
   Request request;
   CHECK(slopfab_request_set_end_anchor(nullptr, "ending.png") == SLOPFAB_ERR_INVALID_ARGUMENT);

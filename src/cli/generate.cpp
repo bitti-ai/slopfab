@@ -89,6 +89,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string dump_latents;
   std::string save_latents;
   std::string continue_from;
+  std::string end_anchor_from;
+  bool saw_end_anchor_context = false;
   std::string bridge_from, bridge_to;
   slopfab::LatentBridge bridge;
   bool saw_bridge_settings = false;
@@ -419,6 +421,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       continue_from = next("--continue-from");
       if (continue_from.empty())
         throw std::runtime_error("--continue-from needs a nonempty path");
+    } else if (arg == "--end-anchor-latents") {
+      end_anchor_from = next("--end-anchor-latents");
+      if (end_anchor_from.empty())
+        throw std::invalid_argument("--end-anchor-latents requires an archive path");
+    } else if (arg == "--end-anchor-context") {
+      const std::string value = next("--end-anchor-context");
+      size_t consumed = 0;
+      req.end_anchor_context_frames = std::stoi(value, &consumed);
+      if (consumed != value.size())
+        throw std::invalid_argument("invalid --end-anchor-context value");
+      saw_end_anchor_context = true;
     } else if (arg == "--bridge-from" || arg == "--bridge-to") {
       const std::string value = next(arg.data());
       if (value.empty())
@@ -634,6 +647,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (saw_aspect && !saw_resolution)
       throw std::runtime_error("continuation inherits its canvas; omit --aspect");
     req.continuation = slopfab::LatentClip::load(continue_from);
+  }
+  if (saw_end_anchor_context && end_anchor_from.empty())
+    throw std::invalid_argument("--end-anchor-context requires --end-anchor-latents");
+  if (!end_anchor_from.empty()) {
+    if (saw_aspect)
+      throw std::invalid_argument("latent ending anchor inherits its canvas; omit --aspect");
+    req.end_anchor_latents = slopfab::LatentClip::load(end_anchor_from);
   }
   if (!bridge_from.empty() || !bridge_to.empty() || saw_bridge_settings) {
     if (bridge_from.empty() || bridge_to.empty())

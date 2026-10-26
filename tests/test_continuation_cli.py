@@ -39,6 +39,18 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     assert "locked video and audio" in run(*base, "--lock-overlap", "--audio-steps", "5")
     run(*base, "--lock-overlap", "--skip-every", "2", success=False)
     run(*base, "--lock-overlap", "--synthetic-latents", success=False)
+    ending = ("--end-anchor-latents", archive)
+    assert "17 new lead-in frames" in run(*ending)
+    assert "29 new gap frames" in run(*ending, *base)
+    assert "locked context 5" in run(*ending, "--continue-from", archive, "--overlap-frames", "5")
+    assert "context 5" in run(*ending, "--end-anchor-context", "5")
+    for options in [("--end-anchor-context", "6"), ("--end-anchor-context", "22x"),
+                    ("--end-anchor-context", "39"), ("--frames", "0"),
+                    ("--end-anchor", "ending.png"), ("--motion-cache",),
+                    ("--synthetic-latents",), ("--init-latents", archive),
+                    ("--animate",), ("--resolution", "32x32"), ("--aspect", "1:1")]:
+        run(*ending, *options, success=False)
+    run("--end-anchor-context", "22", success=False)
 
     # Two sources on H3's grid, long enough for asymmetric editable margins.
     vb, ab = 44 * 96 * 4, 244 * 32 * 4
@@ -49,6 +61,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     raw += b" " * (-len(raw) % 8)
     archive.write_bytes(struct.pack("<Q", len(raw)) + raw + bytes(vb + ab))
     bridge = ("--bridge-from", archive, "--bridge-to", archive)
+    run(*bridge, "--end-anchor-latents", archive, success=False)
     run(*bridge, "--end-anchor", "ending.png", success=False)
     description = run(*bridge, "--reference-image", "original.png")
     assert "29 gap frames; editable margins 17/17" in description

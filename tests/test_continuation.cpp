@@ -20,6 +20,163 @@ template <class F> bool rejects(F fn) {
 }
 }
 
+SLOPFAB_TEST(latent_ending_preserves_sources_and_locks_context) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(73);
+  auto ending = LatentClip::load(fixture.path.string());
+  auto beginning = std::make_shared<LatentClip>(*ending);
+  for (auto& value : beginning->video_rows) value += 10000;
+  for (auto& value : beginning->audio_rows) value += 20000;
+  for (bool two_sided : {false, true})
+    for (int context : {5, 22, 39, 73})
+      for (int overlap : {5, 22, 56})
+        for (int added : {1, 12, 17, 18, 34, 51}) {
+          const auto* left = two_sided ? beginning.get() : nullptr;
+          const auto p = plan_latent_end_anchor(*ending, context, added, left, overlap);
+          CHECK(p.new_frames >= added);
+          CHECK(p.new_frames % 17 == (two_sided ? 12 : 0));
+          CHECK(p.output_frames == (two_sided ? 146 : 73) + p.new_frames);
+          CHECK(p.window_frames == p.new_frames + context + (two_sided ? overlap : 0));
+          const size_t frame = 192;
+          std::vector<float> video(size_t(dit::video_latent_num_frames(p.window_frames)) * frame, -7);
+          std::vector<float> audio(size_t(p.window_audio_latents) * 64, -8);
+          std::fill(audio.begin() + audio.size() / 2, audio.end(), -9);
+          // Joining must copy source values even if sampled boundary rows differ.
+          auto joined = join_latent_end_anchor(*ending, left, p, video, audio);
+          CHECK(std::equal(ending->video_rows.begin(), ending->video_rows.end(),
+                           joined.video_rows.end() - ending->video_rows.size()));
+          if (left)
+            CHECK(std::equal(left->video_rows.begin(), left->video_rows.end(), joined.video_rows.begin()));
+          const size_t offset = left ? left->video_rows.size() : 0;
+          CHECK(joined.video_rows[offset] == -7);
+          for (size_t c = 0; c < 2; ++c) {
+            const size_t out_channel = joined.audio_rows.size() / 2;
+            const size_t end_channel = ending->audio_rows.size() / 2;
+            CHECK(std::equal(ending->audio_rows.begin() + c * end_channel,
+                             ending->audio_rows.begin() + (c + 1) * end_channel,
+                             joined.audio_rows.begin() + (c + 1) * out_channel - end_channel));
+            const size_t left_channel = left ? left->audio_rows.size() / 2 : 0;
+            if (left)
+              CHECK(std::equal(left->audio_rows.begin() + c * left_channel,
+                               left->audio_rows.begin() + (c + 1) * left_channel,
+                               joined.audio_rows.begin() + c * out_channel));
+            CHECK(joined.audio_rows[c * out_channel + left_channel] == (c ? -9 : -8));
+          }
+          auto constraint = make_latent_end_anchor_constraint(*ending, left, p);
+          for (auto* pair : {&constraint.video, &constraint.audio}) {
+            auto& target = pair == &constraint.video ? video : audio;
+            const auto noise = target;
+            pair->capture_noise(target.data(), target.size());
+            pair->apply(target.data(), target.size(), 1);
+            CHECK(target == noise);
+            pair->apply(target.data(), target.size(), 0);
+            const size_t per = pair->original.size() / pair->channels;
+            const size_t front = per - pair->suffix_values_per_channel;
+            for (size_t c = 0; c < pair->channels; ++c) {
+              const size_t base = c * pair->target_values_per_channel;
+              CHECK(std::equal(pair->original.begin() + c * per,
+                               pair->original.begin() + c * per + front, target.begin() + base));
+              CHECK(std::equal(pair->original.begin() + c * per + front,
+                               pair->original.begin() + (c + 1) * per,
+                               target.begin() + base + pair->target_values_per_channel - pair->suffix_values_per_channel));
+              CHECK(target[base + front] == noise[base + front]); // free interval is untouched
+            }
+          }
+          // The retained output remains a valid source for further continuation.
+          CHECK(plan_continuation(joined, 22, 17).output_frames == joined.frames + 17);
+        }
+}
+
+SLOPFAB_TEST(latent_ending_guides_match_target_and_zero_margin_bridge) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(56);
+  const auto ending = LatentClip::load(fixture.path.string());
+  for (bool two_sided : {false, true}) {
+    const auto* left = two_sided ? ending.get() : nullptr;
+    const auto p = plan_latent_end_anchor(*ending, 22, 18, left, 5);
+    std::vector<dit::ReferenceGeometry> guides{{dit::ReferenceKind::kImage, 1, 2, 4, 0}};
+    std::vector<float> video(192), audio;
+    append_latent_end_anchor_guides(*ending, left, p, 7, guides, video, audio);
+    const int f = dit::video_latent_num_frames(p.window_frames);
+    const auto packed = dit::build_ref2va_packed_sequence({1, 1}, guides, f, 2, 4, p.window_audio_latents);
+    const auto& pos = packed.position_ids;
+    const auto& idx = packed.indices;
+    const int end_row = packed.layout.num_condition_video - p.suffix_video_latents * 2;
+    const int target_row = packed.layout.num_condition_video + (f - p.suffix_video_latents) * 2;
+    for (int i = 0; i < p.suffix_video_latents * 2; ++i)
+      for (int d = 0; d < 3; ++d)
+        CHECK_NEAR(pos[idx.video[end_row + i] * 3 + d], pos[idx.video[target_row + i] * 3 + d], 1e-10);
+    const int suffix_audio = 2 * p.prefix_audio_latents;
+    const int target_audio = packed.layout.num_condition_audio + p.prefix_audio_latents + p.generated_audio_latents;
+    CHECK_NEAR(pos[idx.audio[suffix_audio] * 3], pos[idx.audio[target_audio] * 3], 1e-10);
+    CHECK(video.size() == size_t(packed.layout.num_condition_video) * 96);
+    CHECK(audio.size() == size_t(packed.layout.num_condition_audio) * 32);
+  }
+  const LatentBridge b{ending, ending, 0, 0, 22};
+  const auto bp = plan_bridge(b, 18);
+  const auto ep = plan_latent_end_anchor(*ending, 22, 18, ending.get(), 22);
+  CHECK(bp.window_frames == ep.window_frames && bp.window_audio_latents == ep.window_audio_latents);
+  const auto bc = make_bridge_constraint(b, bp);
+  const auto ec = make_latent_end_anchor_constraint(*ending, ending.get(), ep);
+  CHECK(bc.video.original == ec.video.original && bc.audio.original == ec.audio.original);
+  std::vector<float> v(size_t(dit::video_latent_num_frames(ep.window_frames)) * 192, 3);
+  std::vector<float> a(size_t(ep.window_audio_latents) * 64, 4);
+  const auto bj = join_bridge(b, bp, v, a);
+  const auto ej = join_latent_end_anchor(*ending, ending.get(), ep, v, a);
+  CHECK(bj.video_rows == ej.video_rows && bj.audio_rows == ej.audio_rows);
+}
+
+SLOPFAB_TEST(latent_ending_validation_and_planning) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(39);
+  auto ending = LatentClip::load(fixture.path.string());
+  for (int context : {0, 6, 40, 56})
+    CHECK(rejects([&] { plan_latent_end_anchor(*ending, context, 17); }));
+  for (int added : {-1, 0, std::numeric_limits<int>::max()})
+    CHECK(rejects([&] { plan_latent_end_anchor(*ending, 22, added); }));
+  CHECK(rejects([&] { plan_latent_end_anchor(*ending, 22, 12, ending.get(), 56); }));
+  auto invalid = *ending;
+  invalid.sampled = false;
+  CHECK(rejects([&] { plan_latent_end_anchor(invalid, 22, 17); }));
+  invalid = *ending;
+  invalid.width = 32;
+  invalid.video_rows.resize(invalid.layout().num_video_rows * 96);
+  CHECK(rejects([&] { plan_latent_end_anchor(*ending, 22, 12, &invalid); }));
+  GenerateRequest r;
+  r.end_anchor_latents = ending;
+  r.num_frames = 18;
+  auto p = resolve_plan(r);
+  CHECK(p.aligned_frames == 73 && p.sampling_frames == 56);
+  CHECK(p.canvas_width == 64 && p.canvas_height == 32);
+  CHECK(p.layout.num_condition_video == 14);
+  r.continuation = ending;
+  r.continuation_overlap_frames = 5;
+  p = resolve_plan(r);
+  CHECK(p.aligned_frames == 107 && p.sampling_frames == 56);
+  CHECK(p.layout.num_condition_video == 18);
+  r.continuation_lock_overlap = true; // compatible; both sides are always locked
+  CHECK(resolve_plan(r).aligned_frames == 107);
+  r.end_anchor_path = "conflicting.png";
+  CHECK(rejects([&] { resolve_plan(r); }));
+  r.end_anchor_path.clear();
+  r.cache_threshold = .1f;
+  CHECK(rejects([&] { resolve_plan(r); }));
+  r.cache_threshold = 0;
+  r.canvas_width = 32; r.canvas_height = 32;
+  CHECK(rejects([&] { resolve_plan(r); }));
+  r.canvas_width = r.canvas_height = 0;
+  r.still_image = true;
+  CHECK(rejects([&] { resolve_plan(r); }));
+  r.still_image = false;
+  for (const auto* family : {"moss", "fibo2", "yue2", "minimax_music3"}) {
+    r.model_family = family;
+    CHECK(rejects([&] { resolve_plan(r); }));
+  }
+}
+
 SLOPFAB_TEST(ending_anchor_positions_and_continuation) {
   using namespace slopfab;
   LatentFixture fixture;

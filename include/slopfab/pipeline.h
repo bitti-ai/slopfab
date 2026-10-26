@@ -128,6 +128,10 @@ struct GenerateRequest {
   // references it shares the target's spatial grid and final rotary time.
   // With continuation this anchors the end of the newly sampled window.
   std::string end_anchor_path;
+  // Hard latent ending: owns the complete source segment, including audio.
+  // Mutually exclusive with the image anchor and explicit bridge modes.
+  std::shared_ptr<const LatentClip> end_anchor_latents;
+  int end_anchor_context_frames = 22;
 
   std::vector<std::string> conditioning_image_paths() const {
     auto paths = reference_image_paths;
@@ -216,6 +220,7 @@ struct GeneratePlan {
   // the bounded sampling window. Equal for ordinary generations.
   int sampling_frames = 0;
   ContinuationPlan continuation;
+  LatentEndAnchorPlan latent_end_anchor;
   BridgePlan bridge;
 
   dit::SequenceLayout layout; // layout.num_text is 0 until the prompt is tokenised

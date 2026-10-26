@@ -221,6 +221,8 @@ const CommandHelp kCommands[] = {
      "  --overlap-frames <n>         hidden context, 17*k+5 frames (default 22).\n"
      "  --lock-overlap               constrain continuation overlap at every step (experimental).\n"
      "  --end-anchor <image>        guide the ending toward an image (also with continuation).\n"
+     "  --end-anchor-latents <f>    retain an ending archive; --frames adds a lead-in/gap.\n"
+     "  --end-anchor-context <n>    locked opening context of ending, 17*k+5 (default 22).\n"
      "  --bridge-from <f>            left saved latent clip; use with --bridge-to.\n"
      "  --bridge-to <f>              right clip; --frames is added gap (rounded to 17*k+12).\n"
      "  --bridge-left-margin <n>     replace left tail, multiple of 17 (default 17).\n"
