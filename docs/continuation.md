@@ -39,6 +39,96 @@ cumulative 24 fps timeline against the 40 Hz latent clock, rather than rounding
 each extension independently. The sampling window stays bounded, but stored
 latents and full output decoding grow with the cumulative clip length.
 
+## Retained latent ending anchor (C API 1.40)
+
+Generate an ending segment first and retain its normalized video **and audio**
+latents. A latent ending anchor generates a lead-in before that segment while
+preserving the entire ending in the returned clip. No source VAE re-encoding is
+needed, and no editable margin is removed from the source.
+
+```sh
+slopfab generate --end-anchor-latents ending.safetensors --frames 119 --prompt "The cyclist approaches the lake and slows down" --out complete.mp4 --save-latents complete.safetensors
+```
+
+Here `--frames` means **new lead-in frames**, excluding the retained ending.
+It rounds up to a multiple of 17. With a 22-frame ending and 119 new frames,
+the output has 141 frames. The canvas is inherited from the ending; an explicit
+resolution must match. Sources must be completed H3 videos of at least 22 frames.
+
+The default `--end-anchor-context 22` uses the ending's **opening** 22 frames as
+fixed temporal guidance and locked target context. Context must be `17*k+5`
+frames, at least 5, and fit inside the ending. Only that context enters the
+sampling window; all source latents are copied unchanged into the joined result.
+The same initial-noise constraint used for overlap locking protects both video
+and stereo audio throughout sampling.
+
+For the next clip, generate another clean ending independently and combine it
+with ordinary continuation:
+
+```sh
+slopfab generate --continue-from complete.safetensors --end-anchor-latents next-ending.safetensors --frames 119 --prompt "The cyclist walks the bicycle along the shore" --out joined.mp4 --save-latents joined.safetensors
+```
+
+This returns `previous clip + new gap + ending clip`. With two sources, the gap
+rounds up to `17*k+12` (minimum 12), as in a zero-margin bridge; 119 requested
+frames therefore becomes a 131-frame gap. Both source clips are retained in
+full. `--overlap-frames` chooses the beginning's tail context independently of
+`--end-anchor-context`. Both contexts are always locked in this mode, even
+without `--lock-overlap`. Clear the ending anchor to resume ordinary forward
+continuation from the joined result.
+
+The DLL accepts retained generations directly:
+
+```c
+/* Enable before generating the independent ending; wait for it to complete. */
+slopfab_request_set_retain_latents(ending_request, 1);
+
+/* On the lead-in request, after ending_generation has completed successfully: */
+slopfab_request_set_end_anchor_generation(request, ending_generation, 22);
+slopfab_request_set_frames(request, 119);
+slopfab_request_set_retain_latents(request, 1); /* allow continuing the result */
+
+/* Optional: attach a completed previous clip to generate a gap between them. */
+slopfab_request_set_continuation_generation(request, previous_generation, 22);
+
+/* File alternative; reads and owns the archive immediately: */
+slopfab_request_set_end_anchor_file(request, "ending.safetensors", 22);
+
+/* Removes only the latent ending; continuation and ordinary references remain. */
+slopfab_request_clear_end_anchor_latents(request);
+```
+
+Check each return status. Requests retain ownership after a source generation
+is destroyed or an archive is deleted; a failed setter leaves the old source
+attached. Clearing continuation leaves the latent ending attached. In C++, use
+`GenerateRequest::end_anchor_latents` and `end_anchor_context_frames`.
+
+CUDA and Vulkan support this with FL2VA weights, or compatible Ref2VA weights
+when also using ordinary references. Use matching source canvases, latent
+geometry and compatible H3 VAE normalization. It cannot be combined with an
+image ending anchor, explicit latent bridge, imported-video transitions,
+still images, Animate, pinned audio, initial latents or approximate caches.
+
+Source latent values are preserved exactly. Decoded boundary pixels can vary
+with the VAE's temporal context, and the generated interval and motion seam
+still depend on the model and prompt. This does not guarantee degradation-free
+generation. Audio from the ending is retained too; this is not a video-only
+anchor.
+
+The real-weight DLL smoke test covers a retained ending, lead-in generation,
+continuation to a second ending with unequal context sizes, source-handle
+destruction, file deletion after attachment, exact source-region preservation,
+and further ordinary continuation:
+
+```sh
+python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . cuda
+python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . vulkan
+```
+
+These are small plumbing tests using a synthetic embedding, not visual quality
+benchmarks. Host tests additionally check temporal alignment, stereo clock
+rounding, suffix-only constraints, rejection and zero-margin bridge equivalence.
+
 ## Ending image anchor (C API 1.39)
 
 Use `--end-anchor` to guide a clip toward a clean ending image, including when

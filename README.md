@@ -15,6 +15,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 - **Configurable conditioning and isolated session caches**, with [model/LoRA recipes and library APIs](docs/conditioning_settings.md).
 - **Video continuation** through [saved video and audio latents](docs/continuation.md).
 - **Ending anchors** guide a clip or continuation toward an image with `--end-anchor`. See [ending anchors](docs/continuation.md#ending-image-anchor-c-api-139).
+- **Latent ending anchors** preserve an independently generated ending segment while generating its lead-in or a gap from a previous clip. See [retained endings](docs/continuation.md#retained-latent-ending-anchor-c-api-140).
 - **Latent bridging** between retained clips, with persistent reference conditioning and editable margins on both sides. See [bridging](docs/continuation.md#bridging-retained-clips-c-api-126-experimental).
 - **Quantized checkpoints** and [automatic CUDA transformer offloading](docs/denoising_memory.md) to manage GPU memory.
 - **A C API** for asynchronous video and still-image generation, progress callbacks, cancellation and model reuse.
