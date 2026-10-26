@@ -1,9 +1,11 @@
 """Real-weight DLL continuation plumbing smoke test (not a quality benchmark).
 
-python tools/continuation_smoke.py path/to/slopfab.dll . [cuda|vulkan]
+python tools/continuation_smoke.py path/to/slopfab.dll . [cuda|vulkan] [--end-anchor]
 Uses a fixed test embedding, 32x32 video and one model evaluation per window.
 Tests retained-handle and file handoffs, normalized prefix preservation, archive
 roundtripping, and finite video/audio on three consecutive generations.
+With --end-anchor, also checks two otherwise identical standalone generations
+with different anchor pixels, then continues twice with the overlap locked.
 """
 import ctypes as C
 import json
@@ -38,6 +40,7 @@ def main():
     root = pathlib.Path(sys.argv[2]).resolve()
     backend = sys.argv[3] if len(sys.argv) > 3 else "cuda"
     assert backend in ("cuda", "vulkan")
+    anchored = "--end-anchor" in sys.argv[4:]
     handle = C.c_void_p
 
     def bind(name, args, result=C.c_int):
@@ -62,6 +65,9 @@ def main():
     set_attention = bind("request_set_attention", [handle, C.c_char_p])
     set_backend = bind("request_set_inference_backend", [handle, C.c_int])
     retain = bind("request_set_retain_latents", [handle, C.c_int])
+    reuse = bind("request_set_reuse_models", [handle, C.c_int])
+    end_anchor = bind("request_set_end_anchor", [handle, C.c_char_p]) if anchored else None
+    lock_overlap = bind("request_set_continuation_lock_overlap", [handle, C.c_int])
     save = bind("request_set_save_latents", [handle, C.c_char_p])
     from_gen = bind("request_set_continuation_generation", [handle, handle, C.c_int])
     from_file = bind("request_set_continuation_file", [handle, C.c_char_p, C.c_int])
@@ -77,13 +83,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix="slopfab-continuation-smoke-") as tmp:
         work = pathlib.Path(tmp)
         embedding = work / "embedding.safetensors"
-        header = json.dumps({"prompt_embedding": {"dtype": "F32", "shape": [1, 5120], "data_offsets": [0, 20480]}}).encode()
+        header = json.dumps({"prompt_embedding": {"dtype": "F32", "shape": [1, 5120], "data_offsets": [0, 20480]},
+                             "text_token_tags": {"dtype": "I32", "shape": [1], "data_offsets": [20480, 20484]}}).encode()
         header += b" " * (-len(header) % 8)
         embedding.write_bytes(struct.pack("<Q", len(header)) + header +
-                              struct.pack("<5120f", *(.1 * math.sin(i) for i in range(5120))))
+                              struct.pack("<5120f", *(.1 * math.sin(i) for i in range(5120))) + struct.pack("<i", 1))
         prior_tensors = None
         try:
-            for iteration, expected_frames in enumerate((22, 39, 56)):
+            expected = (22, 22, 39, 56) if anchored else (22, 39, 56)
+            for iteration, expected_frames in enumerate(expected):
+                continuation_index = iteration - int(anchored)
                 request = create()
                 for kind, path in [(0, "transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors"),
                                    (3, "vae/minimax_h3_video_vae_fp16.safetensors"),
@@ -91,19 +100,27 @@ def main():
                     check(set_model(request, kind, str(root / "weights" / path).encode()))
                 check(set_embedding(request, str(embedding).encode()))
                 check(set_resolution(request, 32, 32))
-                check(set_frames(request, 22 if iteration == 0 else 17))
+                check(set_frames(request, 22 if continuation_index <= 0 else 17))
                 check(set_steps(request, 2))
                 check(set_attention(request, b"flash2"))
                 check(set_backend(request, backend == "vulkan"))
                 check(retain(request, 1))
+                if anchored:
+                    check(reuse(request, 1))
+                    # Rewrite one path to exercise content-based cache invalidation.
+                    anchor = work / "ending.ppm"
+                    anchor.write_bytes(b"P6\n32 32\n255\n" + bytes((40 if iteration == 0 else 180, 100, 180)) * 1024)
+                    check(end_anchor(request, str(anchor).encode()))
                 archive = work / f"clip-{iteration}.safetensors"
                 check(save(request, str(archive).encode()))
-                if iteration == 1:
+                if continuation_index == 1:
                     check(from_gen(request, previous, 22))
-                elif iteration == 2:
-                    prior_file = work / "clip-1.safetensors"
+                elif continuation_index == 2:
+                    prior_file = work / f"clip-{iteration - 1}.safetensors"
                     check(from_file(request, str(prior_file).encode(), 22))
                     prior_file.unlink()
+                if anchored and continuation_index > 0:
+                    check(lock_overlap(request, 1))
                 if previous:
                     gen_destroy(previous)
                     previous = handle()
@@ -129,7 +146,10 @@ def main():
                 assert archive.read_bytes() == saved_copy.read_bytes()
                 meta, tensors = read_archive(archive)
                 assert int(meta["__metadata__"]["frames"]) == expected_frames
-                if prior_tensors:
+                if anchored and iteration == 1:
+                    assert tensors["video_rows"] != prior_tensors["video_rows"], "ending anchor had no effect"
+                    print("PASS: changing only anchor pixels changes generated video latents", flush=True)
+                if prior_tensors and continuation_index > 0:
                     assert tensors["video_rows"].startswith(prior_tensors["video_rows"])
                     old = prior_tensors["audio_rows"]
                     new = tensors["audio_rows"]

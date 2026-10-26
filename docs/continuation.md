@@ -39,6 +39,50 @@ cumulative 24 fps timeline against the 40 Hz latent clock, rather than rounding
 each extension independently. The sampling window stays bounded, but stored
 latents and full output decoding grow with the cumulative clip length.
 
+## Ending image anchor (C API 1.39)
+
+Use `--end-anchor` to guide a clip toward a clean ending image, including when
+continuing an existing clip:
+
+```sh
+slopfab generate --continue-from first.safetensors --frames 119 --lock-overlap --end-anchor ending.png --prompt "The cyclist slows down and stops beside the lake" --out extended.mp4 --save-latents extended.safetensors
+```
+
+It also works without `--continue-from`. The anchor is resized with Lanczos to
+the target canvas (matching aspect ratios avoids stretching), encoded by the
+image VAE and included in Qwen's image presentation after ordinary image
+references. Its fixed conditioning rows share the target spatial grid and the
+FL2VA last-image rotary time. With continuation, that time is relative to the
+sampling window, including its hidden overlap, so it lands at the new ending.
+
+This is conditioning, not exact final-pixel replacement or a locked target latent.
+It can help guide the ending but does not guarantee image fidelity, higher
+quality, or seamless motion in the following clip. The overlap lock independently
+constrains the beginning. Retain/save the generated latents to continue again;
+an anchor is request configuration and is not stored in the latent archive.
+
+Both CUDA and Vulkan support the anchor with FL2VA weights, or compatible Ref2VA
+weights when using ordinary references. It needs image-encoder VAE weights and,
+unless supplying a captured embedding, a vision-capable Qwen encoder. Captured
+embeddings must include `text_token_tags` and should represent the same prompt
+and image inputs. Still images, Animate, imported-video transitions, latent
+bridging, pinned target audio, and synthetic-latent decoding are not supported
+with an ending anchor.
+
+```c
+slopfab_request_set_end_anchor(next_req, "ending.png");
+/* NULL or an empty string clears it. The setter copies the path. */
+slopfab_request_set_end_anchor(next_req, NULL);
+```
+
+The C++ field is `GenerateRequest::end_anchor_path`. Clearing continuation leaves
+the anchor attached, and clearing the anchor leaves continuation attached.
+Changing the anchor's pixels or target canvas invalidates its cached encoding
+and prompt conditioning; changing duration recomputes its temporal placement.
+
+The temporal placement follows the upstream
+[FL2VA layout](https://github.com/huggingface/diffusers/blob/c419dac0152186060246c93a095bc1bfaea342b3/src/diffusers/modular_pipelines/minimax_h3/before_denoise.py).
+
 ## Locking the overlap (experimental)
 
 Add `--lock-overlap` to constrain the target overlap during sampling:
@@ -263,11 +307,17 @@ file handoff after deleting the source file, and finite joined video/audio:
 ```sh
 python tools/continuation_smoke.py build/Release/slopfab.dll . cuda
 python tools/continuation_smoke.py build/Release/slopfab.dll . vulkan
+python tools/continuation_smoke.py build/Release/slopfab.dll . cuda --end-anchor
+python tools/continuation_smoke.py build/Release/slopfab.dll . vulkan --end-anchor
 ```
 
 The CUDA and Vulkan smoke runs both passed with 22, 39, and 56 joined frames.
 This deliberately uses a tiny canvas and one model evaluation to validate
 plumbing. It does not measure continuation quality at normal generation settings.
+The anchored variant checks that changing only anchor pixels changes generated
+video latents, then continues twice with the beginning overlap locked. Host
+tests also cover endpoint coordinates, cache invalidation, FL2VA eligibility,
+invalid mode combinations, and the C API setter/clear lifecycle.
 The temporal-guide approach follows the native H3 guide formulation described
 in [ComfyUI's H3 model](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/ldm/minimax/model.py)
 and the [guided continuation workflow](https://github.com/ttulttul/ComfyUI-Minimax-H3-Continuation).
