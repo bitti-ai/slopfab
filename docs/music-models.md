@@ -80,7 +80,13 @@ flow iterations across all chunks, without resetting between chunks. Each midpoi
 iteration includes two model predictions. Use the callback's `total_steps`, rather
 than the plan's model-evaluation estimate, for the progress denominator.
 
-For either YuE2 phase, display `100.0 * (step + 1) / total_steps` when
+MiniMax Music3 follows the same convention. It reports `TRANSFORMER_LOAD` before
+loading its autoregressive model, then counts completed acoustic frames during
+`CONDITIONING`, excluding the initial priming prediction. The frame budget shrinks
+if EOS arrives early. `DENOISING` counts completed Euler iterations across all
+overlapping windows, with a total based on the actual generated frame count.
+
+For conditioning or denoising in either model, display `100.0 * (step + 1) / total_steps` when
 `total_steps > 0`. This is progress within the current phase. Block heartbeats can
 repeat the same values while work is in flight; they preserve responsive
 cancellation and do not represent additional completed steps. Existing callback
