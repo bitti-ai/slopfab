@@ -1,4 +1,5 @@
 #include "runtime.cuh"
+#include "progress.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/audio/wav.h"
 #include "slopfab/sampler/noise.h"
@@ -137,12 +138,11 @@ void parent(const std::string& path) {
     std::filesystem::create_directories(p);
 }
 
-struct Cancelled {};
 }
 
 std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
                                   const MusicSettings& settings, int maximum, uint64_t seed,
-                                  Hook hook, const std::string& trace) {
+                                  Hook hook, const std::string& trace, Hook frame_completed) {
 #ifndef SLOPFAB_MUSIC_VULKAN
   moss::TemporaryBufferScope buffers;
 #endif
@@ -207,8 +207,11 @@ std::vector<float> minimax_hidden(Runtime& rt, const std::vector<int32_t>& ids,
         trace_codes.push_back(float(extra[i] - i * 1024));
       trace_hidden.insert(trace_hidden.end(), hidden.begin(), hidden.end());
     }
-    if (frame > 0)
+    if (frame > 0) {
       output.insert(output.end(), hidden.begin(), hidden.end());
+      if (frame_completed)
+        frame_completed();
+    }
     if (frame == maximum)
       break;
     auto cvalues = moss::to_host(cembed),
@@ -352,10 +355,10 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
                                   const RunOptions& options, std::vector<float> hidden) {
   RunResult result;
   using Clock = std::chrono::steady_clock;
-  auto notify = [&](RunStage stage, int step = -1, int total = 0) {
-    if (options.on_progress && !options.on_progress(stage, step, total, options.hook_userdata))
-      throw Cancelled{};
-  };
+  music::Progress progress(options);
+  auto notify = [&](RunStage stage) { progress.begin(stage); };
+  Hook heartbeat = [&] { progress.poll(); };
+  Hook completed = [&] { progress.advance(); };
   auto elapsed = [](auto start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
   };
@@ -364,12 +367,13 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
     notify(RunStage::kStarting);
     auto start = Clock::now();
     if (hidden.empty()) {
+      notify(RunStage::kTransformerLoad);
       Runtime ar(r.text_encoder_path);
       ar.cache_dense_weights = true;
       auto tokens = minimax_prompt(ar.checkpoint, r.prompt, r.music.lyrics);
-      hidden = minimax_hidden(ar, tokens, r.music, plan.music_frames, r.seed, [&] {
-        notify(RunStage::kConditioning);
-      });
+      progress.begin(RunStage::kConditioning, plan.music_frames);
+      hidden = minimax_hidden(ar, tokens, r.music, plan.music_frames, r.seed, heartbeat, "", completed);
+      progress.remaining(0);
     }
     result.conditioner_executed = true;
     result.seconds_conditioning = elapsed(start);
@@ -380,14 +384,15 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
     std::vector<float> previous, previous_condition;
     start = Clock::now();
     {
-      Runtime flow(r.transformer_path);
-      flow.cache_dense_weights = true;
       std::vector<int> starts = {0};
       if (frames > 200) {
         starts.clear();
         for (int i = 0; i < frames - 100; i += 100)
           starts.push_back(i);
       }
+      progress.begin(RunStage::kDenoising, int(starts.size()) * plan.num_inference_steps);
+      Runtime flow(r.transformer_path);
+      flow.cache_dense_weights = true;
       for (size_t chunk = 0; chunk < starts.size(); ++chunk) {
 #ifndef SLOPFAB_MUSIC_VULKAN
         moss::TemporaryBufferScope buffers;
@@ -419,14 +424,10 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
           float time = step * dt;
           for (int i = 0; i < overlap * 128; ++i)
             state[i] = bf(bf((1 - time) * noise[i]) + bf(time * previous[i]));
-          Hook progress = [&] {
-            notify(RunStage::kDenoising, int(chunk) * plan.num_inference_steps + step,
-                   int(starts.size()) * plan.num_inference_steps);
-          };
-          progress();
+          heartbeat();
           auto input = moss::from_host(state, length, 128);
-          auto c = moss::to_host(minimax_prediction(flow, input, cond, time, progress));
-          auto u = moss::to_host(minimax_prediction(flow, input, zero, time, progress));
+          auto c = moss::to_host(minimax_prediction(flow, input, cond, time, heartbeat));
+          auto u = moss::to_host(minimax_prediction(flow, input, zero, time, heartbeat));
           for (size_t i = 0; i < state.size(); ++i) {
             float velocity = bf(u[i] + bf(bf(c[i] - u[i]) * cfg));
             state[i] = bf(state[i] + dt * velocity);
@@ -434,6 +435,7 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
               throw std::runtime_error("non-finite MiniMax Music3 flow state");
           }
           ++result.steps_computed;
+          completed();
           if (options.verbose)
             std::printf("MiniMax Music3 window %zu/%zu step %d/%d\n", chunk + 1, starts.size(),
                         step + 1, plan.num_inference_steps);
@@ -487,7 +489,7 @@ RunResult run_minimax_from_hidden(const GenerateRequest& r, const GeneratePlan& 
     }
     notify(RunStage::kFinished);
     result.ok = true;
-  } catch (const Cancelled&) {
+  } catch (const music::ProgressCancelled&) {
     result.cancelled = true;
     result.message = "music generation cancelled";
   } catch (const std::exception& e) {

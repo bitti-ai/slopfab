@@ -359,8 +359,10 @@ typedef struct slopfab_plan {
  * YuE2 CONDITIONING also reports completed ABC/semantic tokens: step is the
  * last completed zero-based token index, or -1 before any token completes.
  * Its total is an upper bound and shrinks when a phase ends early at EOS.
- * YuE2 DENOISING counts completed flow iterations across all chunks, without
- * resetting between chunks. A midpoint iteration includes two predictions.
+ * MiniMax Music3 CONDITIONING uses the same convention for completed acoustic
+ * frames, excluding the initial priming prediction, and revises its total at EOS.
+ * Music DENOISING counts completed flow iterations across all chunks/windows,
+ * without resetting. A YuE2 midpoint iteration includes two predictions.
  * Music block heartbeats may repeat a progress value for cancellation checks;
  * repeated callbacks do not indicate additional completed work. */
 typedef struct slopfab_progress {
