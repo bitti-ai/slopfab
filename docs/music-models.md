@@ -72,6 +72,20 @@ Use `dist/windows/slopfab.dll` with the matching `capi.h`. The existing C ABI re
 
 Progress and cancellation are checked between transformer blocks and pipeline stages. Model memory is released between MiniMax AR, flow and decoding stages. When expanded weights are cached, their compressed GPU copies are released to avoid retaining both representations. Real generation was tested on an RTX 5090 with 32 GB VRAM; smaller GPUs have not been characterized.
 
+YuE2 reports `TRANSFORMER_LOAD` before loading its bundle. During `CONDITIONING`,
+`step` is the zero-based index of the last completed ABC or semantic token, with
+`-1` before the first token. `total_steps` is the combined token budget and shrinks
+if generation ends early at EOS. During `DENOISING`, the same fields count completed
+flow iterations across all chunks, without resetting between chunks. Each midpoint
+iteration includes two model predictions. Use the callback's `total_steps`, rather
+than the plan's model-evaluation estimate, for the progress denominator.
+
+For either YuE2 phase, display `100.0 * (step + 1) / total_steps` when
+`total_steps > 0`. This is progress within the current phase. Block heartbeats can
+repeat the same values while work is in flight; they preserve responsive
+cancellation and do not represent additional completed steps. Existing callback
+structures and function signatures are unchanged.
+
 ## CUDA performance
 
 CUDA music reuses temporary activation and attention buffers within each autoregressive stage and flow window/chunk. Buffers are scoped to a generation stage, use the runtime's default stream, and are released before the next stage; checkpoint weights keep their existing lifetime. MiniMax also collects each frame's eight hidden vectors on the GPU before a single download. Single-token attention batches query heads across the KV heads, reducing MiniMax's per-layer attention submissions from 96 to 9 and YuE2's from 48 to 5. Prefill and FP32 flow attention retain their existing kernels.

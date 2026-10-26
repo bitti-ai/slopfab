@@ -1,7 +1,7 @@
 """Exercise both music families through the C ABI with real local checkpoints.
 
-Checks audio ownership, geometry, finite samples, seeded repeatability and
-cancellation. Python is only the test harness; inference runs inside the DLL.
+Checks audio ownership, geometry, finite samples, seeded repeatability,
+YuE2 progress and cancellation. Inference runs inside the DLL.
 """
 import argparse
 import ctypes as C
@@ -62,6 +62,26 @@ class Progress(C.Structure):
 
 
 ProgressCallback = C.CFUNCTYPE(None, C.POINTER(Progress), handle)
+
+
+def check_yue_progress(events, steps_computed):
+    stages = [event[0] for i, event in enumerate(events) if i == 0 or event[0] != events[i - 1][0]]
+    assert stages == [0, 3, 2, 4, 6, 7, 8], f"unexpected YuE2 stage transitions: {stages}"
+    elapsed = [event[3] for event in events]
+    assert all(math.isfinite(t) and t >= 0 for t in elapsed) and elapsed == sorted(elapsed)
+    for stage in (2, 4):
+        phase = [(step, total) for s, step, total, _ in events if s == stage]
+        assert phase[0][0] == -1 and phase[0][1] > 0, f"missing stage {stage} entry budget"
+        last_step, last_total = -1, phase[0][1]
+        for step, total in phase:
+            assert step in (last_step, last_step + 1), f"stage {stage} skipped or reset progress"
+            assert -1 <= step < total <= last_total, f"invalid stage {stage} progress: {step}/{total}"
+            if stage == 4:
+                assert total == steps_computed, "flow budget must span all chunks"
+            last_step, last_total = step, total
+        assert last_step + 1 == last_total, f"stage {stage} never reported completion"
+
+
 create = bind("slopfab_request_create", [], handle)
 destroy = bind("slopfab_generation_destroy", [handle], None)
 cancel = bind("slopfab_generation_cancel", [handle], None)
@@ -92,7 +112,15 @@ for family in paths if a.family == "both" else [a.family]:
         digests = []
         first_samples = None
         for repeat in range(a.repeats):
-            check(start(request, None, None, C.byref(generation)))
+            events = []
+
+            @ProgressCallback
+            def record_progress(progress, _):
+                value = progress.contents
+                events.append((value.stage, value.step, value.total_steps, value.elapsed_seconds))
+
+            callback = C.cast(record_progress, handle) if family == "yue2" else None
+            check(start(request, callback, None, C.byref(generation)))
             if wait(generation, -1):
                 raise RuntimeError(bind("slopfab_generation_error", [handle], C.c_char_p)(generation).decode())
             output = Output()
@@ -111,6 +139,8 @@ for family in paths if a.family == "both" else [a.family]:
             assert output.steps_computed >= a.steps and output.steps_skipped == 0
             if a.duration == .08:
                 assert output.steps_computed == a.steps
+            if family == "yue2":
+                check_yue_progress(events, output.steps_computed)
             timing = {"family": family, "backend": a.backend, "repeat": repeat,
                       "duration": a.duration, "steps": a.steps, "audio_frames": output.audio_frames}
             if family == "yue2":
@@ -166,6 +196,8 @@ for family in paths if a.family == "both" else [a.family]:
             destroy(generation)
             generation = handle()
             print(f"{a.backend} {family}: in-stage cancellation and recovery passed", flush=True)
+        if family == "yue2":
+            print(f"{a.backend} {family}: token and completed flow progress passed", flush=True)
         print(f"{a.backend} {family}: audio geometry, finite samples, seed repeatability and cancellation passed", flush=True)
     finally:
         if generation:
