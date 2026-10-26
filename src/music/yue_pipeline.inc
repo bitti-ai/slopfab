@@ -1,4 +1,5 @@
 #include "runtime.cuh"
+#include "progress.h"
 #include "slopfab/int8_weight.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/text/tokenizer.h"
@@ -173,7 +174,8 @@ int sample(std::vector<float> values, const std::vector<int32_t>& generated, boo
 
 std::vector<int32_t> generate_tokens(Runtime& rt, const std::vector<int32_t>& prefix,
                                      const std::vector<int32_t>& negative, bool abc, int maximum,
-                                     const MusicSettings& s, uint64_t seed, Hook hook) {
+                                     const MusicSettings& s, uint64_t seed, Hook hook,
+                                     Hook token_completed) {
 #ifndef SLOPFAB_MUSIC_VULKAN
   moss::TemporaryBufferScope buffers;
 #endif
@@ -200,6 +202,8 @@ std::vector<int32_t> generate_tokens(Runtime& rt, const std::vector<int32_t>& pr
     if (id == (abc ? abc_end : music_end))
       break;
     out.push_back(id);
+    if (token_completed)
+      token_completed();
     if (i + 1 < maximum) {
       h = ar_forward(rt, {id}, cache, int(prefix.size()) + maximum, hook);
       if (cfg)
@@ -234,7 +238,6 @@ Tensor velocity(Runtime& rt, const std::vector<float>& state, float time, Caches
                    frames);
 }
 
-struct Cancelled {};
 }
 
 Tensor yue_norm(Runtime& rt, const Tensor& x, const std::string& name, int width) {
@@ -310,16 +313,17 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
                   const RunOptions& options) {
   RunResult result;
   using Clock = std::chrono::steady_clock;
-  auto notify = [&](RunStage stage, int step = -1, int steps = 0) {
-    if (options.on_progress && !options.on_progress(stage, step, steps, options.hook_userdata))
-      throw Cancelled{};
-  };
+  music::Progress progress(options);
+  auto notify = [&](RunStage stage) { progress.begin(stage); };
+  Hook heartbeat = [&] { progress.poll(); };
+  Hook completed = [&] { progress.advance(); };
   auto elapsed = [](auto start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
   };
   try {
     validate_generation_options(request, plan, options);
     notify(RunStage::kStarting);
+    notify(RunStage::kTransformerLoad);
     Runtime rt(request.transformer_path);
     rt.cache_dense_weights = true;
     text::Tokenizer tokenizer;
@@ -334,14 +338,14 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
         instruction + "\n[Tags]\n" + request.prompt + "\n[Lyrics]\n" + s.lyrics + "\n", false);
     prefix.insert(prefix.begin(), eod);
     prefix.push_back(abc_start);
-    notify(RunStage::kConditioning);
+    const bool generate_abc = s.planning != "off" && s.abc.empty();
+    progress.begin(RunStage::kConditioning, (generate_abc ? s.abc_max_tokens : 0) + plan.music_frames);
     auto start = Clock::now();
-    Hook conditioning = [&] {
-      notify(RunStage::kConditioning);
-    };
     auto abc = tokenizer.encode(s.abc, false);
-    if (s.planning != "off" && s.abc.empty())
-      abc = generate_tokens(rt, prefix, {}, true, s.abc_max_tokens, s, request.seed, conditioning);
+    if (generate_abc) {
+      abc = generate_tokens(rt, prefix, {}, true, s.abc_max_tokens, s, request.seed, heartbeat, completed);
+      progress.remaining(plan.music_frames);
+    }
     if (options.verbose && !abc.empty())
       std::printf("YuE2 ABC\n%s\n", tokenizer.decode(abc).c_str());
     prefix.insert(prefix.end(), abc.begin(), abc.end());
@@ -356,9 +360,10 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
     }
     negative.push_back(music_start);
     auto codes = generate_tokens(rt, prefix, negative, false, plan.music_frames, s, request.seed,
-                                 conditioning);
+                                 heartbeat, completed);
     if (codes.empty())
       throw std::runtime_error("YuE2 produced no audio tokens");
+    progress.remaining(0);
     result.conditioner_executed = true;
     result.seconds_conditioning = elapsed(start);
     if (options.verbose)
@@ -371,6 +376,9 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
     sampler::fill_normal(request.seed, sampler::NoiseStream::kAudioLatents, noise.data(),
                          noise.size());
     start = Clock::now();
+    const int chunks = (int(codes.size()) + chunk - 1) / chunk;
+    const int total_steps = chunks * plan.num_inference_steps;
+    progress.begin(RunStage::kDenoising, total_steps);
     for (int first = 0; first < int(codes.size()); first += chunk) {
 #ifndef SLOPFAB_MUSIC_VULKAN
       moss::TemporaryBufferScope buffers;
@@ -380,30 +388,28 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
       tokens.insert(tokens.end(), codes.begin() + first, codes.begin() + first + count);
       tokens.push_back(music_end);
       Caches cache;
-      ar_forward(rt, tokens, cache, int(tokens.size()), conditioning);
+      ar_forward(rt, tokens, cache, int(tokens.size()), heartbeat);
       std::vector<float> state(noise.begin() + size_t(first) * 64,
                                noise.begin() + size_t(first + count) * 64);
       for (auto& v : state)
         v = bf(v);
       const float dt = 1.f / plan.num_inference_steps;
       for (int step = 0; step < plan.num_inference_steps; ++step) {
-        Hook progress = [&] {
-          notify(RunStage::kDenoising, step, plan.num_inference_steps);
-        };
-        progress();
-        auto v = moss::to_host(velocity(rt, state, 1 - step * dt, cache, progress));
+        heartbeat();
+        auto v = moss::to_host(velocity(rt, state, 1 - step * dt, cache, heartbeat));
         auto mid = state;
         for (size_t i = 0; i < state.size(); ++i)
           mid[i] = bf(state[i] - bf(v[i] * (dt / 2)));
-        v = moss::to_host(velocity(rt, mid, 1 - (step + .5f) * dt, cache, progress));
+        v = moss::to_host(velocity(rt, mid, 1 - (step + .5f) * dt, cache, heartbeat));
         for (size_t i = 0; i < state.size(); ++i) {
           state[i] = bf(state[i] - bf(v[i] * dt));
           if (!std::isfinite(state[i]))
             throw std::runtime_error("non-finite YuE2 flow state");
         }
         ++result.steps_computed;
+        completed();
         if (options.verbose)
-          std::printf("YuE2 flow %d/%d\n", step + 1, plan.num_inference_steps);
+          std::printf("YuE2 flow %d/%d\n", result.steps_computed, total_steps);
       }
       latent.insert(latent.end(), state.begin(), state.end());
     }
@@ -447,7 +453,7 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
     }
     notify(RunStage::kFinished);
     result.ok = true;
-  } catch (const Cancelled&) {
+  } catch (const music::ProgressCancelled&) {
     result.cancelled = true;
     result.message = "music generation cancelled";
   } catch (const std::exception& e) {

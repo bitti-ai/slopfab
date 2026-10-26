@@ -3,8 +3,63 @@
 #include "slopfab/pipeline.h"
 #include "slopfab/generate.h"
 #include "../src/text/nfc.h"
+#include "../src/music/progress.h"
 #include <limits>
 #include <cmath>
+
+SLOPFAB_TEST(music_completed_progress) {
+  using namespace slopfab;
+  struct Event {
+    RunStage stage;
+    int step, total;
+  };
+  std::vector<Event> events;
+  RunOptions options;
+  options.hook_userdata = &events;
+  options.on_progress = [](RunStage stage, int step, int total, void* data) {
+    static_cast<std::vector<Event>*>(data)->push_back({stage, step, total});
+    return true;
+  };
+  music::Progress progress(options);
+  // ABC stops after two tokens; semantic generation stops after one.
+  progress.begin(RunStage::kConditioning, 35);
+  progress.poll();
+  progress.advance();
+  progress.advance();
+  progress.remaining(3);
+  progress.advance();
+  progress.remaining(0);
+  CHECK(events[0].step == -1 && events[0].total == 35);
+  CHECK(events[1].step == -1 && events[1].total == 35);
+  CHECK(events[4].step == 1 && events[4].total == 5);
+  CHECK(events.back().step == 2 && events.back().total == 3);
+  // Flow has two chunks of three steps, with block heartbeats between steps.
+  events.clear();
+  progress.begin(RunStage::kDenoising, 6);
+  for (int chunk = 0; chunk < 2; ++chunk) {
+    for (int step = 0; step < 3; ++step) {
+      progress.poll();
+      progress.poll();
+      progress.advance();
+    }
+  }
+  int last = -1;
+  for (const auto& event : events) {
+    CHECK(event.stage == RunStage::kDenoising && event.total == 6);
+    CHECK(event.step == last || event.step == last + 1);
+    last = event.step;
+  }
+  CHECK(last == 5);
+  // A block heartbeat must still cancel before the next unit completes.
+  options.on_progress = [](RunStage, int, int, void*) { return false; };
+  bool cancelled = false;
+  try {
+    progress.poll();
+  } catch (const music::ProgressCancelled&) {
+    cancelled = true;
+  }
+  CHECK(cancelled);
+}
 
 SLOPFAB_TEST(music_plan_and_guards) {
   using namespace slopfab;

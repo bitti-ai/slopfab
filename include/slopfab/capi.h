@@ -355,7 +355,14 @@ typedef struct slopfab_plan {
  * host UI state must marshal to its own thread. `step` is -1 outside the
  * denoising loop and on entry before its first step completes; `total_steps`
  * is already set on denoising entry and is 0 where it means nothing. During
- * UPSCALING these fields instead report completed/total tiles (0/0 on entry). */
+ * UPSCALING these fields instead report completed/total tiles (0/0 on entry).
+ * YuE2 CONDITIONING also reports completed ABC/semantic tokens: step is the
+ * last completed zero-based token index, or -1 before any token completes.
+ * Its total is an upper bound and shrinks when a phase ends early at EOS.
+ * YuE2 DENOISING counts completed flow iterations across all chunks, without
+ * resetting between chunks. A midpoint iteration includes two predictions.
+ * Music block heartbeats may repeat a progress value for cancellation checks;
+ * repeated callbacks do not indicate additional completed work. */
 typedef struct slopfab_progress {
   int32_t stage; /* one of SLOPFAB_STAGE_* */
   int32_t step;

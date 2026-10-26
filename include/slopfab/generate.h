@@ -189,6 +189,9 @@ struct RunOptions {
   //
   // Called at each stage boundary and after each denoising step, with `step`
   // -1 outside the loop, except upscaling reports completed/total tiles.
+  // YuE2 conditioning reports zero-based completed token indices and a token
+  // budget (revised on early EOS); flow counts completed iterations across
+  // chunks. Music block heartbeats repeat the last completed index.
   // Returning false cancels: the run stops at that point
   // and returns `ok == false`, `cancelled == true`. Cancellation is only as
   // fine-grained as the checkpoints — a cancel during a multi-gigabyte
