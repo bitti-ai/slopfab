@@ -87,6 +87,8 @@ ResolvedConditioning resolve_conditioning_settings(const GenerateRequest& reques
 }
 
 void validate_conditioning_request(const GenerateRequest& r, const ResolvedConditioning& s) {
+  if (!r.end_anchor_path.empty() && (s.video_first || s.pin_target_audio))
+    throw std::invalid_argument("ending anchor does not support video-first or pinned audio conditioning");
   if (r.bridge && (s.video_first || s.pin_target_audio || s.canvas_from_reference_video))
     throw std::invalid_argument(
         "latent bridge does not support video-first, pinned audio or reference-derived canvas");

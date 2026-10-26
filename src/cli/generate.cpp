@@ -329,6 +329,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       slopfab::validate_refmods(req.refmods);
     } else if (arg == "--reference-image") {
       req.reference_image_paths.emplace_back(next("--reference-image"));
+    } else if (arg == "--end-anchor") {
+      req.end_anchor_path = next("--end-anchor");
+      if (req.end_anchor_path.empty())
+        throw std::invalid_argument("--end-anchor requires an image path");
     } else if (arg == "--reference-video" || arg == "--reference-audio") {
       const bool is_video = arg == "--reference-video";
       reference_files.emplace_back(next(is_video ? "--reference-video" : "--reference-audio"),

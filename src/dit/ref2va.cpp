@@ -95,6 +95,8 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt
       throw std::invalid_argument("temporal guides must follow ordinary references");
     if (r.target_aligned) {
       aligned_seen = true;
+      if (!std::isfinite(r.target_time_offset) || std::abs(r.target_time_offset) > 1000000)
+        throw std::invalid_argument("temporal guide has an invalid time offset");
       if (r.kind == ReferenceKind::kImage) {
         if (r.num_latent_frames != 1 || r.num_audio_latents != 0 || r.latent_height <= 0 || r.latent_width <= 0 ||
             r.latent_height % 2 || r.latent_width % 2 || r.target_latent_x < 0 || r.target_latent_y < 0 ||
@@ -150,7 +152,7 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt
       clock += r.num_audio_latents;
     } else if (r.kind == ReferenceKind::kImage) {
       l.reference_segments.push_back({cur, r.video_rows()});
-      video(o.position_ids, cur, r, clock, H, W);
+      video(o.position_ids, cur, r, clock + (r.target_aligned ? r.target_time_offset : 0), H, W);
       for (int i = 0; i < r.video_rows(); ++i)
         o.indices.video.push_back(cur + i);
       cur += r.video_rows();

@@ -220,6 +220,7 @@ const CommandHelp kCommands[] = {
      "                               rounded up to a multiple of 17. Output is joined.\n"
      "  --overlap-frames <n>         hidden context, 17*k+5 frames (default 22).\n"
      "  --lock-overlap               constrain continuation overlap at every step (experimental).\n"
+     "  --end-anchor <image>        guide the ending toward an image (also with continuation).\n"
      "  --bridge-from <f>            left saved latent clip; use with --bridge-to.\n"
      "  --bridge-to <f>              right clip; --frames is added gap (rounded to 17*k+12).\n"
      "  --bridge-left-margin <n>     replace left tail, multiple of 17 (default 17).\n"

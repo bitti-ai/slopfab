@@ -20,6 +20,9 @@ def run(*args, success=True):
 
 
 run("--lock-overlap", success=False)
+assert "ending anchor" in run("--end-anchor", "ending.png")
+for args in [("--synthetic-latents",), ("--animate",)]:
+    run("--end-anchor", "ending.png", *args, success=False)
 with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     archive = Path(directory) / "source.safetensors"
     vb, ab = 14 * 96 * 4, 74 * 32 * 4
@@ -32,6 +35,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     archive.write_bytes(struct.pack("<Q", len(raw)) + raw + bytes(vb + ab))
     base = ("--continue-from", archive, "--overlap-frames", "22")
     assert "conditioning only" in run(*base)
+    assert "ending anchor" in run(*base, "--end-anchor", "ending.png", "--lock-overlap")
     assert "locked video and audio" in run(*base, "--lock-overlap", "--audio-steps", "5")
     run(*base, "--lock-overlap", "--skip-every", "2", success=False)
     run(*base, "--lock-overlap", "--synthetic-latents", success=False)
@@ -45,6 +49,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     raw += b" " * (-len(raw) % 8)
     archive.write_bytes(struct.pack("<Q", len(raw)) + raw + bytes(vb + ab))
     bridge = ("--bridge-from", archive, "--bridge-to", archive)
+    run(*bridge, "--end-anchor", "ending.png", success=False)
     description = run(*bridge, "--reference-image", "original.png")
     assert "29 gap frames; editable margins 17/17" in description
     assert "107 frames; locked video/audio context on both sides" in description

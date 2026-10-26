@@ -694,6 +694,16 @@ slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t 
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor(slopfab_request* request,
+                                                          const char* path) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "ending anchor: null request");
+  return guarded([&] {
+    request->request.end_anchor_path = path ? path : "";
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request) {
   if (!request)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear continuation: null request");

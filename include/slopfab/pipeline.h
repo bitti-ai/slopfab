@@ -124,6 +124,18 @@ struct GenerateRequest {
   // the same order labels images in the multimodal prompt and packed sequence.
   std::vector<std::string> reference_image_paths;
 
+  // Optional ending keyframe, resized to the target canvas. Unlike ordinary
+  // references it shares the target's spatial grid and final rotary time.
+  // With continuation this anchors the end of the newly sampled window.
+  std::string end_anchor_path;
+
+  std::vector<std::string> conditioning_image_paths() const {
+    auto paths = reference_image_paths;
+    if (!end_anchor_path.empty())
+      paths.push_back(end_anchor_path);
+    return paths;
+  }
+
   // Decoded video/audio references, in insertion order, following the legacy
   // image list. Attached payloads are immutable and shared by request copies.
   // CUDA and Vulkan support video/audio conditioning.
@@ -289,7 +301,8 @@ void append_file_identity(std::string& key, const std::string& path);
 // reference images, which are small enough to afford it.
 void append_file_content_identity(std::string& key, const std::string& path);
 
-// The content identity of each reference image, in request order.
+// Content identities in conditioning_image_paths() order: ordinary images,
+// followed by the optional ending anchor.
 //
 // Hashing is the expensive part of both keys below and the only part they
 // share, so a caller that wants both should compute this once and hand it to

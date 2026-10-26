@@ -243,7 +243,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   text::PromptEmbedding fixed_prompt;
   if (options.source == LatentSource::kDenoise && !options.prompt_embedding_path.empty())
     fixed_prompt =
-        text::read_prompt_embedding(options.prompt_embedding_path, request.has_native_references());
+        text::read_prompt_embedding(options.prompt_embedding_path,
+                                     request.has_native_references() || !request.end_anchor_path.empty());
 
   if (plan.conditioning.fixed_prompt_tokens > 0 &&
       fixed_prompt.num_tokens != plan.conditioning.fixed_prompt_tokens)
@@ -267,6 +268,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       ? (options.vulkan_portable_arithmetic ? ":vulkan-portable" : ":vulkan-qualified-exact")
       : ":cuda";
   const bool cache_references = options.reuse_models;
+  const auto image_paths = request.conditioning_image_paths();
   const std::vector<std::string> reference_identities =
       options.reuse_models ? reference_image_identities(request) : std::vector<std::string>();
   const std::string reference_key =
@@ -276,9 +278,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       cache_references ? reuse.reference_images : owned_reference_images;
   const bool reference_cache_hit =
       cache_references && reuse.reference_valid && reuse.reference_key == reference_key &&
-      reuse.reference_images.size() == request.reference_image_paths.size();
+      reuse.reference_images.size() == image_paths.size();
   if (!reference_cache_hit) {
-    if (!request.reference_image_paths.empty() && !notify(RunStage::kReferences, -1, 0)) {
+    if (!image_paths.empty() && !notify(RunStage::kReferences, -1, 0)) {
       return stop("reference decode");
     }
     if (cache_references) {
@@ -288,9 +290,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       reuse.reference_geometry.clear();
     }
     reference_images.clear();
-    reference_images.reserve(request.reference_image_paths.size());
+    reference_images.reserve(image_paths.size());
     try {
-      for (const std::string& path : request.reference_image_paths) {
+      for (const std::string& path : image_paths) {
         RGBImage image = load_reference_image(path);
         if (static_cast<int64_t>(image.width) > 4LL * image.height ||
             static_cast<int64_t>(image.height) > 4LL * image.width) {
@@ -302,10 +304,17 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
           std::printf("reference   %s (%dx%d)\n", path.c_str(), image.width, image.height);
         }
         int resized_h = 0, resized_w = 0;
-        dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w,
+        const bool end_anchor = !request.end_anchor_path.empty() &&
+                                reference_images.size() == request.reference_image_paths.size();
+        if (end_anchor) {
+          resized_w = plan.canvas_width;
+          resized_h = plan.canvas_height;
+        } else {
+          dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w,
                                           plan.conditioning.references_at_target_canvas
                                               ? std::min(plan.canvas_width, plan.canvas_height)
                                               : plan.conditioning.image_short_edge);
+        }
         image = resize_reference_lanczos(image, resized_w, resized_h);
         reference_images.push_back(std::move(image));
       }
@@ -477,10 +486,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     // --- fixed image anchors ------------------------------------------------
     std::vector<float> condition_video_rows;
     std::vector<float> condition_audio_rows;
+    std::vector<float> end_anchor_rows;
     std::vector<dit::ReferenceGeometry> reference_geometry;
     if (!reference_images.empty()) {
       if (request.video_vae_path.empty()) {
-        result.message = "--reference-image requires --video-vae for H3 image encoding";
+        result.message = "image references and ending anchors require --video-vae for H3 image encoding";
         return result;
       }
       const Clock::time_point t0 = Clock::now();
@@ -567,11 +577,16 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
             vae::patchify_keyframe_latents(noise_latents.data(), latent_h, latent_w);
         sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), 0.999f, rows.size(),
                                             rows.data());
-        condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
+        if (!request.end_anchor_path.empty() && reference_index + 1 == reference_images.size()) {
+          end_anchor_rows = std::move(rows);
+          reference_geometry.pop_back();
+        } else {
+          condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
+        }
       }
       if (options.verbose)
         std::printf("references  %zu images -> %zu fixed video rows in %.2f s%s\n",
-                    reference_images.size(), condition_video_rows.size() / 96, seconds_since(t0),
+                    reference_images.size(), (condition_video_rows.size() + end_anchor_rows.size()) / 96, seconds_since(t0),
                     encode_cache_hit ? " (cached encode)" : "");
     }
 
@@ -730,6 +745,13 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
                            condition_video_rows, condition_audio_rows);
     if (request.video_transition)
       align_transition_guides(reference_geometry, layout.num_latent_frames);
+
+    // Temporal guides follow all ordinary references. Keep the keyframe last
+    // even when media/refmods or continuation have appended their own rows.
+    if (!request.end_anchor_path.empty()) {
+      reference_geometry.push_back(end_anchor_geometry(layout));
+      condition_video_rows.insert(condition_video_rows.end(), end_anchor_rows.begin(), end_anchor_rows.end());
+    }
 
     if (request.image_edit.invert_mask)
       append_outpaint_keyframe(request.image_edit, plan.canvas_width, plan.canvas_height,

@@ -475,6 +475,37 @@ SLOPFAB_TEST(pipeline_reference_image_limit) {
 // overwritten in place between two `--reuse-models` generations must not be
 // served from the first image's cache entry. Before this, both runs produced
 // the same key and the second silently rendered the first image's conditioning.
+SLOPFAB_TEST(ending_anchor_cache_identity) {
+  slopfab::GenerateRequest r;
+  const auto path = scratch_path("slopfab-ending-anchor-key.png");
+  write_file(path, "anchor A", 40);
+  r.end_anchor_path = path.string();
+  r.canvas_width = 64;
+  r.canvas_height = 32;
+  auto prompt = slopfab::conditioning_cache_key(r);
+  auto vae = slopfab::reference_cache_key(r);
+  const auto ids = slopfab::reference_image_identities(r);
+  CHECK(ids.size() == 1);
+  CHECK(prompt == slopfab::conditioning_cache_key(r, ids));
+  CHECK(vae == slopfab::reference_cache_key(r, ids));
+  r.canvas_width = 96;
+  CHECK(prompt != slopfab::conditioning_cache_key(r));
+  CHECK(vae != slopfab::reference_cache_key(r));
+  r.canvas_width = 64;
+  r.reference_image_paths = {r.end_anchor_path};
+  r.end_anchor_path.clear();
+  CHECK(prompt != slopfab::conditioning_cache_key(r));
+  CHECK(vae != slopfab::reference_cache_key(r));
+  r.end_anchor_path = r.reference_image_paths.front();
+  r.reference_image_paths.clear();
+  const auto mtime = std::filesystem::last_write_time(path);
+  write_file(path, "anchor B", 40);
+  std::filesystem::last_write_time(path, mtime);
+  CHECK(prompt != slopfab::conditioning_cache_key(r));
+  CHECK(vae != slopfab::reference_cache_key(r));
+  std::filesystem::remove(path);
+}
+
 SLOPFAB_TEST(conditioning_cache_key_detects_overwritten_reference_image) {
   const std::filesystem::path ref = scratch_path("slopfab_cachekey_ref.ppm");
 

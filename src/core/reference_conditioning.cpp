@@ -68,6 +68,23 @@ ReferenceConditionOptions transition_reference_options(int width, int height, in
   return options;
 }
 
+dit::ReferenceGeometry end_anchor_geometry(const dit::SequenceLayout& target) {
+  if (target.num_latent_frames < 7 || target.latent_height <= 0 || target.latent_width <= 0 ||
+      target.latent_height % 2 || target.latent_width % 2)
+    throw std::invalid_argument("ending anchor requires a video target on complete patches");
+  dit::ReferenceGeometry anchor{dit::ReferenceKind::kImage, 1,
+                                target.latent_height, target.latent_width, 0};
+  anchor.target_aligned = true;
+  // Upstream FL2VA uses sum(frame spans) - 5/3, not the start time of
+  // the final latent. H3's final latent represents multiple pixel frames.
+  constexpr int steps[] = {1, 4, 4, 4, 4};
+  double span = 0;
+  for (int i = 0; i < target.num_latent_frames; ++i)
+    span += (5.0 / 3.0) * steps[i % 5];
+  anchor.target_time_offset = span - 5.0 / 3.0;
+  return anchor;
+}
+
 void align_transition_guides(std::vector<dit::ReferenceGeometry>& geometry,
                              int target_latent_frames) {
   if (geometry.empty() || geometry.size() > 2 || target_latent_frames < 7)

@@ -943,6 +943,33 @@ SLOPFAB_TEST(capi_audio_steps) {
   CHECK(plan.num_model_evaluations == 2);
 }
 
+SLOPFAB_TEST(capi_ending_anchor_lifecycle) {
+  Request request;
+  CHECK(slopfab_request_set_end_anchor(nullptr, "ending.png") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  slopfab_plan before{}, after{};
+  CHECK(slopfab_resolve_plan(request.handle, &before) == SLOPFAB_OK);
+  std::string path = "ending.png";
+  CHECK(slopfab_request_set_end_anchor(request.handle, path.c_str()) == SLOPFAB_OK);
+  path = "changed.png";
+  CHECK(slopfab_resolve_plan(request.handle, &after) == SLOPFAB_OK);
+  CHECK(after.sequence_rows_without_text == before.sequence_rows_without_text +
+                                            before.latent_height * before.latent_width / 4);
+  CHECK(after.aligned_frames == before.aligned_frames);
+  CHECK(slopfab_request_clear_continuation(request.handle) == SLOPFAB_OK);
+  {
+    OwnedString description;
+    CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
+    CHECK(std::strstr(description.text, "ending.png") != nullptr);
+  }
+  CHECK(slopfab_request_set_end_anchor(request.handle, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &after) == SLOPFAB_OK);
+  CHECK(after.sequence_rows_without_text == before.sequence_rows_without_text);
+  CHECK(slopfab_request_set_end_anchor(request.handle, "other.png") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_end_anchor(request.handle, "") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &after) == SLOPFAB_OK);
+  CHECK(after.sequence_rows_without_text == before.sequence_rows_without_text);
+}
+
 SLOPFAB_TEST(capi_sampling_settings) {
   Request request;
   CHECK(slopfab_request_set_sampling_settings(nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);

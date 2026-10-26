@@ -2,6 +2,8 @@
 #include "latent_fixture.h"
 #include "slopfab/continuation.h"
 #include "slopfab/pipeline.h"
+#include "slopfab/reference_conditioning.h"
+#include "slopfab/safetensors_write.h"
 
 #include <algorithm>
 #include <cstring>
@@ -16,6 +18,82 @@ template <class F> bool rejects(F fn) {
   }
   return false;
 }
+}
+
+SLOPFAB_TEST(ending_anchor_positions_and_continuation) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(73);
+  GenerateRequest r;
+  r.continuation = LatentClip::load(fixture.path.string());
+  r.num_frames = 34;
+  r.end_anchor_path = "ending.png";
+  r.continuation_lock_overlap = true;
+  const auto p = resolve_plan(r);
+  CHECK(p.aligned_frames == 107 && p.sampling_frames == 56);
+  CHECK(p.layout.num_condition_video == (7 + 1) * 2);
+  CHECK(p.layout.num_condition_audio == p.continuation.overlap_audio_latents * 2);
+  std::vector<dit::ReferenceGeometry> guides{{dit::ReferenceKind::kImage, 1, 2, 4, 0}};
+  std::vector<float> video(192, 0), audio;
+  append_continuation_guide(*r.continuation, p.continuation, 42, guides, video, audio);
+  const auto anchor = end_anchor_geometry(p.layout);
+  guides.push_back(anchor);
+  const auto packed = dit::build_ref2va_packed_sequence({dit::kTagText, dit::kTagText}, guides,
+      p.layout.num_latent_frames, 2, 4, p.layout.num_audio_latents);
+  const int target = packed.indices.video[packed.layout.num_condition_video];
+  const int ending = packed.indices.video[packed.layout.num_condition_video - 2];
+  const int beginning = packed.indices.video[2];
+  const auto& pos = packed.position_ids;
+  CHECK_NEAR(pos[target * 3], 3, 1e-12); // two text tokens plus the ordinary reference
+  CHECK_NEAR(pos[beginning * 3], pos[target * 3], 1e-12);
+  // Upstream last-image time = sum(5/3 * [1,4,4,4,4] repeated) - 5/3.
+  // This is 5 rotary units beyond the last latent's starting time.
+  CHECK_NEAR(pos[ending * 3] - pos[target * 3], 55 * (5.0 / 3.0), 1e-10);
+  for (int i = 0; i < 2; ++i) {
+    CHECK_NEAR(pos[(ending + i) * 3 + 1], pos[(target + i) * 3 + 1], 0);
+    CHECK_NEAR(pos[(ending + i) * 3 + 2], pos[(target + i) * 3 + 2], 0);
+  }
+  guides.back().target_time_offset = std::numeric_limits<double>::quiet_NaN();
+  CHECK(rejects([&] { dit::build_ref2va_packed_sequence({0}, guides, 17, 2, 4, 93); }));
+  r.continuation.reset();
+  r.continuation_lock_overlap = false;
+  r.canvas_width = 64;
+  r.canvas_height = 32;
+  r.num_frames = 22;
+  const auto standalone = resolve_plan(r);
+  CHECK(standalone.layout.num_condition_video == 2);
+  CHECK(standalone.layout.num_condition_audio == 0);
+  CHECK(standalone.layout.condition_audio_is_explicit);
+  CHECK(!r.has_references()); // Ending keyframes do not select Ref2VA.
+  const auto standalone_anchor = end_anchor_geometry(standalone.layout);
+  const auto alone = dit::build_ref2va_packed_sequence({0, 0}, {standalone_anchor}, 7, 2, 4, 37);
+  CHECK_NEAR(alone.position_ids[alone.indices.video.front() * 3], 2 + 35, 1e-10);
+  CHECK_NEAR(alone.position_ids[alone.indices.video[2] * 3], 2, 0);
+  r.still_image = true;
+  CHECK(rejects([&] { resolve_plan(r); }));
+  r.still_image = false;
+  for (const auto* family : {"moss", "fibo2", "yue2", "minimax_music3"}) {
+    r.model_family = family;
+    CHECK(rejects([&] { resolve_plan(r); }));
+  }
+}
+
+SLOPFAB_TEST(ending_anchor_accepts_fl2va_temporal_conditioning) {
+  using namespace slopfab;
+  LatentFixture weights, source;
+  write_safetensors(weights.path.string(), {
+      {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+      {"blocks.0.adaln_proj.linear.weight", {6, 8}, std::vector<float>(48)}});
+  source.write();
+  GenerateRequest r;
+  r.transformer_path = weights.path.string();
+  r.end_anchor_path = "ending.png";
+  r.num_frames = 17;
+  CHECK(resolve_plan(r).model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable);
+  r.continuation = LatentClip::load(source.path.string());
+  CHECK(resolve_plan(r).aligned_frames == 56);
+  r.reference_image_paths = {"subject.png"};
+  CHECK(rejects([&] { resolve_plan(r); })); // Ordinary references still need Ref2VA.
 }
 
 SLOPFAB_TEST(latent_bridge_preservation_and_clocks) {

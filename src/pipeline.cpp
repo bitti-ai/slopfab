@@ -25,6 +25,11 @@ constexpr int kMinLatentFrames = 7;
 constexpr int kMinFrames = 22;
 
 void append_media_identity(std::string& key, const GenerateRequest& request) {
+  key += ":end-anchor:" + std::to_string(!request.end_anchor_path.empty());
+  if (!request.end_anchor_path.empty()) {
+    const auto plan = resolve_plan(request);
+    key += ":" + std::to_string(plan.canvas_width) + "x" + std::to_string(plan.canvas_height);
+  }
   key += ":video-transition:" + std::to_string(request.video_transition);
   if (request.video_transition)
     key += ":" + std::to_string(request.canvas_width) + "x" +
@@ -71,6 +76,11 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (!request.end_anchor_path.empty() &&
+      (request_model_family(request) != "h3" || request.still_image || request.bridge ||
+       request.video_transition || request.animate || request.image_edit.image))
+    throw std::invalid_argument(
+        "ending anchor requires H3 video generation or continuation without bridge, transitions or edits");
   if (request_model_family(request) == "yue2" || request_model_family(request) == "minimax_music3") return resolve_music_plan(request);
   if (request_model_family(request) == "moss")
     return resolve_moss_plan(request);
@@ -113,11 +123,15 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     plan.model = dit::resolve_model_descriptor(checkpoint);
     plan.geometry = read_model_geometry(checkpoint);
     require_h3_latent_geometry(plan.geometry);
-    if ((request.has_references() || request.continuation || request.bridge) &&
-        !plan.model.supports_references)
+    const bool fl2va = plan.model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable &&
+                       !plan.model.compressed_attention;
+    if ((request.has_references() && !plan.model.supports_references) ||
+        ((request.continuation || request.bridge || !request.end_anchor_path.empty()) &&
+         !plan.model.supports_references && !fl2va))
       throw std::invalid_argument("selected model does not support reference conditioning");
     if (plan.model.compressed_attention && plan.model.pdd_steps == 1 &&
-        (request.has_references() || request.continuation || request.bridge || request.image_edit.invert_mask))
+        (request.has_references() || request.continuation || request.bridge ||
+         !request.end_anchor_path.empty() || request.image_edit.invert_mask))
       throw std::invalid_argument(
           "compressed attention currently supports unconditioned media layouts only");
   }
@@ -129,7 +143,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::invalid_argument(
         "MotionCache is incompatible with the resolved conditioning or attention contract");
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
-    bool has_video = bool(request.continuation) || bool(request.bridge);
+    bool has_video = bool(request.continuation) || bool(request.bridge) || !request.end_anchor_path.empty();
     for (const auto& media : request.reference_media)
       has_video |= media->is_video();
     for (const auto& ref : request.refmods)
@@ -231,6 +245,10 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   plan.layout.num_audio_rows = plan.geometry.audio_channels * plan.layout.num_audio_latents;
   plan.layout.num_video_rows =
       plan.layout.num_latent_frames * plan.layout.rows_per_frame(plan.geometry);
+  if (!request.end_anchor_path.empty()) {
+    plan.layout.condition_audio_is_explicit = true;
+    plan.layout.num_condition_video += end_anchor_geometry(plan.layout).video_rows();
+  }
   if (request.image_edit.invert_mask) {
     plan.layout.condition_audio_is_explicit = true;
     plan.layout.num_condition_video += outpaint_keyframe_geometry(request.image_edit).video_rows();
@@ -347,8 +365,8 @@ void append_file_content_identity(std::string& key, const std::string& path) {
 
 std::vector<std::string> reference_image_identities(const GenerateRequest& request) {
   std::vector<std::string> identities;
-  identities.reserve(request.reference_image_paths.size());
-  for (const std::string& path : request.reference_image_paths) {
+  identities.reserve(request.conditioning_image_paths().size());
+  for (const std::string& path : request.conditioning_image_paths()) {
     std::string entry;
     append_file_content_identity(entry, path);
     identities.push_back(std::move(entry));
@@ -358,7 +376,7 @@ std::vector<std::string> reference_image_identities(const GenerateRequest& reque
 
 std::string conditioning_cache_key(const GenerateRequest& request,
                                    const std::vector<std::string>& reference_identities) {
-  if (reference_identities.size() != request.reference_image_paths.size()) {
+  if (reference_identities.size() != request.conditioning_image_paths().size()) {
     return conditioning_cache_key(request);
   }
   std::string key = "conditioning";
@@ -397,7 +415,7 @@ std::string conditioning_cache_key(const GenerateRequest& request) {
   append_file_identity(key, request.tokenizer_path);
   key.push_back('\0');
   key += request.prompt;
-  for (const std::string& path : request.reference_image_paths) {
+  for (const std::string& path : request.conditioning_image_paths()) {
     append_file_content_identity(key, path);
   }
   append_media_identity(key, request);
@@ -413,7 +431,7 @@ std::string conditioning_cache_key_for_authority(const GenerateRequest& request,
 
 std::string reference_cache_key(const GenerateRequest& request,
                                 const std::vector<std::string>& reference_identities) {
-  if (reference_identities.size() != request.reference_image_paths.size()) {
+  if (reference_identities.size() != request.conditioning_image_paths().size()) {
     return reference_cache_key(request);
   }
   std::string key = "reference";
@@ -429,7 +447,7 @@ std::string reference_cache_key(const GenerateRequest& request,
 std::string reference_cache_key(const GenerateRequest& request) {
   std::string key = "reference";
   append_file_identity(key, request.video_vae_path);
-  for (const std::string& path : request.reference_image_paths) {
+  for (const std::string& path : request.conditioning_image_paths()) {
     append_file_content_identity(key, path);
   }
   if (!request.reference_media.empty())
@@ -582,6 +600,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
         std::string("  overlap constraint  ") +
         (request.continuation_lock_overlap ? "locked video and audio" : "conditioning only") + "\n";
   }
+  if (!request.end_anchor_path.empty())
+    description += "  ending anchor       " + request.end_anchor_path +
+                   " (target canvas; fixed ending conditioning)\n";
   for (const auto& ref : request.refmods) {
     description += "  refmod              " + ref.mod->path() + " (strength " +
                    std::to_string(ref.strength) + ", copies " + std::to_string(ref.copies) +

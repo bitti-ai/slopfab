@@ -149,6 +149,8 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           "compressed attention requires Euler without frame banding or caches");
   require(!r.continuation || (o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
           "continuation requires denoising from fresh noise");
+  require(r.end_anchor_path.empty() || o.source == LatentSource::kDenoise,
+          "ending anchor requires denoising");
   require(!r.video_transition ||
               (o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
           "Extend/Bridge requires denoising from fresh noise");
