@@ -1,13 +1,14 @@
 """Real-weight latent ending DLL test; tiny inputs, not a visual quality benchmark.
 
 python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . [cuda|vulkan]
+Add --source-noise 0.7 to test source initialization and the pure-noise endpoint.
 Exercises a one-sided lead-in, continuation to another ending, retained-handle
 and file ownership, unequal context lengths, and further forward continuation.
 """
+import argparse
 import ctypes as C
 import math
 import pathlib
-import sys
 import tempfile
 
 from continuation_smoke import Output, read_archive
@@ -15,10 +16,19 @@ from latent_bridge_smoke import write_tensor
 
 
 def main():
-    dll = C.CDLL(str(pathlib.Path(sys.argv[1]).resolve()))
-    root = pathlib.Path(sys.argv[2]).resolve()
-    backend = sys.argv[3] if len(sys.argv) > 3 else "cuda"
-    assert backend in ("cuda", "vulkan")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("library", type=pathlib.Path)
+    parser.add_argument("root", type=pathlib.Path)
+    parser.add_argument("backend", nargs="?", default="cuda", choices=("cuda", "vulkan"))
+    parser.add_argument("--source-noise", type=float)
+    parser.add_argument("--steps", type=int, default=3, help="Sigma grid points including terminal zero")
+    args = parser.parse_args()
+    if args.steps < 2:
+        parser.error("steps must be at least two")
+    if args.source_noise is not None and not 0 < args.source_noise < 1:
+        parser.error("source-noise must be in (0,1) to test a nontrivial mixture")
+    dll = C.CDLL(str(args.library.resolve()))
+    root, backend = args.root.resolve(), args.backend
     handle = C.c_void_p
 
     def bind(name, args, result=C.c_int):
@@ -50,6 +60,7 @@ def main():
     clear_end = bind("request_clear_end_anchor_latents", [handle])
     begin_gen = bind("request_set_continuation_generation", [handle, handle, C.c_int])
     begin_file = bind("request_set_continuation_file", [handle, C.c_char_p, C.c_int])
+    source_init = bind("request_set_continuation_source_init", [handle, C.c_int, C.c_float])
     start = bind("generation_start", [handle, handle, handle, C.POINTER(handle)])
     wait = bind("generation_wait", [handle, C.c_int])
     gen_error = bind("generation_error", [handle], C.c_char_p)
@@ -67,7 +78,7 @@ def main():
                 check(set_model(request, kind, str(root / "weights" / path).encode()))
             check(set_embedding(request, str(embedding).encode()))
             check(set_resolution(request, 32, 32))
-            check(set_steps(request, 3))
+            check(set_steps(request, args.steps))
             check(set_attention(request, b"flash2"))
             check(set_backend(request, backend == "vulkan"))
             check(retain(request, 1))
@@ -125,6 +136,17 @@ def main():
             release(lead)
             release(next_end)
             joined_gen, joined = run("joined", 13, 107, 47)
+            if args.source_noise is not None:
+                check(source_init(request, 1, 1))
+                pure_gen, pure_rows = run("source-noise-one", 13, 107, 47)
+                assert pure_rows == joined, "noise strength 1 must preserve existing locked generation"
+                release(pure_gen)
+                release(joined_gen)
+                baseline = joined
+                check(source_init(request, 1, args.source_noise))
+                joined_gen, joined = run("source-initialized", 13, 107, 47)
+                assert joined["video_rows"] != baseline["video_rows"], "source initialization must affect new video"
+                print("PASS: source initialization changes generated video; strength 1 matches baseline", flush=True)
             preserved(joined, lead_rows, False)
             preserved(joined, next_end_rows, True)
             print("PASS: continuation preserves both complete source clips", flush=True)

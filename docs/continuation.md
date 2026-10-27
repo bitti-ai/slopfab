@@ -26,7 +26,7 @@ weights across the chain. This works with the FL2VA transformer, or Ref2VA when
 also using ordinary subject/style references. Both CUDA and Vulkan use the same
 continuation planning and latent joining code.
 
-The sampler starts from fresh noise. The source tail becomes fixed visual/audio
+By default the sampler starts from fresh noise. The source tail becomes fixed visual/audio
 conditioning at the target window's origin, with H3's normal visual condition
 noise augmentation. The sampled overlap is discarded, the suffix is appended to
 the original latents, and the cumulative clip is decoded with context across the
@@ -38,6 +38,58 @@ Video slices respect H3's temporal grid. Audio boundaries are computed from the
 cumulative 24 fps timeline against the 40 Hz latent clock, rather than rounding
 each extension independently. The sampling window stays bounded, but stored
 latents and full output decoding grow with the cumulative clip length.
+
+## Source-initialized middle (experimental, C API 1.41)
+
+To initialize new video from the previous clip's appearance, add
+`--continuation-source-noise 0.7`. This works with ordinary continuation and with
+an optional latent or image ending anchor:
+
+```sh
+slopfab generate --continue-from first.safetensors --end-anchor-latents ending.safetensors --continuation-source-noise 0.7 --frames 119 --prompt "One uninterrupted tracking shot following the same cyclist" --out joined.mp4 --save-latents joined.safetensors
+```
+
+The generated video's initial state is `(1 - sigma) * source + sigma * noise`.
+Here `source` holds the beginning clip's **final packed video latent slice** across
+the new interval. It is an appearance prior, not motion extrapolation or a decoded
+frame repeated through the VAE. All work uses retained normalized latents.
+The video schedule starts at the selected noise strength, then follows the
+existing lower-sigma grid to zero. Audio keeps its original full-noise schedule;
+the previous soundtrack is not repeated into the new interval. Video/audio updates
+are interleaved using their actual schedule lengths, so this is not necessarily a
+speed optimization.
+
+Strength must be in `(0,1]`: lower values retain more of the source prior but can
+produce frozen or repetitive motion; `1` uses fresh noise. The mode is off by
+default. It always locks the starting video/audio context and, when supplied, the
+latent ending context. Source clips remain preserved in the joined result.
+This may help continuity, but reduced shot changes have not been established by
+a visual quality benchmark.
+
+```c
+/* Attach a retained beginning and optionally an ending as usual. */
+slopfab_request_set_continuation_generation(request, previous_generation, 39);
+slopfab_request_set_end_anchor_generation(request, ending_generation, 39);
+slopfab_request_set_continuation_source_init(request, 1, 0.7f);
+/* Disable explicitly; clearing continuation also disables it. */
+slopfab_request_set_continuation_source_init(request, 0, 1.0f);
+```
+
+Check every setter's return status; 39-frame contexts must fit their sources.
+The mode may be configured before attaching the beginning, but planning requires
+that source. Clearing only the ending keeps source initialization enabled for
+ordinary continuation. In C++, set `GenerateRequest::continuation_source_noise`
+to a positive strength, or zero to disable. CUDA and Vulkan are supported with
+standard H3 sampling schedules. Fixed/distilled grids, approximate caches,
+synthetic generation, and imported initial-latent overrides are rejected.
+
+The real-weight smoke test checks source preservation, repeatability, changed new
+video at partial strength, the exact fresh-noise endpoint, and further continuation:
+
+```sh
+python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . cuda --source-noise 0.7
+python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . vulkan --source-noise 0.7
+```
 
 ## Retained latent ending anchor (C API 1.40)
 
