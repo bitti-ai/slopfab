@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 40
+#define SLOPFAB_CAPI_VERSION_MINOR 41
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -915,6 +915,16 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
  * approximate caches. clear_continuation also disables this option. */
 SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t enable);
+
+/* Since 1.41. Experimental: initialize newly generated video from the source's
+ * final latent slice mixed with noise, with a matching partial video schedule.
+ * enable is 0/1; noise_strength is finite in (0,1] (1 = fresh noise).
+ * Requires H3 continuation; supports an optional ending anchor. Always locks
+ * boundary video/audio; new audio keeps its normal full-noise schedule.
+ * No approximate caches or fixed/distilled grids. May be set before attaching
+ * the source; clear_continuation disables it. Default off. No motion guarantee. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_source_init(
+    slopfab_request* request, int32_t enable, float noise_strength);
 
 /* Since 1.39. Guide the ending of H3 video generation or continuation toward
  * an image, resized to the target canvas. Fixed conditioning, not exact pixel

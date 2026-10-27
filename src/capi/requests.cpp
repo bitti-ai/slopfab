@@ -716,6 +716,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor(slopfab_request* r
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_source_init(
+    slopfab_request* request, int32_t enable, float noise_strength) {
+  if (!request || (enable != 0 && enable != 1) || !std::isfinite(noise_strength) ||
+      noise_strength <= 0 || noise_strength > 1)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "source init: expected enable 0/1 and noise strength in (0,1]");
+  request->request.continuation_source_noise = enable ? noise_strength : 0;
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor_file(
     slopfab_request* request, const char* path, int32_t context_frames) {
   if (!request || !path || !*path || context_frames < 5 || context_frames % 17 != 5)
@@ -756,6 +765,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
   return guarded([&] {
     request->request.continuation.reset();
     request->request.continuation_lock_overlap = false;
+    request->request.continuation_source_noise = 0;
     return SLOPFAB_OK;
   });
 }

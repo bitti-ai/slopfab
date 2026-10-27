@@ -119,6 +119,9 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
 
+  if (request.continuation_source_noise > 0 &&
+      (plan.model.pdd_steps > 1 || effective.base_sigmas.has_value()))
+    throw std::invalid_argument("source initialization does not support fixed/distilled sampling grids");
   if (plan.model.pdd_steps > 1) {
     if (request.schedule != sampler::ScheduleKind::kDefault || request.animate ||
         effective.audio_steps || effective.base_sigmas ||
@@ -208,6 +211,15 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     video.set_sigmas(std::vector<float>(vs.begin() + start, vs.end()));
     audio.set_sigmas(std::vector<float>(as.begin() + start, as.end()));
     plan.num_inference_steps = static_cast<int>(video.sigmas().size());
+  }
+  if (request.continuation_source_noise > 0) {
+    const float start = std::min(request.continuation_source_noise, video.sigmas().front());
+    std::vector<float> tail{start};
+    for (float sigma : video.sigmas())
+      if (sigma < start)
+        tail.push_back(sigma);
+    video.set_sigmas(tail);
+    plan.num_inference_steps = static_cast<int>(tail.size());
   }
   plan.video_sigmas = video.sigmas();
   plan.audio_sigmas = audio.sigmas();

@@ -35,6 +35,15 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     archive.write_bytes(struct.pack("<Q", len(raw)) + raw + bytes(vb + ab))
     base = ("--continue-from", archive, "--overlap-frames", "22")
     assert "conditioning only" in run(*base)
+    seeded = run(*base, "--continuation-source-noise", "0.7")
+    assert "held final source latent slice; video noise 0.700000" in seeded
+    assert "locked video and audio" in seeded
+    for value in ("0", "-1", "1.1", "nan", "0.5x"):
+        run(*base, "--continuation-source-noise", value, success=False)
+    run("--continuation-source-noise", "0.7", success=False)
+    run(*base, "--continuation-source-noise", "0.7", "--skip-every", "2", success=False)
+    run(*base, "--continuation-source-noise", "0.7", "--synthetic-latents", success=False)
+    run(*base, "--continuation-source-noise", "0.7", "--init-latents", archive, success=False)
     assert "ending anchor" in run(*base, "--end-anchor", "ending.png", "--lock-overlap")
     assert "locked video and audio" in run(*base, "--lock-overlap", "--audio-steps", "5")
     run(*base, "--lock-overlap", "--skip-every", "2", success=False)

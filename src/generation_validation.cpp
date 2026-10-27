@@ -87,7 +87,7 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           "latent bridge requires denoising from fresh noise without approximate caches");
   require(!r.end_anchor_latents ||
               (!caches && o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
-          "latent ending anchor requires denoising from fresh noise without approximate caches");
+          "latent ending anchor requires denoising without imported initial latents or approximate caches");
   require(!r.continuation_lock_overlap || (r.continuation && !caches),
           "locked overlap requires continuation without approximate caches");
   require(sampler_kind != sampler::SamplerKind::kRenoise || !caches,
@@ -151,7 +151,7 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
               (sampler_kind == sampler::SamplerKind::kEuler && o.attention_band == 0 && !caches),
           "compressed attention requires Euler without frame banding or caches");
   require(!r.continuation || (o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
-          "continuation requires denoising from fresh noise");
+          "continuation requires denoising without imported initial latents");
   require(r.end_anchor_path.empty() || o.source == LatentSource::kDenoise,
           "ending anchor requires denoising");
   require(!r.video_transition ||

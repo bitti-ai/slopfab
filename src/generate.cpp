@@ -406,7 +406,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_latent_end_anchor_constraint(*request.end_anchor_latents, request.continuation.get(),
                                           plan.latent_end_anchor));
-  else if (request.continuation_lock_overlap)
+  else if (request.continuation_lock_overlap || request.continuation_source_noise > 0)
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_continuation_constraint(*request.continuation, plan.continuation));
   if (!options.init_latents_path.empty()) {
@@ -791,6 +791,17 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       pos = std::move(packed.position_ids);
     }
 
+    if (request.continuation_source_noise > 0) {
+      const auto noise = sampler::video_noise(request.seed, live.num_latent_frames,
+                                              live.latent_height, live.latent_width);
+      init_video.resize(size_t(live.num_video_rows) * 96);
+      dit::patchify_video(noise.data(), live, init_video.data());
+      const int prefix = request.end_anchor_latents ? plan.latent_end_anchor.prefix_video_latents
+                                                    : plan.continuation.overlap_video_latents;
+      const int suffix = request.end_anchor_latents ? plan.latent_end_anchor.suffix_video_latents : 0;
+      initialize_continuation_middle(*request.continuation, prefix, suffix,
+                                     plan.video_sigmas.front(), init_video);
+    }
     if (!notify(RunStage::kTransformerLoad, -1, 0))
       return stop("transformer load");
     std::shared_ptr<dit::VedaRequest> veda;
@@ -895,6 +906,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         in.init_video_rows = &init_video;
         in.init_audio_rows = &init_audio;
       }
+      if (request.continuation_source_noise > 0)
+        in.init_video_rows = &init_video;
       if (plan.conditioning.pin_target_audio) {
         in.init_audio_rows = &init_audio;
         in.pin_target_audio = true;
@@ -1098,6 +1111,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       }
       if (plan.conditioning.pin_target_audio)
         initial_audio = init_audio;
+      if (request.continuation_source_noise > 0)
+        initial_video = init_video;
       if (plan.model.pdd_steps > 1) {
         if (init_video.empty())
           for (auto& v : initial_video) v *= plan.video_sigmas.front();

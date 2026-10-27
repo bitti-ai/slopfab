@@ -943,6 +943,32 @@ SLOPFAB_TEST(capi_audio_steps) {
   CHECK(plan.num_model_evaluations == 2);
 }
 
+SLOPFAB_TEST(capi_source_initialized_continuation) {
+  Request request;
+  LatentFixture fixture;
+  fixture.write(39);
+  slopfab_plan plan{};
+  CHECK(slopfab_request_set_continuation_source_init(nullptr, 1, .5f) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_source_init(request.handle, 1, .5f) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_continuation_file(request.handle, fixture.path.string().c_str(), 22) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  for (float bad : {0.f, -1.f, 1.1f, std::numeric_limits<float>::quiet_NaN()})
+    CHECK(slopfab_request_set_continuation_source_init(request.handle, 1, bad) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_source_init(request.handle, 2, .5f) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  {
+    OwnedString text;
+    CHECK(slopfab_describe_plan(request.handle, &text.text) == SLOPFAB_OK);
+    CHECK(std::strstr(text.text, "video noise 0.500000") != nullptr);
+    CHECK(std::strstr(text.text, "locked video and audio") != nullptr);
+  }
+  CHECK(slopfab_request_clear_continuation(request.handle) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK); // Also cleared source init.
+  CHECK(slopfab_request_set_continuation_source_init(request.handle, 1, .7f) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_continuation_source_init(request.handle, 0, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+}
+
 SLOPFAB_TEST(capi_latent_ending_snapshot_and_lifecycle) {
   Request request;
   LatentFixture fixture;

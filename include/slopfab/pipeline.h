@@ -154,6 +154,10 @@ struct GenerateRequest {
   int continuation_overlap_frames = 22;
   // Constrain target video/audio overlap at every noise level (experimental).
   bool continuation_lock_overlap = false;
+  // Experimental video initialization from the source's final packed latent slice.
+  // Zero disables; (0,1] starts video denoising at this noise strength. Audio
+  // keeps its full schedule. Enabling also locks the continuation boundary.
+  float continuation_source_noise = 0;
   // Two retained clips, with editable margins. num_frames requests gap frames.
   // Ordinary image/media/refmod references remain attached across endpoint changes.
   std::optional<LatentBridge> bridge;

@@ -245,6 +245,24 @@ void LatentPrefixConstraint::apply(float* rows, size_t count, float sigma) const
   }
 }
 
+void initialize_continuation_middle(const LatentClip& source, int prefix_latents,
+                                    int suffix_latents, float sigma, std::vector<float>& video) {
+  source.validate();
+  const size_t frame = size_t(source.layout().rows_per_frame()) * 96;
+  require(source.sampled && source.frames >= 22 && prefix_latents > 0 && suffix_latents >= 0 &&
+              size_t(prefix_latents) <= source.video_rows.size() / frame &&
+              video.size() % frame == 0 &&
+              size_t(prefix_latents) + size_t(suffix_latents) < video.size() / frame &&
+              std::isfinite(sigma) && sigma > 0 && sigma <= 1,
+          "invalid source-initialized middle geometry or noise strength");
+  if (sigma == 1)
+    return; // Preserve the existing seeded-noise path bit for bit.
+  const size_t end = video.size() - size_t(suffix_latents) * frame;
+  const size_t source_start = source.video_rows.size() - frame;
+  for (size_t i = size_t(prefix_latents) * frame; i < end; ++i)
+    video[i] = (1 - sigma) * source.video_rows[source_start + i % frame] + sigma * video[i];
+}
+
 ContinuationConstraint make_continuation_constraint(const LatentClip& source,
                                                     const ContinuationPlan& p) {
   validate_plan(source, p);

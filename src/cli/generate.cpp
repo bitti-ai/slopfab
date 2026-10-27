@@ -460,6 +460,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       saw_overlap = true;
     } else if (arg == "--lock-overlap") {
       req.continuation_lock_overlap = true;
+    } else if (arg == "--continuation-source-noise") {
+      const std::string value = next("--continuation-source-noise");
+      size_t used = 0;
+      req.continuation_source_noise = std::stof(value, &used);
+      if (used != value.size() || !std::isfinite(req.continuation_source_noise) ||
+          req.continuation_source_noise <= 0 || req.continuation_source_noise > 1)
+        throw std::invalid_argument("--continuation-source-noise requires a value in (0,1]");
     } else if (arg == "--attn-band") {
       attn_band = std::atoi(next("--attn-band"));
     } else if (arg == "--attention") {

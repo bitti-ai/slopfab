@@ -54,6 +54,11 @@ struct ContinuationConstraint {
 ContinuationConstraint make_continuation_constraint(const LatentClip& source,
                                                     const ContinuationPlan& plan);
 
+// Mix a held final source slice with target noise only in the generated region.
+// Boundary rows remain raw noise for LatentPrefixConstraint::capture_noise.
+void initialize_continuation_middle(const LatentClip& source, int prefix_latents,
+                                    int suffix_latents, float sigma, std::vector<float>& video);
+
 // Extension rounds up to a multiple of 17. Overlap is exactly 17*k+5,
 // at least 5 frames. Audio boundaries are rounded on the cumulative timeline.
 ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int extension);

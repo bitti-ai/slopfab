@@ -83,6 +83,15 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (!std::isfinite(request.continuation_source_noise) || request.continuation_source_noise < 0 ||
+      request.continuation_source_noise > 1)
+    throw std::invalid_argument("continuation source noise must be 0 (off) or in (0,1]");
+  if (request.continuation_source_noise > 0 &&
+      (!request.continuation || request_model_family(request) != "h3" || request.still_image ||
+       request.bridge || request.video_transition || request.animate || request.image_edit.image ||
+       request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
+       request.motion_cache.active()))
+    throw std::invalid_argument("source initialization requires H3 continuation without edits, transitions or approximate caches");
   if (request.end_anchor_latents &&
       (request_model_family(request) != "h3" || request.still_image || request.bridge ||
        request.video_transition || request.animate || request.image_edit.image ||
@@ -645,8 +654,12 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
                    " hidden overlap); output is full joined clip\n";
     description +=
         std::string("  overlap constraint  ") +
-        (request.continuation_lock_overlap ? "locked video and audio" : "conditioning only") + "\n";
+        ((request.continuation_lock_overlap || request.continuation_source_noise > 0)
+             ? "locked video and audio" : "conditioning only") + "\n";
   }
+  if (request.continuation_source_noise > 0)
+    description += "  middle initialization held final source latent slice; video noise " +
+                   std::to_string(plan.video_sigmas.front()) + "; audio uses full schedule\n";
   if (!request.end_anchor_path.empty())
     description += "  ending anchor       " + request.end_anchor_path +
                    " (target canvas; fixed ending conditioning)\n";

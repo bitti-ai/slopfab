@@ -20,6 +20,78 @@ template <class F> bool rejects(F fn) {
 }
 }
 
+SLOPFAB_TEST(source_initialized_middle_and_schedule) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(39);
+  const auto source = LatentClip::load(fixture.path.string());
+  GenerateRequest req;
+  req.continuation = source;
+  req.end_anchor_latents = source;
+  req.end_anchor_context_frames = 5;
+  req.num_frames = 17;
+  req.num_inference_steps = 9;
+  const auto baseline = resolve_plan(req);
+  req.continuation_source_noise = .5f;
+  const auto plan = resolve_plan(req);
+  CHECK(plan.video_sigmas.front() == .5f && plan.video_sigmas.back() == 0);
+  CHECK(plan.audio_sigmas == baseline.audio_sigmas);
+  CHECK(plan.video_timesteps.front() == .5f);
+  std::vector<float> expected_sigmas{.5f};
+  for (float sigma : baseline.video_sigmas)
+    if (sigma < .5f) expected_sigmas.push_back(sigma);
+  CHECK(plan.video_sigmas == expected_sigmas);
+  CHECK(plan.num_inference_steps == int(expected_sigmas.size()));
+  CHECK(plan.num_model_evaluations() == int(sampler::joint_schedule(
+      plan.video_timesteps.size(), plan.audio_timesteps.size()).size()));
+  const auto& p = plan.latent_end_anchor;
+  const size_t frame = size_t(source->layout().rows_per_frame()) * 96;
+  std::vector<float> noise(size_t(plan.layout.num_latent_frames) * frame);
+  for (size_t i = 0; i < noise.size(); ++i) noise[i] = float(i % 31) / 32;
+  auto initialized = noise;
+  initialize_continuation_middle(*source, p.prefix_video_latents, p.suffix_video_latents, .5f, initialized);
+  const size_t first = size_t(p.prefix_video_latents) * frame;
+  const size_t last = initialized.size() - size_t(p.suffix_video_latents) * frame;
+  for (size_t i = 0; i < initialized.size(); ++i) {
+    const float expected = i >= first && i < last
+        ? .5f * source->video_rows[source->video_rows.size() - frame + i % frame] + .5f * noise[i]
+        : noise[i];
+    CHECK_NEAR(initialized[i], expected, 0);
+  }
+  // The constraint must capture raw boundary noise, not already-noised sources.
+  auto constraint = make_latent_end_anchor_constraint(*source, source.get(), p).video;
+  constraint.capture_noise(initialized.data(), initialized.size());
+  constraint.apply(initialized.data(), initialized.size(), .5f);
+  const size_t source_tail = source->video_rows.size() - first;
+  CHECK_NEAR(initialized[0], .5f * source->video_rows[source_tail] + .5f * noise[0], 0);
+  CHECK_NEAR(initialized[last], .5f * source->video_rows[0] + .5f * noise[last], 0);
+  constraint.apply(initialized.data(), initialized.size(), 0);
+  CHECK(initialized[0] == source->video_rows[source_tail]);
+  CHECK(initialized[last] == source->video_rows[0]);
+  initialized = noise;
+  initialize_continuation_middle(*source, p.prefix_video_latents, p.suffix_video_latents, 1, initialized);
+  CHECK(initialized == noise);
+  req.continuation_source_noise = 1;
+  CHECK(resolve_plan(req).video_sigmas == baseline.video_sigmas);
+  req.continuation_source_noise = .001f;
+  CHECK(resolve_plan(req).video_sigmas == std::vector<float>({.001f, 0}));
+  req.end_anchor_latents.reset(); // Also supported with just a starting source.
+  CHECK(resolve_plan(req).video_sigmas.front() == .001f);
+  req.sampling.base_sigmas = std::vector<float>{1, .5f, 0};
+  CHECK(rejects([&] { resolve_plan(req); }));
+  req.sampling.base_sigmas.reset();
+  req.skip_every = 2;
+  CHECK(rejects([&] { resolve_plan(req); }));
+  req.skip_every = 0;
+  req.continuation.reset();
+  CHECK(rejects([&] { resolve_plan(req); }));
+  req.continuation = source;
+  for (float bad : {-1.f, 1.1f, std::numeric_limits<float>::quiet_NaN()}) {
+    req.continuation_source_noise = bad;
+    CHECK(rejects([&] { resolve_plan(req); }));
+  }
+}
+
 SLOPFAB_TEST(latent_ending_preserves_sources_and_locks_context) {
   using namespace slopfab;
   LatentFixture fixture;
