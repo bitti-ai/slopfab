@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 42
+#define SLOPFAB_CAPI_VERSION_MINOR 43
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -914,6 +914,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_latent_upscale_generation_start(
     const slopfab_generation* source, const char* checkpoint, float scale,
     int32_t temporal_chunking, int32_t backend, slopfab_progress_fn callback,
     void* userdata, slopfab_generation** out_generation);
+
+/* Since 1.43. Upscale saved latents, then decode video and optional audio in
+ * process. No diffusion or muxing. Retains the enlarged archive for save_latents;
+ * generation_output exposes decoded samples. Original archive is unchanged.
+ * The same scale, backend, cancellation and lifetime rules apply as above. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_latent_upscale_decode_file_start(
+    const char* source_path, const char* checkpoint, float scale,
+    const char* video_vae, const char* audio_vae, int32_t backend,
+    slopfab_progress_fn callback, void* userdata, slopfab_generation** out_generation);
 
 /* Load an owning snapshot now, so deleting/replacing the file later is safe.
  * overlap_frames must be 17*k+5, at least 5, and fit in the source. With

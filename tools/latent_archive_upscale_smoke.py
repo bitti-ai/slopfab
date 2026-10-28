@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import threading
 
-from continuation_smoke import read_archive
+from continuation_smoke import read_archive, Output
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("library", type=Path)
@@ -155,7 +155,29 @@ try:
                         str(a.root.resolve() / "weights/vae/minimax_h3_video_vae_fp16.safetensors"),
                         "--inference-backend", a.backend, "--out", str(output)], check=True)
         assert b"W128 H64" in output.read_bytes().split(b"\n", 1)[0]
-        print(f"PASS {a.backend}: archive geometry/audio, retained lifetime, continuation, progress, cancellation, CLI and decode", flush=True)
+        decode = bind("latent_upscale_decode_file_start", [C.c_char_p, C.c_char_p, C.c_float, C.c_char_p, C.c_char_p, C.c_int, handle, handle, C.POINTER(handle)])
+        get_output = bind("generation_output", [handle, C.POINTER(Output)])
+        vae = str(a.root.resolve() / "weights/vae/minimax_h3_video_vae_fp16.safetensors").encode()
+        audio_vae = str(a.root.resolve() / "weights/vae/minimax_h3_audio_vae_fp32.safetensors").encode()
+        # Decode enlarged archives in-process, then upscale that result again.
+        for factor, source_file, expected in [(1.5, source, (96, 64)), (2, source, (128, 64)), (4, source, (256, 128)), (2, result, (256, 128))]:
+            decoded = handle()
+            events.clear()
+            check(decode(str(source_file).encode(), model, factor, vae, audio_vae, backend, C.cast(progress, handle), None, C.byref(decoded)))
+            jobs.append(decoded)
+            finish(decoded)
+            samples = Output()
+            check(get_output(decoded, C.byref(samples)))
+            assert (samples.width, samples.height, samples.frames) == (*expected, a.frames)
+            assert samples.audio_float_count > 0 and samples.audio_sample_rate > 0
+            assert samples.steps_computed == 0 and not any(stage in (2, 3, 4) for stage, _, _ in events)
+            archive = work / "decoded.safetensors"
+            check(save(decoded, str(archive).encode()))
+            assert read_archive(archive)[1]["audio_rows"] == audio
+            assert source.read_bytes() == original
+            destroy(decoded)
+            jobs.remove(decoded)
+        print(f"PASS {a.backend}: archive/audio preservation, lifetime, continuation, cancellation, CLI, in-process decode, 1.5x/2x/4x and repeated upscaling", flush=True)
 finally:
     for job in jobs:
         destroy(job)

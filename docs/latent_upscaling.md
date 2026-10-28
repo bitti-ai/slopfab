@@ -90,6 +90,13 @@ the generation API's single-operation busy guard. `generation_output` rejects
 these handles because no video pixels or audio samples were decoded.
 
 C++ callers can use `upscale_latent_clip` for the same owning archive transformation.
+Since C API 1.43, `slopfab_latent_upscale_decode_file_start` also accepts video and
+optional audio VAE paths. It upscales and decodes in one asynchronous operation,
+without diffusion or muxing. Read the samples with `generation_output` and save
+the retained enlarged archive with `generation_save_latents`. The source stays
+unchanged; an enlarged archive can be upscaled again. Cancellation covers both
+upscaling and decoding.
+
 The existing `upscale_latents` buffer API remains available. To decode the enlarged
 video archive separately into a video-only Y4M file:
 

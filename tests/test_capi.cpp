@@ -948,6 +948,9 @@ SLOPFAB_TEST(capi_existing_latents_upscale_lifecycle) {
   fixture.write(39);
   const auto path = fixture.path.string();
   slopfab_generation* job = nullptr;
+  CHECK(slopfab_latent_upscale_decode_file_start(path.c_str(), "missing", 2, nullptr, nullptr, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(job == nullptr);
+  CHECK(slopfab_latent_upscale_decode_file_start(nullptr, "missing", 2, "video", "audio", 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 0, 1, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(job == nullptr);
   CHECK(slopfab_latent_upscale_generation_start(nullptr, "missing", 1, 1, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
@@ -991,7 +994,7 @@ SLOPFAB_TEST(capi_existing_latents_upscale_lifecycle) {
     g.cv.notify_all();
     g.cv.wait(lock, [&] { return g.release; });
   };
-  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, backend, block, &gate, &job) == SLOPFAB_OK);
+  CHECK(slopfab_latent_upscale_decode_file_start(path.c_str(), "missing", 2, "video", "audio", backend, block, &gate, &job) == SLOPFAB_OK);
   if (!job) return;
   {
     std::unique_lock<std::mutex> lock(gate.mutex);
@@ -1007,6 +1010,8 @@ SLOPFAB_TEST(capi_existing_latents_upscale_lifecycle) {
     gate.cv.notify_all();
   }
   CHECK(slopfab_generation_wait(job, -1) == SLOPFAB_ERR_CANCELLED);
+  slopfab_output cancelled_output{};
+  CHECK(slopfab_generation_output(job, &cancelled_output) == SLOPFAB_ERR_CANCELLED);
   CHECK(slopfab_generation_save_latents(job, path.c_str()) == SLOPFAB_ERR_CANCELLED);
   slopfab_generation_destroy(job);
   CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 2, 1, backend, nullptr, nullptr, &job) == SLOPFAB_OK);

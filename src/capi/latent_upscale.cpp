@@ -22,7 +22,8 @@ int validate(const char* checkpoint, float scale, int chunking, int backend,
 
 int launch(std::shared_ptr<const slopfab::LatentClip> source, const char* checkpoint,
            float scale, int chunking, int backend, slopfab_progress_fn callback,
-           void* userdata, slopfab_generation** output) {
+           void* userdata, slopfab_generation** output,
+           const char* video_vae = nullptr, const char* audio_vae = nullptr) {
   if (!source || !source->sampled)
     return fail(SLOPFAB_ERR_INVALID_REQUEST, "latent upscale requires retained completed sampled latents");
   source->validate();
@@ -42,8 +43,12 @@ int launch(std::shared_ptr<const slopfab::LatentClip> source, const char* checkp
     ~Claim() { if (held) g_generation_active.store(false); }
   } claim;
   auto gen = std::make_unique<slopfab_generation>();
+  gen->fps = 24.0;
+  gen->request.still_image = source->frames == 1;
   gen->latent_upscale_source = std::move(source);
-  gen->latents_only = true;
+  gen->latents_only = !video_vae;
+  if (video_vae) gen->request.video_vae_path = video_vae;
+  if (audio_vae) gen->request.audio_vae_path = audio_vae;
   gen->options.latent_upscale_model_path = checkpoint;
   gen->options.latent_upscale = {scale, chunking != 0};
   gen->options.inference_backend = static_cast<slopfab::DeviceBackend>(backend);
@@ -58,6 +63,20 @@ int launch(std::shared_ptr<const slopfab::LatentClip> source, const char* checkp
 }
 
 extern "C" {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_latent_upscale_decode_file_start(
+    const char* source_path, const char* checkpoint, float scale,
+    const char* video_vae, const char* audio_vae, int32_t backend,
+    slopfab_progress_fn callback, void* userdata, slopfab_generation** output) {
+  const int valid = validate(checkpoint, scale, 1, backend, output);
+  if (valid != SLOPFAB_OK) return valid;
+  if (!source_path || !*source_path || !video_vae || !*video_vae)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "latent upscale decode: source and video VAE are required");
+  return guarded([&] {
+    return launch(slopfab::LatentClip::load(source_path), checkpoint, scale, 1,
+                  backend, callback, userdata, output, video_vae, audio_vae);
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_latent_upscale_file_start(
     const char* source_path, const char* checkpoint, float scale, int32_t chunking,
     int32_t backend, slopfab_progress_fn callback, void* userdata,

@@ -39,6 +39,7 @@
 #include "slopfab/generate.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/pixel_buffer.h"
+#include "../generation/decode.h"
 
 namespace slopfab::capi {
 
@@ -399,7 +400,7 @@ inline void run_worker(slopfab_generation* gen) {
     options.on_samples = &samples_hook;
     options.hook_userdata = gen;
     const RunResult result = [&]() {
-      if (gen->latents_only) {
+      if (gen->latent_upscale_source) {
         if (!progress_hook(RunStage::kStarting, -1, 0, gen))
           throw slopfab::UpscaleCancelled();
         auto clip = slopfab::upscale_latent_clip(
@@ -408,9 +409,14 @@ inline void run_worker(slopfab_generation* gen) {
             [gen](int done, int total) {
               return progress_hook(RunStage::kUpscaling, done, total, gen);
             });
+        gen->latents = std::move(clip);
+        if (!gen->latents_only) {
+          // The archive has already been enlarged. Decode it once at its new size.
+          options.latent_upscale_model_path.clear();
+          return slopfab::generation::decode_and_deliver(gen->request, options, gen->latents, {});
+        }
         if (!progress_hook(RunStage::kFinished, -1, 0, gen))
           throw slopfab::UpscaleCancelled();
-        gen->latents = std::move(clip);
         RunResult result;
         result.ok = true;
         return result;
