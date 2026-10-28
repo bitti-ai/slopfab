@@ -51,7 +51,7 @@ int sol_h3_frames(int time) {
 SolH3Geometry build_sol_h3_geometry(int T, int H, int W) {
   sol_h3_frames(T);
   if (H <= 0 || W <= 0 || H > INT_MAX / 16 || W > INT_MAX / 16 ||
-      int64_t(T) > (INT_MAX / 3072) / int64_t(H) / W)
+      T > INT_MAX / (5 * 2048) || int64_t(T) > (INT_MAX / 2) / int64_t(H) / W)
     throw std::invalid_argument("Sol-H3-VAE: invalid or excessive latent dimensions");
   SolH3Geometry g;
   g.patches = T * H * W;

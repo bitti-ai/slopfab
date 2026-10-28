@@ -5,6 +5,10 @@ runs natively on CUDA and Vulkan. It enlarges normalized 24-channel video latent
 after denoising and before loading the video VAE. Frame count and audio are preserved.
 Python is not needed at runtime.
 
+[Sol-H3-VAE](sol_h3_vae.md) can decode the enlarged latents on CUDA. Select it
+with `--video-decoder` on generation requests, or pass its checkpoint as the
+video VAE to `slopfab_latent_upscale_decode_file_start` when decoding an archive.
+
 Place `minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors` in `weights/`, then run:
 
 ```sh

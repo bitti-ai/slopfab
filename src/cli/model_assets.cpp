@@ -190,7 +190,9 @@ void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_
   if (need_text_encoder)
     require_model(req.text_encoder_path, "--text-encoder", "text_encoder/");
   require_model(req.transformer_path, "--transformer", "transformer/");
-  require_model(req.video_vae_path, "--vae", "vae/");
+  require_model(req.video_decode_path(), "--vae or --video-decoder", "vae/");
+  if (!req.conditioning_image_paths().empty() || !req.reference_media.empty() || req.image_edit.image)
+    require_model(req.video_vae_path, "--vae (reference encoder)", "vae/");
   if (!req.still_image)
     require_model(req.audio_vae_path, "--audio-vae", "vae/");
 }

@@ -21,6 +21,7 @@ p.add_argument("library", type=Path)
 p.add_argument("root", type=Path)
 p.add_argument("backend", choices=("cuda", "vulkan"))
 p.add_argument("--frames", type=int, default=22)
+p.add_argument("--video-vae", type=Path, help="override video decoder, e.g. Sol-H3-VAE (CUDA)")
 a = p.parse_args()
 if a.frames < 22 or a.frames % 17 != 5:
     p.error("frames must be 17*k+5 and at least 22")
@@ -152,12 +153,12 @@ try:
         assert read_archive(cli)[1] == rows
         output = work / "decoded.y4m"
         subprocess.run([str(exe), "decode", "--latent", str(cli), "--vae",
-                        str(a.root.resolve() / "weights/vae/minimax_h3_video_vae_fp16.safetensors"),
+                        str(a.video_vae or a.root.resolve() / "weights/vae/minimax_h3_video_vae_fp16.safetensors"),
                         "--inference-backend", a.backend, "--out", str(output)], check=True)
         assert b"W128 H64" in output.read_bytes().split(b"\n", 1)[0]
         decode = bind("latent_upscale_decode_file_start", [C.c_char_p, C.c_char_p, C.c_float, C.c_char_p, C.c_char_p, C.c_int, handle, handle, C.POINTER(handle)])
         get_output = bind("generation_output", [handle, C.POINTER(Output)])
-        vae = str(a.root.resolve() / "weights/vae/minimax_h3_video_vae_fp16.safetensors").encode()
+        vae = str(a.video_vae or a.root.resolve() / "weights/vae/minimax_h3_video_vae_fp16.safetensors").encode()
         audio_vae = str(a.root.resolve() / "weights/vae/minimax_h3_audio_vae_fp32.safetensors").encode()
         # Decode enlarged archives in-process, then upscale that result again.
         for factor, source_file, expected in [(1.5, source, (96, 64)), (2, source, (128, 64)), (4, source, (256, 128)), (2, result, (256, 128))]:

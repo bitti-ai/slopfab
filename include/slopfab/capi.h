@@ -359,6 +359,7 @@ typedef struct slopfab_plan {
  * denoising loop and on entry before its first step completes; `total_steps`
  * is already set on denoising entry and is 0 where it means nothing. During
  * UPSCALING these fields instead report completed/total tiles (0/0 on entry).
+ * Sol-H3-VAE VIDEO_DECODE reports completed/total transformer layers (0..24).
  * YuE2 CONDITIONING also reports completed ABC/semantic tokens: step is the
  * last completed zero-based token index, or -1 before any token completes.
  * Its total is an upper bound and shrinks when a phase ends early at EOS.
