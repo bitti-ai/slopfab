@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -153,6 +154,93 @@ SLOPFAB_TEST(tokenizer_round_trip) {
   // The empty string produces no tokens at all — the t2va path adds no BOS or
   // EOS, so there is nothing to emit.
   CHECK(tok.encode("").empty());
+}
+
+SLOPFAB_TEST(tokenizer_h3_special_tokens) {
+  const std::string path = find_tokenizer();
+  if (path.empty()) {
+    report_missing_tokenizer();
+    return;
+  }
+  slopfab::text::Tokenizer tok;
+  tok.load(path);
+  const auto hash = tok.source_sha256();
+  const auto prose = tok.encode("A cat walks across a sunlit kitchen floor.");
+  const std::string markers =
+      "<d></d><|cutoff|><|lyrics_start|><|lyrics_end|><|caption_start|><|caption_end|>";
+  const auto base_ids = tok.encode(markers);
+  const std::vector<int32_t> expected = {151669, 151670, 151671, 151672,
+                                       151673, 151674, 151675};
+  CHECK(base_ids != expected);
+  tok.enable_h3_special_tokens();
+  CHECK(tok.encode(markers) == expected);
+  CHECK(tok.decode(expected) == markers);
+  CHECK(tok.encode(markers, false) == base_ids);
+  CHECK(tok.encode("A cat walks across a sunlit kitchen floor.") == prose);
+  CHECK(tok.encode("<|im_start|>system<|im_end|>") ==
+        std::vector<int32_t>({151644, 8948, 151645}));
+  CHECK(tok.encode("<d>hello</d><d>hello</d>") ==
+        std::vector<int32_t>({151669, 14990, 151670, 151669, 14990, 151670}));
+  for (int32_t id : expected) {
+    const auto token = tok.id_to_token(id);
+    CHECK(tok.token_to_id(token) == id);
+    CHECK(tok.encode(token) == std::vector<int32_t>({id}));
+  }
+  const auto size = tok.vocab_size();
+  tok.enable_h3_special_tokens();
+  CHECK(tok.vocab_size() == size);
+  CHECK(tok.source_sha256() == hash);
+  tok.load(path);
+  CHECK(tok.encode(markers) == base_ids);
+  tok.enable_h3_special_tokens();
+  CHECK(tok.encode(markers) == expected);
+}
+
+SLOPFAB_TEST(tokenizer_h3_conflicting_spelling) {
+  slopfab::text::Tokenizer tok;
+  bool rejected = false;
+  try {
+    tok.enable_h3_special_tokens();
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  tok.load_json(R"({"model":{"vocab":{"x":0,"</d>":1},"merges":[]}})");
+  rejected = false;
+  try {
+    tok.enable_h3_special_tokens();
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  CHECK(tok.token_to_id("</d>") == 1);
+  CHECK(tok.token_to_id("<d>") == -1);
+  CHECK(tok.vocab_size() == 2);
+}
+
+SLOPFAB_TEST(tokenizer_h3_reserved_ids) {
+  // A realistically sized synthetic vocabulary also exercises ID collision
+  // checks without depending on the uncommitted reference tokenizer.
+  std::string prefix = R"({"model":{"vocab":{)";
+  for (int i = 0; i < 40000; ++i)
+    prefix += "\"token" + std::to_string(i) + "\":" + std::to_string(i) + ",";
+  slopfab::text::Tokenizer tok;
+  tok.load_json(prefix + R"("music_token":151669},"merges":[]}})");
+  bool rejected = false;
+  try {
+    tok.enable_h3_special_tokens();
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  CHECK(tok.id_to_token(151669) == "music_token");
+  CHECK(tok.token_to_id("<d>") == -1);
+  // A supplied tokenizer may already contain the right mapping, but omit its
+  // added_tokens entry. H3 must still recognize it as one special token.
+  tok.load_json(prefix + R"("<d>":151669},"merges":[]}})");
+  tok.enable_h3_special_tokens();
+  CHECK(tok.encode("<d></d>") == std::vector<int32_t>({151669, 151670}));
+  CHECK(tok.decode({151669, 151670}) == "<d></d>");
 }
 
 } // namespace

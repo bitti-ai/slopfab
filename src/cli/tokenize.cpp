@@ -73,6 +73,7 @@ int cmd_tokenize(int argc, char** argv) {
   std::string tok_path;
   std::string text;
   bool show_pieces = false;
+  bool h3 = true;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -80,6 +81,8 @@ int cmd_tokenize(int argc, char** argv) {
       tok_path = argv[++i];
     } else if (arg == "--pieces") {
       show_pieces = true;
+    } else if (arg == "--qwen") {
+      h3 = false;
     } else if (!arg.empty() && arg.front() == '-') {
       std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
@@ -94,6 +97,8 @@ int cmd_tokenize(int argc, char** argv) {
     tok.load_embedded();
   else
     tok.load(tok_path);
+  if (h3)
+    tok.enable_h3_special_tokens();
   std::printf("vocab      %zu tokens\n", tok.vocab_size());
 
   if (show_pieces) {

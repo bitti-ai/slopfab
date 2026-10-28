@@ -219,6 +219,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         owned_conditioning_tokenizer.load_embedded();
       else
         owned_conditioning_tokenizer.load(request.tokenizer_path);
+      owned_conditioning_tokenizer.enable_h3_special_tokens();
       conditioning_tokenizer_instance = &owned_conditioning_tokenizer;
       return *conditioning_tokenizer_instance;
     }
@@ -231,6 +232,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         reuse.tokenizer.load_embedded();
       else
         reuse.tokenizer.load(request.tokenizer_path);
+      reuse.tokenizer.enable_h3_special_tokens();
       reuse.tokenizer_key = key;
       reuse.tokenizer_valid = true;
     } else if (options.verbose) {

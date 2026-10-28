@@ -369,6 +369,7 @@ const CommandHelp kCommands[] = {
      "  --dump <f>                   raw fp32 pixels as safetensors\n"},
     {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>", "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
+     "  --qwen                      use base Qwen vocabulary without H3 special tokens\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
     {"encode-refmod", "slopfab encode-refmod --reference-image <file> --output <file> [options]",
      "encode raw images, video and audio into reusable RefMods",

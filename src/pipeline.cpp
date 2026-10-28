@@ -424,7 +424,7 @@ std::string conditioning_cache_key(const GenerateRequest& request,
   if (reference_identities.size() != request.conditioning_image_paths().size()) {
     return conditioning_cache_key(request);
   }
-  std::string key = "conditioning";
+  std::string key = "conditioning:h3-special-v1";
   append_file_identity(key, request.text_encoder_path);
   append_file_identity(key, request.tokenizer_path);
   key.push_back('\0');
@@ -455,7 +455,7 @@ conditioning_cache_key_for_authority(const GenerateRequest& request,
 }
 
 std::string conditioning_cache_key(const GenerateRequest& request) {
-  std::string key = "conditioning";
+  std::string key = "conditioning:h3-special-v1";
   append_file_identity(key, request.text_encoder_path);
   append_file_identity(key, request.tokenizer_path);
   key.push_back('\0');
@@ -502,7 +502,7 @@ std::string reference_cache_key(const GenerateRequest& request) {
 }
 
 std::string tokenizer_cache_key(const GenerateRequest& request) {
-  std::string key = "tokenizer";
+  std::string key = "tokenizer:h3-special-v1";
   append_file_identity(key, request.tokenizer_path);
   return key;
 }

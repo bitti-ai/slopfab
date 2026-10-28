@@ -37,6 +37,11 @@ public:
   // Otherwise throws with instructions for supplying a file explicitly.
   void load_embedded();
 
+  // H3 extends Qwen with seven fixed-ID tokens absent from tokenizer.json.
+  // Explicit opt-in: music/other Qwen vocabularies keep their own ID mappings.
+  // Idempotent; rejects conflicting spellings/IDs before changing the vocabulary.
+  void enable_h3_special_tokens();
+
   bool loaded() const {
     return !vocab_.empty();
   }
@@ -75,6 +80,7 @@ public:
   }
 
 private:
+  bool h3_special_tokens_ = false;
   bool normalize_nfc_ = false;
   bool ignore_merges_ = false;
   std::string source_sha256_;

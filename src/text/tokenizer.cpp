@@ -459,6 +459,7 @@ void Tokenizer::load(const std::string& path) {
 }
 
 void Tokenizer::load_json(std::string_view tokenizer_json) {
+  h3_special_tokens_ = false;
   source_sha256_.clear();
   vocab_.clear();
   id_to_token_.clear();
@@ -714,6 +715,43 @@ void Tokenizer::load_embedded() {
 #else
   load_json(detail::embedded_tokenizer_json());
 #endif
+}
+
+void Tokenizer::enable_h3_special_tokens() {
+  if (!loaded())
+    throw std::runtime_error("H3 tokenizer: load a Qwen vocabulary first");
+  if (h3_special_tokens_)
+    return;
+  // Released FL2VA/Ref2VA tokenizer_config.json additional_special_tokens.
+  // Matches ComfyUI PR #15808; IDs are model embedding rows, not allocatable slots.
+  static const std::vector<std::string> tokens = {
+      "<d>", "</d>", "<|cutoff|>", "<|lyrics_start|>", "<|lyrics_end|>",
+      "<|caption_start|>", "<|caption_end|>"};
+  constexpr int32_t first = 151669;
+  const auto validate = [&](const std::string& token, int32_t id) {
+    for (size_t i = 0; i < tokens.size(); ++i)
+      if ((token == tokens[i] && id != first + int32_t(i)) ||
+          (id == first + int32_t(i) && token != tokens[i]))
+        throw std::runtime_error("H3 tokenizer: conflicting token or ID for " + tokens[i]);
+  };
+  for (const auto& entry : vocab_)
+    validate(entry.first, entry.second);
+  for (const auto& entry : added_tokens_)
+    validate(entry.first, entry.second);
+  id_to_token_.resize(std::max(id_to_token_.size(), size_t(first) + tokens.size()));
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    const int32_t id = first + int32_t(i);
+    vocab_[tokens[i]] = id;
+    id_to_token_[id] = tokens[i];
+    if (std::none_of(added_tokens_.begin(), added_tokens_.end(), [&](const auto& entry) {
+          return entry.first == tokens[i];
+        }))
+      added_tokens_.emplace_back(tokens[i], id);
+  }
+  std::sort(added_tokens_.begin(), added_tokens_.end(), [](const auto& a, const auto& b) {
+    return a.first.size() > b.first.size();
+  });
+  h3_special_tokens_ = true;
 }
 
 int32_t Tokenizer::token_to_id(const std::string& token) const {

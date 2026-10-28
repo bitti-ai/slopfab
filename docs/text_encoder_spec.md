@@ -6,7 +6,7 @@ as shipped in `weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors`.
 
 H3 does not use a text encoder in the usual sense. It runs the **decoder** stack
 of a 32 B VLM for exactly 50 layers and takes the **raw, unnormalised residual
-stream**: no final norm, no LM head, no chat template, no special tokens, no
+stream**: no final norm, no LM head, no chat template, no automatic BOS/EOS, no
 vision tower. This document specifies that path and nothing else.
 
 Everything here is grounded in:
@@ -139,7 +139,8 @@ byte-level BPE and has been verified against the HuggingFace reference over 98
 cases including fuzz. This spec fixes only how it is *called*.
 
 ```
-token_ids = Tokenizer::encode(prompt)          // slopfab/text/tokenizer.h:35
+tokenizer.enable_h3_special_tokens()          // after loading JSON or embedded vocabulary
+token_ids = tokenizer.encode(prompt)
 ```
 
 with the following, all load-bearing:
@@ -151,8 +152,9 @@ with the following, all load-bearing:
    it later by adding a BOS.
 2. **Vocabulary source** — `ref/FL2VA/text_encoder/tokenizer.json` (or the
    byte-identical `ref/FL2VA/tokenizer/tokenizer.json`). Both carry the same
-   151 936-entry vocab; `model.embed_tokens.weight` is `[151936, 5120]`, so ids
-   index it directly with no offset.
+   base Qwen vocabulary. H3 adds the seven tokens below;
+   `model.embed_tokens.weight` is `[151936, 5120]`, so ids index it directly
+   with no offset. The embedding row count is not the tokenizer entry count.
 3. **`mm_token_type_ids` is all zeros** for pure text
    (`encoders.py:172-176`: the processor derives it from the vision pad ids, and
    there are none). Its only consumer is `get_rope_index`'s modality grouping
@@ -168,6 +170,31 @@ with the following, all load-bearing:
 
 Empty prompts are not handled by the reference and should be rejected at the
 API boundary rather than producing `L = 0`.
+
+H3 generation (CLI and DLL) and prompt embedding export register these literal
+markers as single tokens, matching
+[ComfyUI PR #15808](https://github.com/Comfy-Org/ComfyUI/pull/15808):
+
+| Marker | Token ID |
+|---|---:|
+| `<d>` | 151669 |
+| `</d>` | 151670 |
+| `<\|cutoff\|>` | 151671 |
+| `<\|lyrics_start\|>` | 151672 |
+| `<\|lyrics_end\|>` | 151673 |
+| `<\|caption_start\|>` | 151674 |
+| `<\|caption_end\|>` | 151675 |
+
+They are recognized when present in the prompt; registration does not insert
+them automatically. Both embedded and external tokenizer files use this H3
+profile. Conflicting token spellings or reserved IDs in an external file are
+rejected. Generic Qwen and music tokenizer loading remains unchanged.
+`slopfab tokenize` uses H3 by default; `--qwen` selects the base vocabulary.
+
+Previously exported prompt embeddings containing these markers must be
+regenerated to benefit from the fix. New exports record
+`tokenizer_profile=minimax-h3-special-v1`; `tokenizer_sha256` still identifies
+the original JSON bytes. Conditioning cache keys include the profile version.
 
 ### 1.3 The forward pass in one page
 

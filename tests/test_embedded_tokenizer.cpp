@@ -52,6 +52,17 @@ int main(int argc, char** argv) {
         return 1;
       }
     }
+    embedded.enable_h3_special_tokens();
+    file.enable_h3_special_tokens();
+    const std::string markers =
+        "<d></d><|cutoff|><|lyrics_start|><|lyrics_end|><|caption_start|><|caption_end|>";
+    const std::vector<int32_t> expected = {151669, 151670, 151671, 151672,
+                                         151673, 151674, 151675};
+    if (embedded.encode(markers) != expected || file.encode(markers) != expected ||
+        embedded.decode(expected) != markers || file.decode(expected) != markers) {
+      std::fprintf(stderr, "H3 special token IDs or inverse vocabulary differ\n");
+      return 1;
+    }
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s\n", e.what());

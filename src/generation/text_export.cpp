@@ -28,6 +28,7 @@ int export_prompt_embedding(const TextExportRequest& request, const std::string&
     tokenizer.load_embedded();
   else
     tokenizer.load(request.tokenizer_path);
+  tokenizer.enable_h3_special_tokens();
   const auto ids = tokenizer.encode(request.prompt);
   if (ids.empty() || ids.size() > kMaxPromptTokens)
     throw std::invalid_argument("text export: prompt token count is outside encoder capacity");
@@ -70,6 +71,7 @@ int export_prompt_embedding(const TextExportRequest& request, const std::string&
       {"text_encoder_identity", encoder_identity},
       {"tokenizer", request.tokenizer_path.empty() ? "embedded" : request.tokenizer_path},
       {"tokenizer_sha256", tokenizer.source_sha256()},
+      {"tokenizer_profile", "minimax-h3-special-v1"},
       {"backend", request.backend == DeviceBackend::kCuda ? "cuda" : "vulkan"},
       {"arithmetic",
        request.backend == DeviceBackend::kVulkan || request.arithmetic == EncoderArithmetic::kExact
