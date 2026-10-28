@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 43
+#define SLOPFAB_CAPI_VERSION_MINOR 44
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -232,6 +232,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major);
 #define SLOPFAB_MODEL_TOKENIZER 2
 #define SLOPFAB_MODEL_VIDEO_VAE 3
 #define SLOPFAB_MODEL_AUDIO_VAE 4
+/* Since 1.44: optional video decoder override (e.g. Sol-H3-VAE, CUDA).
+ * VIDEO_VAE still supplies reference/anchor encoding. Empty path clears override. */
+#define SLOPFAB_MODEL_VIDEO_DECODER 5
 
 /* Neural backend. Vulkan denoising accepts exact, flash2 and sage2, supports native
  * text-only conditioning, and never calls the CUDA conditioner. */

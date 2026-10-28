@@ -222,6 +222,7 @@ const CommandHelp kCommands[] = {
      "                               seeded draw; with --synthetic-latents, decode\n"
      "                               them straight to video and audio. Same shape as\n"
      "                               --dump-latents writes. Off by default.\n"
+     "  --video-decoder <f>         decoder override (Sol-H3-VAE requires CUDA); --vae encodes references.\n"
      "  --save-latents <f>           save a versioned AV latent archive for continuation.\n"
      "  --continue-from <f>          extend a saved archive; --frames is NEW frames,\n"
      "                               rounded up to a multiple of 17. Output is joined.\n"

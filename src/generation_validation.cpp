@@ -1,4 +1,5 @@
 #include "slopfab/generate.h"
+#include "slopfab/vae/sol_h3.h"
 #include <cmath>
 #include <filesystem>
 #include <stdexcept>
@@ -10,6 +11,27 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  require(r.video_decoder_path.empty() || p.model.family == "h3",
+          "a separate video decoder is supported only for MiniMax H3");
+  if (p.model.family == "h3" && !r.video_decode_path().empty() &&
+      std::filesystem::is_regular_file(r.video_decode_path())) {
+    SafeTensors decoder;
+    decoder.open(r.video_decode_path());
+    if (vae::is_sol_h3_vae(decoder)) {
+      vae::validate_sol_h3_vae(decoder);
+      require(o.inference_backend == DeviceBackend::kCuda,
+              "Sol-H3-VAE currently requires the CUDA backend");
+    }
+  }
+  if (p.model.family == "h3" && (!r.conditioning_image_paths().empty() ||
+      !r.reference_media.empty() || r.image_edit.image) &&
+      !r.video_vae_path.empty() && std::filesystem::is_regular_file(r.video_vae_path)) {
+    SafeTensors encoder;
+    encoder.open(r.video_vae_path);
+    require(!vae::is_sol_h3_vae(encoder),
+            "Sol-H3-VAE is decoder-only: keep the original VIDEO_VAE/--vae for reference encoding "
+            "and select Sol with VIDEO_DECODER/--video-decoder");
+  }
   if (p.model.family == "yue2" || p.model.family == "minimax_music3") {
     require(o.inference_backend == DeviceBackend::kCuda || o.inference_backend == DeviceBackend::kVulkan, "music requires CUDA or Vulkan");
     require(o.inference_backend != DeviceBackend::kVulkan || o.vulkan_portable_arithmetic, "Vulkan music requires portable arithmetic; use --vulkan-arithmetic portable or SLOPFAB_VULKAN_ARITHMETIC_PORTABLE");

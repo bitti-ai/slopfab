@@ -65,6 +65,10 @@
 #include "slopfab/dit/transformer.h"
 #include "slopfab/generate.h"
 #include "slopfab/vae/vit_decoder.h"
+#include "slopfab/vae/sol_h3.h"
+#if SLOPFAB_WITH_CUDA
+#include "slopfab/cuda/sol_h3_vae.h"
+#endif
 #endif
 
 #include "commands.h"
@@ -72,6 +76,9 @@
 namespace slopfab::cli {
 #if SLOPFAB_WITH_CUDA
 uint64_t decoder_bytes(const slopfab::vae::ViTDecoder& decoder) {
+  return decoder.weight_bytes();
+}
+uint64_t decoder_bytes(const slopfab::cuda::SolH3Decoder& decoder) {
   return decoder.weight_bytes();
 }
 #endif
@@ -347,6 +354,15 @@ int cmd_decode(int argc, char** argv) {
     }
     return 0;
   };
+  if (slopfab::vae::is_sol_h3_vae(ckpt)) {
+    if (backend != "cuda")
+      throw std::invalid_argument("Sol-H3-VAE currently requires the CUDA backend");
+#if SLOPFAB_WITH_CUDA
+    return run_decode([] { return slopfab::cuda::SolH3Decoder(); });
+#else
+    throw std::invalid_argument("Sol-H3-VAE requires a build with CUDA enabled");
+#endif
+  }
 #if SLOPFAB_WITH_VULKAN
   if (backend == "vulkan") {
     auto device = slopfab::generation::create_vulkan_inference_device(portable_arithmetic);

@@ -118,6 +118,11 @@ struct GenerateRequest {
   std::string text_encoder_path;
   std::string tokenizer_path;
   std::string video_vae_path;
+  // Optional decoder-only checkpoint; video_vae_path remains the reference encoder.
+  std::string video_decoder_path;
+  const std::string& video_decode_path() const {
+    return video_decoder_path.empty() ? video_vae_path : video_decoder_path;
+  }
   std::string audio_vae_path;
 
   // Ordered subject/style/scene references. Presence selects the Ref2VA task;

@@ -303,6 +303,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.tokenizer_path = next("--tokenizer");
     } else if (arg == "--vae") {
       req.video_vae_path = next("--vae");
+    } else if (arg == "--video-decoder") {
+      req.video_decoder_path = next("--video-decoder");
     } else if (arg == "--audio-vae") {
       req.audio_vae_path = next("--audio-vae");
     } else if (arg == "--refmod") {

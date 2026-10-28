@@ -37,6 +37,10 @@
 #include "slopfab/tensor_convert.h"
 #include "slopfab/vae/audio_decoder.h"
 #include "slopfab/vae/vit_decoder.h"
+#include "slopfab/vae/sol_h3.h"
+#if SLOPFAB_WITH_CUDA
+#include "slopfab/cuda/sol_h3_vae.h"
+#endif
 #include "slopfab/vae/keyframe_encoder.h"
 #include "slopfab/vae/audio_encoder.h"
 #include "slopfab/reference_conditioning.h"
@@ -75,7 +79,7 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
   const Clock::time_point decode_started = Clock::now();
   auto& timings = result.video_decode_timings;
   {
-    if (request.video_vae_path.empty()) {
+    if (request.video_decode_path().empty()) {
       result.message = "generate needs --vae <video_vae.safetensors>";
       return result;
     }
@@ -127,13 +131,41 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 #endif
     const auto open_started = Clock::now();
     SafeTensors vae_file;
-    vae_file.open(request.video_vae_path);
+    vae_file.open(request.video_decode_path());
     const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
     const std::vector<float> std_dev = read_stat(vae_file, "latents_std", 24);
     timings.seconds_model_open = seconds_since(open_started);
     const auto load_started = Clock::now();
 
-    if (options.inference_backend == DeviceBackend::kCuda) {
+    if (vae::is_sol_h3_vae(vae_file)) {
+      if (options.inference_backend != DeviceBackend::kCuda)
+        throw std::invalid_argument("Sol-H3-VAE currently requires the CUDA backend");
+#if SLOPFAB_WITH_CUDA
+      cuda::SolH3Decoder decoder;
+      decoder.load(vae_file);
+      timings.seconds_weight_load = seconds_since(load_started);
+      s_load.stop();
+      if (options.verbose)
+        std::printf("video vae   Sol-H3-VAE CUDA %.2f GiB on device\n",
+                    double(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
+      bool cancelled = false;
+      decoder.progress = [&](int done, int total) {
+        cancelled = !notify(RunStage::kVideoDecode, done, total);
+        return !cancelled;
+      };
+      const auto compute_started = Clock::now();
+      try {
+        video = decoder.decode(latents.data(), layout.num_latent_frames,
+                               decode_height, decode_width, mean, std_dev);
+      } catch (...) {
+        if (cancelled) return stop("video decode");
+        throw;
+      }
+      timings.seconds_compute = seconds_since(compute_started);
+#else
+      throw std::invalid_argument("Sol-H3-VAE requires a build with CUDA enabled");
+#endif
+    } else if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
       vae::ViTDecoder decoder;
       vae::ViTConfig config;

@@ -949,8 +949,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       // overlapping the two would only make them queue behind each other on the
       // same drive. From this line to the end of the loop the pipeline touches
       // no disk at all, which is the window this is trying to fill.
-      vae_prefetch.start(request.still_image ? std::vector<std::string>{request.video_vae_path}
-                                             : std::vector<std::string>{request.video_vae_path,
+      vae_prefetch.start(request.still_image ? std::vector<std::string>{request.video_decode_path()}
+                                             : std::vector<std::string>{request.video_decode_path(),
                                                                         request.audio_vae_path},
                          options.verbose);
 
@@ -1151,8 +1151,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       video_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
       audio_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
       const int total_steps = plan.num_model_evaluations();
-      vae_prefetch.start(request.still_image ? std::vector<std::string>{request.video_vae_path}
-                                             : std::vector<std::string>{request.video_vae_path,
+      vae_prefetch.start(request.still_image ? std::vector<std::string>{request.video_decode_path()}
+                                             : std::vector<std::string>{request.video_decode_path(),
                                                                         request.audio_vae_path},
                          options.verbose);
       const Clock::time_point loop_start = Clock::now();

@@ -49,6 +49,7 @@ add_library(slopfab_core STATIC
   src/vae/keyframe_encoder.cpp
   src/vae/audio_primitives.cpp
   src/vae/vit_block.cpp
+  src/vae/sol_h3.cpp
   src/vae/decode_pipeline.cpp
   src/pipeline.cpp
   src/sampling_plan.cpp

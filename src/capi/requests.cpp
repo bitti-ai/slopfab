@@ -458,6 +458,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
     case SLOPFAB_MODEL_AUDIO_VAE:
       request->request.audio_vae_path = path;
       break;
+    case SLOPFAB_MODEL_VIDEO_DECODER:
+      request->request.video_decoder_path = path;
+      break;
     default:
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
                   "slopfab_request_set_model_path: unknown model id " + std::to_string(which));

@@ -1283,6 +1283,10 @@ SLOPFAB_TEST(capi_rejects_unresolvable_requests) {
 
 SLOPFAB_TEST(capi_model_paths_and_attention) {
   Request request;
+  CHECK(slopfab_request_set_model_path(request.handle, SLOPFAB_MODEL_VIDEO_DECODER,
+                                     "sol_h3_vae.safetensors") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_model_path(request.handle, SLOPFAB_MODEL_VIDEO_DECODER,
+                                     "") == SLOPFAB_OK);
 
   CHECK(slopfab_request_set_model_path(request.handle, SLOPFAB_MODEL_TRANSFORMER, "t.st") ==
         SLOPFAB_OK);

@@ -141,6 +141,7 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/vae_kernels.cu
       src/cuda/vae_vit_block.cu
       src/cuda/vit_decoder.cu
+      src/cuda/sol_h3_vae.cu
       src/cuda/audio_vae_kernels.cu
       src/cuda/dit_kernels.cu
     src/cuda/encoder_kernels.cu
