@@ -217,15 +217,27 @@ int cmd_decode(int argc, char** argv) {
   if (!latent_path.empty()) {
     slopfab::SafeTensors latent_file;
     latent_file.open(latent_path);
-    const slopfab::TensorView& lv = latent_file.at("latent");
-    if (lv.shape.size() != 4 || lv.shape[0] != 24) {
-      std::fprintf(stderr, "slopfab: latent tensor must be [24, T, H, W]\n");
-      return 1;
+    if (latent_file.metadata().count("slopfab_latents")) {
+      const auto clip = slopfab::LatentClip::load(latent_path);
+      if (clip->frames == 1)
+        throw std::invalid_argument("decode expects a video archive, not a one-frame still archive");
+      const auto layout = clip->layout();
+      T = layout.num_latent_frames;
+      H = layout.latent_height;
+      W = layout.latent_width;
+      z.resize(clip->video_rows.size());
+      slopfab::dit::unpatchify_video(clip->video_rows.data(), layout, z.data());
+    } else {
+      const slopfab::TensorView& lv = latent_file.at("latent");
+      if (lv.shape.size() != 4 || lv.shape[0] != 24) {
+        std::fprintf(stderr, "slopfab: latent tensor must be [24, T, H, W]\n");
+        return 1;
+      }
+      T = static_cast<int>(lv.shape[1]);
+      H = static_cast<int>(lv.shape[2]);
+      W = static_cast<int>(lv.shape[3]);
+      z = slopfab::to_f32(lv);
     }
-    T = static_cast<int>(lv.shape[1]);
-    H = static_cast<int>(lv.shape[2]);
-    W = static_cast<int>(lv.shape[3]);
-    z = slopfab::to_f32(lv);
   } else {
     std::printf("no --latent given; decoding a deterministic synthetic latent (seed %u)\n", seed);
     z = synthetic_latent(T, H, W, seed);

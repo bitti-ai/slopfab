@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 41
+#define SLOPFAB_CAPI_VERSION_MINOR 42
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -892,6 +892,28 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_save_latents(slopfab_request*
  * off. Required for generation_save_latents and set_continuation_generation. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(slopfab_request* request,
                                                                   int32_t enable);
+
+/* Since 1.42. Upscale completed H3 latents without diffusion or VAE decoding.
+ * File inputs are loaded immediately; generation inputs must have successfully
+ * completed with retained latents. Inputs remain unchanged and may be destroyed
+ * after start returns. A successful job automatically retains the enlarged clip:
+ * use generation_save_latents or attach it as continuation/ending/bridge source.
+ * Canvas and packed video grow; audio, frame count and normalization are preserved.
+ * Reuses generation wait/status/error/cancel/destroy; generation_output returns
+ * INVALID_REQUEST because no pixels/audio samples are decoded. Progress reports
+ * STARTING, UPSCALING (completed/total work), FINISHED on the worker thread.
+ * Uses the same single-operation BUSY guard as generation. Backend is
+ * SLOPFAB_INFERENCE_CUDA/VULKAN, scale is [1,4], temporal_chunking is 0/1.
+ * Checkpoint path is copied and read by the worker; keep that file available.
+ * Empty checkpoint paths are rejected, even for a 1x no-op. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_latent_upscale_file_start(
+    const char* source_path, const char* checkpoint, float scale, int32_t temporal_chunking,
+    int32_t backend, slopfab_progress_fn callback, void* userdata,
+    slopfab_generation** out_generation);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_latent_upscale_generation_start(
+    const slopfab_generation* source, const char* checkpoint, float scale,
+    int32_t temporal_chunking, int32_t backend, slopfab_progress_fn callback,
+    void* userdata, slopfab_generation** out_generation);
 
 /* Load an owning snapshot now, so deleting/replacing the file later is safe.
  * overlap_frames must be 17*k+5, at least 5, and fit in the source. With

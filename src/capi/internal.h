@@ -243,6 +243,8 @@ struct slopfab_generation {
   PixelBuffer video;
   bool samples_released = false;
   std::shared_ptr<const slopfab::LatentClip> latents;
+  std::shared_ptr<const slopfab::LatentClip> latent_upscale_source;
+  bool latents_only = false;
   std::vector<float> audio;
   int channels = 0;
   int frames = 0;
@@ -396,9 +398,27 @@ inline void run_worker(slopfab_generation* gen) {
     options.on_progress = &progress_hook;
     options.on_samples = &samples_hook;
     options.hook_userdata = gen;
-    const RunResult result = gen->session
+    const RunResult result = [&]() {
+      if (gen->latents_only) {
+        if (!progress_hook(RunStage::kStarting, -1, 0, gen))
+          throw slopfab::UpscaleCancelled();
+        auto clip = slopfab::upscale_latent_clip(
+            *gen->latent_upscale_source, options.latent_upscale_model_path,
+            options.inference_backend, options.latent_upscale,
+            [gen](int done, int total) {
+              return progress_hook(RunStage::kUpscaling, done, total, gen);
+            });
+        if (!progress_hook(RunStage::kFinished, -1, 0, gen))
+          throw slopfab::UpscaleCancelled();
+        gen->latents = std::move(clip);
+        RunResult result;
+        result.ok = true;
+        return result;
+      }
+      return gen->session
                                  ? slopfab::run_generate(*gen->session, gen->request, plan, options)
                                  : slopfab::run_generate(gen->request, plan, options);
+    }();
     gen->seconds_conditioning = result.seconds_conditioning;
     gen->seconds_denoise = result.seconds_denoise;
     gen->seconds_video_decode = result.seconds_video_decode;
@@ -416,6 +436,9 @@ inline void run_worker(slopfab_generation* gen) {
     } else {
       code = SLOPFAB_OK;
     }
+  } catch (const slopfab::UpscaleCancelled&) {
+    code = SLOPFAB_ERR_CANCELLED;
+    message = "latent upscaling cancelled";
   } catch (const std::bad_alloc&) {
     code = SLOPFAB_ERR_OUT_OF_MEMORY;
     message = "out of memory";
@@ -437,6 +460,7 @@ inline void run_worker(slopfab_generation* gen) {
   gen->request.image_edit.image.reset();
   gen->request.image_edit.mask.reset();
   gen->session.reset();
+  gen->latent_upscale_source.reset();
   // Released before `finish`, so a caller woken by `slopfab_generation_wait`
   // can start the next run immediately rather than racing this thread's
   // remaining bookkeeping.

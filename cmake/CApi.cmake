@@ -15,6 +15,7 @@ if(SLOPFAB_BUILD_C_API)
   # the stable C entry points.
   add_library(slopfab_c SHARED src/capi/capi.cpp)
   target_sources(slopfab_c PRIVATE src/capi/seedvr2.cpp)
+  target_sources(slopfab_c PRIVATE src/capi/latent_upscale.cpp)
   target_sources(slopfab_c PRIVATE src/capi/requests.cpp src/capi/plans.cpp
     src/capi/generation.cpp src/capi/references.cpp src/capi/assets.cpp)
   target_link_libraries(slopfab_c PRIVATE slopfab_generation)
@@ -51,7 +52,7 @@ if(SLOPFAB_BUILD_C_API)
   # produce a libslopfab.so.0 whose soname says 0 for an ABI that says 1, and
   # would bump it for releases that did not touch the C interface at all.
   set(SLOPFAB_CAPI_VERSION_MAJOR 1)
-  set(SLOPFAB_CAPI_VERSION_MINOR 41)
+  set(SLOPFAB_CAPI_VERSION_MINOR 42)
   set(SLOPFAB_CAPI_VERSION_PATCH 0)
   set(SLOPFAB_CAPI_VERSION
     "${SLOPFAB_CAPI_VERSION_MAJOR}.${SLOPFAB_CAPI_VERSION_MINOR}.${SLOPFAB_CAPI_VERSION_PATCH}")

@@ -139,6 +139,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generatio
     return status;
   if (generation->samples_released)
     return fail(SLOPFAB_ERR_INVALID_REQUEST, "generation samples have been released");
+  if (generation->latents_only)
+    return fail(SLOPFAB_ERR_INVALID_REQUEST, "latent-only result has no decoded samples; save or reuse its retained latents");
   out_output->video = generation->video.empty() ? nullptr : generation->video.data();
   out_output->video_float_count = generation->video.size();
   out_output->channels = generation->channels;

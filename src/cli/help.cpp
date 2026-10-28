@@ -67,6 +67,13 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"upscale-latents", "slopfab upscale-latents --input FILE --out FILE [options]",
+     "upscale an existing H3 latent archive without diffusion or decoding",
+     "  --model FILE               H3 3D conv v1 checkpoint (default under weights/)\n"
+     "  --scale N                  1..4, default 2; dimensions round to multiples of 32\n"
+     "  --inference-backend NAME   cuda or vulkan\n"
+     "  --no-chunking              process all latent frames together\n"
+     "Output is a new H3 latent archive with resized video and unchanged audio.\n"},
     {"upscale", "slopfab upscale --input FILE --out FILE --upscale-method NAME [options]",
      "restore images or stream video with Real-ESRGAN or SeedVR2",
      "  --upscale-method NAME       realesrgan (default), seedvr2 (CUDA)\n"
@@ -354,7 +361,8 @@ const CommandHelp kCommands[] = {
      "  --inference-backend cuda|vulkan  decoder backend\n"
      "  --vulkan-arithmetic portable|exact  device-feature or qualified arithmetic\n"
      "  --vae <f>                    video VAE checkpoint\n"
-     "  --latent <f>                 latent safetensors; omit for a synthetic one\n"
+     "  --latent <f>                 H3 video archive or [24,T,H,W] latent safetensors\n"
+     "                               Omit for synthetic input; archive audio is not decoded.\n"
      "  --shape <T> <H> <W>          synthetic latent shape\n"
      "  --out <f>                    .y4m output\n"
      "  --ppm <f>                    also write frame 0 as a PPM\n"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "slopfab/safetensors.h"
 
 namespace slopfab {
+struct LatentClip;
 struct LatentUpscaleOptions {
   float scale = 2.0f;
   // Upstream's 32-frame segments with replicated context and overlap blending.
@@ -32,4 +34,12 @@ std::vector<float> upscale_latents(const std::vector<float>& input, int frames, 
                                    int width, const std::string& checkpoint, DeviceBackend backend,
                                    const LatentUpscaleOptions& options = {},
                                    const std::function<bool(int, int)>& progress = {});
+
+// Upscale a completed archive/snapshot without decoding. Returns a new owning
+// clip with resized packed video and canvas metadata; preserves audio, time,
+// normalization and model provenance. The input is never modified.
+std::shared_ptr<const LatentClip> upscale_latent_clip(
+    const LatentClip& input, const std::string& checkpoint, DeviceBackend backend,
+    const LatentUpscaleOptions& options = {},
+    const std::function<bool(int, int)>& progress = {});
 } // namespace slopfab

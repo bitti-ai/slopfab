@@ -943,6 +943,80 @@ SLOPFAB_TEST(capi_audio_steps) {
   CHECK(plan.num_model_evaluations == 2);
 }
 
+SLOPFAB_TEST(capi_existing_latents_upscale_lifecycle) {
+  LatentFixture fixture;
+  fixture.write(39);
+  const auto path = fixture.path.string();
+  slopfab_generation* job = nullptr;
+  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 0, 1, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(job == nullptr);
+  CHECK(slopfab_latent_upscale_generation_start(nullptr, "missing", 1, 1, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 2, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, 9, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  // Identity needs no checkpoint/GPU, but still exercises the asynchronous API.
+  int backend = SLOPFAB_INFERENCE_CUDA;
+  int started = slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, backend, nullptr, nullptr, &job);
+  if (started == SLOPFAB_ERR_UNSUPPORTED) {
+    backend = SLOPFAB_INFERENCE_VULKAN;
+    started = slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, backend, nullptr, nullptr, &job);
+  }
+  CHECK(started == SLOPFAB_OK);
+  if (!job) return;
+  std::filesystem::remove(fixture.path);
+  CHECK(slopfab_generation_wait(job, -1) == SLOPFAB_OK);
+  slopfab_output output{};
+  CHECK(slopfab_generation_output(job, &output) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_generation_save_latents(job, path.c_str()) == SLOPFAB_OK);
+  Request request;
+  CHECK(slopfab_request_set_continuation_generation(request.handle, job, 22) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 64 && plan.canvas_height == 32);
+  slopfab_generation* copy = nullptr;
+  CHECK(slopfab_latent_upscale_generation_start(job, "missing", 1, 1, backend, nullptr, nullptr, &copy) == SLOPFAB_OK);
+  slopfab_generation_destroy(job);
+  CHECK(slopfab_generation_wait(copy, -1) == SLOPFAB_OK);
+  CHECK(slopfab_generation_save_latents(copy, path.c_str()) == SLOPFAB_OK);
+  slopfab_generation_destroy(copy);
+  struct Gate {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool entered = false, release = false;
+  } gate;
+  auto block = [](const slopfab_progress* progress, void* userdata) {
+    if (progress->stage != SLOPFAB_STAGE_STARTING) return;
+    auto& g = *static_cast<Gate*>(userdata);
+    std::unique_lock<std::mutex> lock(g.mutex);
+    g.entered = true;
+    g.cv.notify_all();
+    g.cv.wait(lock, [&] { return g.release; });
+  };
+  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, backend, block, &gate, &job) == SLOPFAB_OK);
+  if (!job) return;
+  {
+    std::unique_lock<std::mutex> lock(gate.mutex);
+    gate.cv.wait(lock, [&] { return gate.entered; });
+  }
+  copy = nullptr;
+  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, backend, nullptr, nullptr, &copy) == SLOPFAB_ERR_BUSY);
+  CHECK(copy == nullptr);
+  slopfab_generation_cancel(job);
+  {
+    std::lock_guard<std::mutex> lock(gate.mutex);
+    gate.release = true;
+    gate.cv.notify_all();
+  }
+  CHECK(slopfab_generation_wait(job, -1) == SLOPFAB_ERR_CANCELLED);
+  CHECK(slopfab_generation_save_latents(job, path.c_str()) == SLOPFAB_ERR_CANCELLED);
+  slopfab_generation_destroy(job);
+  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 2, 1, backend, nullptr, nullptr, &job) == SLOPFAB_OK);
+  CHECK(slopfab_generation_wait(job, -1) != SLOPFAB_OK); // Missing checkpoint; worker releases its claim.
+  slopfab_generation_destroy(job);
+  CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, backend, nullptr, nullptr, &job) == SLOPFAB_OK);
+  CHECK(slopfab_generation_wait(job, -1) == SLOPFAB_OK);
+  slopfab_generation_destroy(job);
+}
+
 SLOPFAB_TEST(capi_source_initialized_continuation) {
   Request request;
   LatentFixture fixture;

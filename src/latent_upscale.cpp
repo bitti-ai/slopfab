@@ -1,4 +1,5 @@
 #include "slopfab/latent_upscale.h"
+#include "slopfab/continuation.h"
 #include "slopfab/upscale.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/vae/vit_decoder.h"
@@ -230,6 +231,42 @@ std::vector<float> upscale_latents(const std::vector<float>& input, int frames, 
         if (!std::isfinite(v))
           throw std::runtime_error("latent upscale: non-finite output");
       }
+  return output;
+}
+std::shared_ptr<const LatentClip> upscale_latent_clip(
+    const LatentClip& input, const std::string& checkpoint, DeviceBackend backend,
+    const LatentUpscaleOptions& options, const std::function<bool(int, int)>& progress) {
+  input.validate();
+  if (!input.sampled)
+    throw std::invalid_argument("latent upscale requires completed sampled latents");
+  const auto layout = input.layout();
+  const auto dims = latent_upscale_dimensions(layout.latent_height, layout.latent_width, options);
+  auto output = std::make_shared<LatentClip>();
+  output->width = dims.second * 16;
+  output->height = dims.first * 16;
+  output->frames = input.frames;
+  output->geometry = input.geometry;
+  output->sampled = input.sampled;
+  output->transformer = input.transformer;
+  output->video_vae = input.video_vae;
+  output->audio_vae = input.audio_vae;
+  const auto target = output->layout(); // Reject overflow before allocating.
+  std::vector<float> volume(input.video_rows.size());
+  dit::unpatchify_video(input.video_rows.data(), layout, volume.data());
+  int completed = 0, total = 0;
+  volume = upscale_latents(volume, layout.num_latent_frames, layout.latent_height,
+                           layout.latent_width, checkpoint, backend, options,
+                           [&](int done, int count) {
+                             completed = done;
+                             total = count;
+                             return !progress || progress(done, count);
+                           });
+  if (progress && !progress(total ? completed : 1, total ? total : 1))
+    throw UpscaleCancelled();
+  output->video_rows.resize(size_t(target.num_video_rows) * 96);
+  dit::patchify_video(volume.data(), target, output->video_rows.data());
+  output->audio_rows = input.audio_rows;
+  output->validate();
   return output;
 }
 } // namespace slopfab

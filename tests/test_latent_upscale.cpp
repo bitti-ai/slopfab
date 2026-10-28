@@ -1,4 +1,5 @@
 #include "harness.h"
+#include "latent_fixture.h"
 #include "slopfab/latent_upscale.h"
 #include "slopfab/generate.h"
 #include "slopfab/upscale.h"
@@ -18,6 +19,31 @@ template <class F> bool rejects(F f) {
   }
   return false;
 }
+}
+
+SLOPFAB_TEST(latent_archive_upscale_identity_and_ownership) {
+  LatentFixture fixture;
+  fixture.write(39);
+  auto source = LatentClip::load(fixture.path.string());
+  auto output = upscale_latent_clip(*source, "missing", DeviceBackend::kCuda, {1});
+  CHECK(output.get() != source.get());
+  CHECK(output->video_rows == source->video_rows && output->audio_rows == source->audio_rows);
+  CHECK(output->width == source->width && output->height == source->height);
+  CHECK(output->frames == source->frames && output->sampled == source->sampled);
+  CHECK(output->geometry.fingerprint() == source->geometry.fingerprint());
+  source.reset();
+  output->save(fixture.path.string());
+  CHECK(LatentClip::load(fixture.path.string())->video_rows == output->video_rows);
+  bool cancelled = false;
+  try {
+    upscale_latent_clip(*output, "missing", DeviceBackend::kCuda, {1}, [](int, int) { return false; });
+  } catch (const UpscaleCancelled&) {
+    cancelled = true;
+  }
+  CHECK(cancelled);
+  auto invalid = *output;
+  invalid.sampled = false;
+  CHECK(rejects([&] { upscale_latent_clip(invalid, "missing", DeviceBackend::kCuda, {1}); }));
 }
 
 SLOPFAB_TEST(latent_upscale_validation) {
