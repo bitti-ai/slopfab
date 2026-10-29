@@ -68,7 +68,7 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
       : request.bridge ? plan_bridge(*request.bridge, request.num_frames).window_frames
       : request.continuation
           ? plan_continuation(*request.continuation, request.continuation_overlap_frames,
-                              request.num_frames)
+                              request.num_frames, request.keystone.source && request.keystone.capstone ? 17 : 0)
                 .window_frames
           : (request.still_image ? 1 : dit::align_num_frames(request.num_frames));
   key += "decoded-media-preprocessing-v2:" + std::to_string(frames);
@@ -83,6 +83,15 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (request.keystone.source) {
+    validate_keystone(request.keystone);
+    if (request_model_family(request) != "h3" || request.still_image || request.bridge ||
+        request.end_anchor_latents || !request.end_anchor_path.empty() || request.video_transition ||
+        request.animate || request.image_edit.image || request.continuation_source_noise > 0 ||
+        request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
+        request.motion_cache.active())
+      throw std::invalid_argument("keystone requires H3 video without other ending anchors, source initialization, edits, transitions or approximate caches");
+  }
   if (!std::isfinite(request.continuation_source_noise) || request.continuation_source_noise < 0 ||
       request.continuation_source_noise > 1)
     throw std::invalid_argument("continuation source noise must be 0 (off) or in (0,1]");
@@ -238,7 +247,10 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
         plan.canvas_height != request.continuation->height)
       throw std::invalid_argument("continuation canvas must match the saved latents");
     plan.continuation = plan_continuation(*request.continuation,
-                                          request.continuation_overlap_frames, request.num_frames);
+        request.continuation_overlap_frames, request.num_frames,
+        request.keystone.source && request.keystone.capstone ? 17 : 0);
+    if (request.keystone.source)
+      (void)make_keystone_constraint(*request.continuation, plan.continuation, request.keystone);
     plan.aligned_frames = plan.continuation.output_frames;
     plan.sampling_frames = plan.continuation.window_frames;
     plan.duration_seconds = double(plan.aligned_frames) / plan.geometry.fps;
@@ -654,8 +666,18 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
                    " hidden overlap); output is full joined clip\n";
     description +=
         std::string("  overlap constraint  ") +
-        ((request.continuation_lock_overlap || request.continuation_source_noise > 0)
+        ((request.continuation_lock_overlap || request.continuation_source_noise > 0 || request.keystone.source)
              ? "locked video and audio" : "conditioning only") + "\n";
+  }
+  if (request.keystone.source) {
+    description += "  keystone            persistent original-clip front anchor";
+    if (!request.continuation)
+      description += "; inactive until continuation is attached\n";
+    else if (request.keystone.capstone)
+      description += "; capstone locks after " + std::to_string(request.keystone.capstone_lock_after_steps) +
+                     " video updates; 17 hidden tail frames trimmed\n";
+    else
+      description += "; front only\n";
   }
   if (request.continuation_source_noise > 0)
     description += "  middle initialization held final source latent slice; video noise " +

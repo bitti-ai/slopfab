@@ -410,9 +410,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   ContinuationConstraint overlap;
   std::vector<float> overlap_video, overlap_audio;
   const auto constrain = [&](DeviceTensor& state, const LatentPrefixConstraint& constraint,
-                             std::vector<float>& rows, float sigma) {
+                             std::vector<float>& rows, float sigma, int completed_steps = 0) {
     impl_->context->download(state, rows.data(), rows.size());
-    constraint.apply(rows.data(), rows.size(), sigma);
+    constraint.apply(rows.data(), rows.size(), sigma, completed_steps);
     impl_->context->upload(state, rows.data(), rows.size());
   };
   if (c.continuation) {
@@ -630,7 +630,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     result.steps_completed = step + 1;
     if (c.continuation) {
       if (update_step.advance_video)
-        constrain(video_state, overlap.video, overlap_video, video.sigmas()[update_step.video + 1]);
+        constrain(video_state, overlap.video, overlap_video, video.sigmas()[update_step.video + 1],
+                  static_cast<int>(update_step.video + 1));
       if (update_step.advance_audio)
         constrain(conditioned ? s.audio_result : s.audio, overlap.audio, overlap_audio,
                   audio.sigmas()[update_step.audio + 1]);

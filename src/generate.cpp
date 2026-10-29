@@ -408,6 +408,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_latent_end_anchor_constraint(*request.end_anchor_latents, request.continuation.get(),
                                           plan.latent_end_anchor));
+  else if (request.continuation && request.keystone.source)
+    continuation_constraint = std::make_shared<ContinuationConstraint>(
+        make_keystone_constraint(*request.continuation, plan.continuation, request.keystone));
   else if (request.continuation_lock_overlap || request.continuation_source_noise > 0)
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_continuation_constraint(*request.continuation, plan.continuation));

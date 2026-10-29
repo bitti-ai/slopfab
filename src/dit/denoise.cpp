@@ -314,7 +314,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                                 renoise ? video_noise.data() : nullptr);
         if (inputs.continuation)
           overlap.video.apply(out.video_rows.data(), out.video_rows.size(),
-                              inputs.video_scheduler->sigmas()[update.video + 1]);
+                              inputs.video_scheduler->sigmas()[update.video + 1],
+                              static_cast<int>(update.video + 1));
       }
       if (update.advance_audio && !inputs.pin_target_audio) {
         if (renoise && update.audio + 1 < audio_t.size())

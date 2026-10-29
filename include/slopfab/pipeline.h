@@ -163,6 +163,10 @@ struct GenerateRequest {
   // Zero disables; (0,1] starts video denoising at this noise strength. Audio
   // keeps its full schedule. Enabling also locks the continuation boundary.
   float continuation_source_noise = 0;
+  // Original-clip video anchors, independent of the advancing continuation.
+  // No continuation means first-shot pass-through. Replace only continuation
+  // between shots to keep this reference fixed. Hidden context is trimmed.
+  Keystone keystone;
   // Two retained clips, with editable margins. num_frames requests gap frames.
   // Ordinary image/media/refmod references remain attached across endpoint changes.
   std::optional<LatentBridge> bridge;

@@ -27,9 +27,18 @@ struct LatentClip {
 
 struct ContinuationPlan {
   int overlap_frames = 0, extension_frames = 0, window_frames = 0;
+  int tail_padding_frames = 0; // Hidden generated context, removed before joining.
   int output_frames = 0;
   int overlap_video_latents = 0, overlap_audio_latents = 0;
   int window_audio_latents = 0;
+};
+
+// A contiguous target region locked after a number of modality updates.
+// Offsets are into the complete packed buffer, not per-channel offsets.
+struct LatentAnchorConstraint {
+  size_t offset = 0;
+  int lock_after_steps = 0;
+  std::vector<float> original, noise;
 };
 
 // Preserve a prefix and optional suffix in each channel-major group. Video has
@@ -42,9 +51,10 @@ struct LatentPrefixConstraint {
   size_t suffix_values_per_channel = 0;
   std::vector<float> original;
   std::vector<float> noise;
+  std::vector<LatentAnchorConstraint> anchors;
 
   void capture_noise(const float* rows, size_t count);
-  void apply(float* rows, size_t count, float sigma) const;
+  void apply(float* rows, size_t count, float sigma, int completed_steps = 0) const;
 };
 
 struct ContinuationConstraint {
@@ -54,6 +64,17 @@ struct ContinuationConstraint {
 ContinuationConstraint make_continuation_constraint(const LatentClip& source,
                                                     const ContinuationPlan& plan);
 
+// Persistent video-only anchors; the advancing source supplies motion and audio.
+struct Keystone {
+  std::shared_ptr<const LatentClip> source;
+  bool capstone = true;
+  int capstone_lock_after_steps = 4;
+};
+void validate_keystone(const Keystone& keystone);
+ContinuationConstraint make_keystone_constraint(const LatentClip& source,
+                                                const ContinuationPlan& plan,
+                                                const Keystone& keystone);
+
 // Mix a held final source slice with target noise only in the generated region.
 // Boundary rows remain raw noise for LatentPrefixConstraint::capture_noise.
 void initialize_continuation_middle(const LatentClip& source, int prefix_latents,
@@ -61,7 +82,8 @@ void initialize_continuation_middle(const LatentClip& source, int prefix_latents
 
 // Extension rounds up to a multiple of 17. Overlap is exactly 17*k+5,
 // at least 5 frames. Audio boundaries are rounded on the cumulative timeline.
-ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int extension);
+ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int extension,
+                                   int tail_padding_frames = 0);
 void append_continuation_guide(const LatentClip& source, const ContinuationPlan& plan,
                                uint64_t seed, std::vector<dit::ReferenceGeometry>& geometry,
                                std::vector<float>& video, std::vector<float>& audio);

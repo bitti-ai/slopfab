@@ -20,6 +20,106 @@ template <class F> bool rejects(F fn) {
 }
 }
 
+SLOPFAB_TEST(keystone_persistent_anchors_and_trimmed_chain) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(73);
+  const auto original = LatentClip::load(fixture.path.string());
+  auto previous = std::make_shared<LatentClip>(*original);
+  for (auto& x : previous->video_rows) x += 1000;
+  Keystone k{original, true, 2};
+  const size_t frame = 192;
+  for (int shot = 0; shot < 30; ++shot) {
+    const auto p = plan_continuation(*previous, 22, 17, 17);
+    CHECK(p.output_frames == previous->frames + 17);
+    CHECK(p.window_frames == 56);
+    auto constraint = make_keystone_constraint(*previous, p, k);
+    auto& v = constraint.video;
+    CHECK(v.anchors.size() == 1);
+    const auto& cap = v.anchors.front();
+    CHECK(cap.offset == 15 * frame); // Last single-frame slot, not final latent.
+    CHECK(cap.original[0] == original->video_rows[20 * frame]);
+    CHECK(std::equal(original->video_rows.begin(), original->video_rows.begin() + frame,
+                     v.original.begin()));
+    CHECK(v.original[frame] == previous->video_rows[previous->video_rows.size() - 6 * frame]);
+    std::vector<float> video(v.target_values_per_channel, .25f);
+    std::vector<float> audio(size_t(p.window_audio_latents) * 64, -9.f);
+    std::fill(audio.begin() + audio.size() / 2, audio.end(), -11.f);
+    v.capture_noise(video.data(), video.size());
+    std::fill(video.begin(), video.end(), -7.f);
+    v.apply(video.data(), video.size(), .5f, 1);
+    CHECK(video[0] == .5f * original->video_rows[0] + .125f);
+    CHECK(video[cap.offset] == -7.f);
+    v.apply(video.data(), video.size(), .5f, 2);
+    CHECK(video[cap.offset] == .5f * cap.original[0] + .125f);
+    CHECK(video[cap.offset - 1] == -7.f && video[cap.offset + frame] == -7.f);
+    v.apply(video.data(), video.size(), 0, 3);
+    CHECK(video[cap.offset] == cap.original[0]);
+    auto joined = join_continuation(*previous, p, video, audio);
+    CHECK(std::equal(previous->video_rows.begin(), previous->video_rows.end(), joined.video_rows.begin()));
+    CHECK(std::all_of(joined.video_rows.begin() + previous->video_rows.size(), joined.video_rows.end(),
+                      [](float x) { return x == -7.f; }));
+    const size_t old_audio = previous->layout().num_audio_latents * 32;
+    const size_t new_audio = joined.layout().num_audio_latents * 32;
+    for (size_t c = 0; c < 2; ++c) {
+      CHECK(std::equal(previous->audio_rows.begin() + c * old_audio,
+                       previous->audio_rows.begin() + (c + 1) * old_audio,
+                       joined.audio_rows.begin() + c * new_audio));
+      CHECK(std::all_of(joined.audio_rows.begin() + c * new_audio + old_audio,
+                        joined.audio_rows.begin() + (c + 1) * new_audio,
+                        [c](float x) { return x == (c ? -11.f : -9.f); }));
+    }
+    previous = std::make_shared<LatentClip>(std::move(joined));
+  }
+  CHECK(previous->frames == 73 + 30 * 17);
+  k.capstone = false;
+  const auto p = plan_continuation(*previous, 22, 17);
+  CHECK(make_keystone_constraint(*previous, p, k).video.anchors.empty());
+  CHECK(rejects([&] { make_keystone_constraint(*previous, plan_continuation(*previous, 5, 17), k); }));
+}
+
+SLOPFAB_TEST(keystone_planning_validation) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write();
+  GenerateRequest req;
+  req.continuation = LatentClip::load(fixture.path.string());
+  req.keystone = {req.continuation, true, 4};
+  req.num_frames = 17;
+  req.num_inference_steps = 9; // Eight advancing video steps.
+  const auto plan = resolve_plan(req);
+  CHECK(plan.aligned_frames == 56 && plan.sampling_frames == 56);
+  CHECK(plan.continuation.tail_padding_frames == 17);
+  req.keystone.capstone_lock_after_steps = 8;
+  CHECK(rejects([&] { resolve_plan(req); }));
+  req.keystone.capstone_lock_after_steps = -1;
+  CHECK(rejects([&] { resolve_plan(req); }));
+  req.keystone.capstone_lock_after_steps = 0;
+  CHECK(resolve_plan(req).continuation.tail_padding_frames == 17);
+  req.keystone.capstone = false;
+  CHECK(resolve_plan(req).sampling_frames == 39);
+  req.continuation_overlap_frames = 5;
+  CHECK(rejects([&] { resolve_plan(req); }));
+  req.continuation_overlap_frames = 22;
+  for (int mode = 0; mode < 6; ++mode) {
+    auto bad = req;
+    if (mode == 0) bad.end_anchor_latents = req.continuation;
+    if (mode == 1) bad.end_anchor_path = "end.png";
+    if (mode == 2) bad.continuation_source_noise = .7f;
+    if (mode == 3) bad.skip_every = 2;
+    if (mode == 4) bad.still_image = true;
+    if (mode == 5) {
+      auto source = std::make_shared<LatentClip>(*req.continuation);
+      source->sampled = false;
+      bad.keystone.source = source;
+    }
+    CHECK(rejects([&] { resolve_plan(bad); }));
+  }
+  req.continuation.reset(); // Dormant on a fresh first shot; reference remains attached.
+  req.num_frames = 39;
+  CHECK(resolve_plan(req).sampling_frames == 39);
+}
+
 SLOPFAB_TEST(source_initialized_middle_and_schedule) {
   using namespace slopfab;
   LatentFixture fixture;

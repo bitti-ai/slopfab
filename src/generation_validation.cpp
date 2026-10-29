@@ -102,6 +102,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           "cache settings must be finite and nonnegative");
   const bool step_cache = r.cache_threshold > 0 || r.skip_every > 0;
   const bool caches = step_cache || r.block_cache_span > 0 || r.motion_cache.active();
+  require(!r.keystone.source ||
+              (!caches && o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
+          "keystone requires denoising from fresh noise without approximate caches");
   require(!r.bridge ||
               (!caches && o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
           "latent bridge requires denoising from fresh noise without approximate caches");
