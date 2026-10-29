@@ -67,10 +67,7 @@
 #include "slopfab/dit/transformer.h"
 #include "slopfab/generate.h"
 #include "slopfab/vae/vit_decoder.h"
-#include "slopfab/vae/sol_h3.h"
-#if SLOPFAB_WITH_CUDA
 #include "slopfab/cuda/sol_h3_vae.h"
-#endif
 #endif
 
 #include "commands.h"

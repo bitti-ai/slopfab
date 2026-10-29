@@ -183,11 +183,11 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
       throw std::runtime_error("Sol-H3-VAE requires 256-thread Vulkan workgroups");
     std::vector<uint32_t> module(sizeof(detail::kTensorSolVaeSpirv) / 4);
     std::memcpy(module.data(), detail::kTensorSolVaeSpirv, sizeof(detail::kTensorSolVaeSpirv));
-    ComputePipelineOptions options;
-    options.storage_binding_count = 8;
-    options.push_constant_bytes = 64;
-    options.local_size[0] = 256;
-    sol_vae_pipeline = ComputePipeline::create(input, module, options);
+    ComputePipelineOptions sol_options;
+    sol_options.storage_binding_count = 8;
+    sol_options.push_constant_bytes = 64;
+    sol_options.local_size[0] = 256;
+    sol_vae_pipeline = ComputePipeline::create(input, module, sol_options);
   }
   if (has(TensorPipelineSet::kReference)) {
     if (input.info().max_compute_workgroup_invocations < 256 ||

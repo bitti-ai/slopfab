@@ -21,7 +21,7 @@ p.add_argument("library", type=Path)
 p.add_argument("root", type=Path)
 p.add_argument("backend", choices=("cuda", "vulkan"))
 p.add_argument("--frames", type=int, default=22)
-p.add_argument("--video-vae", type=Path, help="override video decoder, e.g. Sol-H3-VAE (CUDA)")
+p.add_argument("--video-vae", type=Path, help="override video decoder, e.g. Sol-H3-VAE (CUDA/Vulkan)")
 a = p.parse_args()
 if a.frames < 22 or a.frames % 17 != 5:
     p.error("frames must be 17*k+5 and at least 22")

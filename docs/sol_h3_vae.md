@@ -1,9 +1,9 @@
 # Sol-H3-VAE video decoding
 
 Slopfab supports the released [Sol-H3-VAE checkpoint](https://huggingface.co/Efficient-Large-Model/Sol-H3-VAE)
-through native CUDA in the CLI and DLL (C API 1.44). Python, PyTorch, Triton and
-FlashAttention Python packages are not runtime dependencies. Vulkan is currently
-unsupported for this decoder and is rejected explicitly.
+through native CUDA and Vulkan in the CLI and DLL (C API 1.44). Python, PyTorch,
+Triton and FlashAttention Python packages are not runtime dependencies. The Vulkan
+implementation also builds and runs with CUDA disabled.
 
 The checkpoint is detected from tensor names and validated against the released
 24-layer, width-2048 architecture. The original F32 checkpoint works directly;
@@ -28,6 +28,17 @@ slopfab_request_set_model_path(request, SLOPFAB_MODEL_VIDEO_VAE, original_vae);
 slopfab_request_set_model_path(request, SLOPFAB_MODEL_VIDEO_DECODER, sol_vae);
 slopfab_request_set_inference_backend(request, SLOPFAB_INFERENCE_CUDA);
 ```
+
+For Vulkan, select the backend and arithmetic mode on the same request:
+
+```c
+slopfab_request_set_inference_backend(request, SLOPFAB_INFERENCE_VULKAN);
+slopfab_request_set_vulkan_arithmetic(request, SLOPFAB_VULKAN_ARITHMETIC_PORTABLE);
+```
+
+The equivalent CLI flags are `--inference-backend vulkan --vulkan-arithmetic portable`.
+Sol also runs on devices accepted by the existing exact-mode capability checks,
+but does not promise bit-identical output across backends in either mode.
 
 Setting `SLOPFAB_MODEL_VIDEO_DECODER` to an empty path clears the override.
 Text-only generation can also select Sol directly as `VIDEO_VAE`/`--vae` when
@@ -59,7 +70,12 @@ use one temporal latent and produce one frame. Attention matrices are bounded
 by window size; feed-forward activations are processed in 512-row chunks.
 Weights occupy about 3.03 GiB on the GPU, with additional memory proportional
 to clip length and resolution. There is no automatic CPU fallback or temporal
-chunking; an oversized decode reports an allocation error.
+chunking; an oversized decode reports an allocation or device-limit error.
+Vulkan additionally respects the device's storage-buffer and dispatch limits.
+It uses the existing blocked attention kernels and BF16 GEMM path, including
+cooperative matrix acceleration when available and scalar GEMM otherwise.
+Hardware validation so far covers an RTX 5090; AMD and Intel GPUs have not
+been tested with this decoder.
 
 The transformer uses BF16 matrices/operands and FP32 residuals, matching the
 upstream reference's mixed precision. Input embedding and output projection
@@ -79,19 +95,25 @@ During Sol decoding, DLL `VIDEO_DECODE` callbacks report completed layers from
 Four real-checkpoint comparisons against upstream `engine="ref"` covered latent
 shapes `(T,H,W)` of `(1,2,3)`, `(5,4,6)`, `(6,17,19)` and `(11,3,5)`.
 These exercise stills, complete and partial temporal blocks, spatial edges,
-shifted windows and cross-block global tokens. RGB PSNR was 58.31–61.02 dB;
-frame counts matched and all pixels were finite. This compares implementations
+shifted windows and cross-block global tokens. RGB PSNR was 58.31-61.02 dB
+for CUDA and 58.46-61.10 dB for Vulkan; frame counts matched and all pixels
+were finite. This compares implementations
 of Sol, not Sol against the original H3 decoder.
 
 On an RTX 5090, synthetic `(35,48,80)` latents produced 119 frames at 1280x768
 in 3.94 seconds (3.90 seconds on the second decode), excluding a 2.28-second
-checkpoint load. This is a local timing, not a general speed guarantee.
+checkpoint load. These are local timings, not general speed guarantees.
 
 Reproduce the reference comparison with torch, safetensors and Diffusers in a
 test environment and the downloaded upstream `code/sol_h3_vae` sources:
 
 ```sh
 python tools/sol_h3_vae_reference.py --weights sol_h3_vae.safetensors --config ref/upstream-h3/vae/config.json --reference-code /path/to/code/sol_h3_vae --out build/sol-vae-validation --cli build/Release/slopfab.exe
-python tools/sol_h3_vae_smoke.py build/Release/slopfab.dll sol_h3_vae.safetensors
-python tools/latent_archive_upscale_smoke.py build/Release/slopfab.dll . cuda --video-vae sol_h3_vae.safetensors
+python tools/sol_h3_vae_smoke.py build/Release/slopfab.dll sol_h3_vae.safetensors --backend vulkan
+python tools/latent_archive_upscale_smoke.py build/Release/slopfab.dll . vulkan --video-vae sol_h3_vae.safetensors
 ```
+
+Add `--backend vulkan --compare-only` to the reference command to reuse saved
+reference pixels and validate Vulkan. Both backends passed DLL progress,
+cancellation/recovery, still/video and archive upscaling checks (1.5x, 2x, 4x
+and repeated upscaling with audio preserved).
