@@ -12,6 +12,7 @@ from continuation_smoke import Output
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("library", type=Path)
 p.add_argument("weights", type=Path)
+p.add_argument("--backend", choices=["cuda", "vulkan"], default="cuda")
 p.add_argument("--root", type=Path, default=Path("."))
 a = p.parse_args()
 dll = C.CDLL(str(a.library.resolve()))
@@ -62,6 +63,8 @@ for still, stop in [(False, False), (False, True), (True, False)]:
             cancel(generation)
 
     try:
+        check(bind("request_set_inference_backend", [handle, C.c_int])(request, a.backend == "vulkan"))
+        check(bind("request_set_vulkan_arithmetic", [handle, C.c_int])(request, 1))
         check(bind("request_set_synthetic_latents", [handle, C.c_int])(request, 1))
         check(bind("request_set_resolution", [handle, C.c_int, C.c_int])(request, 64, 32))
         check(bind("request_set_frames", [handle, C.c_int])(request, 22))

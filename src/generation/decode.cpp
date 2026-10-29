@@ -38,6 +38,9 @@
 #include "slopfab/vae/audio_decoder.h"
 #include "slopfab/vae/vit_decoder.h"
 #include "slopfab/vae/sol_h3.h"
+#if SLOPFAB_WITH_VULKAN
+#include "slopfab/vulkan/sol_h3_vae.h"
+#endif
 #if SLOPFAB_WITH_CUDA
 #include "slopfab/cuda/sol_h3_vae.h"
 #endif
@@ -138,33 +141,46 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     const auto load_started = Clock::now();
 
     if (vae::is_sol_h3_vae(vae_file)) {
-      if (options.inference_backend != DeviceBackend::kCuda)
-        throw std::invalid_argument("Sol-H3-VAE currently requires the CUDA backend");
-#if SLOPFAB_WITH_CUDA
-      cuda::SolH3Decoder decoder;
-      decoder.load(vae_file);
-      timings.seconds_weight_load = seconds_since(load_started);
-      s_load.stop();
-      if (options.verbose)
-        std::printf("video vae   Sol-H3-VAE CUDA %.2f GiB on device\n",
-                    double(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
       bool cancelled = false;
-      decoder.progress = [&](int done, int total) {
-        cancelled = !notify(RunStage::kVideoDecode, done, total);
-        return !cancelled;
-      };
-      const auto compute_started = Clock::now();
-      try {
-        video = decoder.decode(latents.data(), layout.num_latent_frames,
-                               decode_height, decode_width, mean, std_dev);
-      } catch (...) {
-        if (cancelled) return stop("video decode");
-        throw;
-      }
-      timings.seconds_compute = seconds_since(compute_started);
-#else
-      throw std::invalid_argument("Sol-H3-VAE requires a build with CUDA enabled");
+      auto decode_sol = [&](auto& decoder, const char* backend) {
+        decoder.load(vae_file);
+        timings.seconds_weight_load = seconds_since(load_started);
+#if SLOPFAB_WITH_CUDA
+        s_load.stop();
 #endif
+        if (options.verbose)
+          std::printf("video vae   Sol-H3-VAE %s %.2f GiB on device\n", backend,
+                      double(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
+        decoder.progress = [&](int done, int total) {
+          cancelled = !notify(RunStage::kVideoDecode, done, total);
+          return !cancelled;
+        };
+        const auto compute_started = Clock::now();
+        try {
+          video = decoder.decode(latents.data(), layout.num_latent_frames,
+                                 decode_height, decode_width, mean, std_dev);
+        } catch (...) {
+          if (!cancelled) throw;
+        }
+        timings.seconds_compute = seconds_since(compute_started);
+      };
+      if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
+        cuda::SolH3Decoder decoder;
+        decode_sol(decoder, "CUDA");
+#else
+        throw std::logic_error("CUDA inference compiled out after validation");
+#endif
+      } else {
+#if SLOPFAB_WITH_VULKAN
+        auto device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
+        vulkan::SolH3Decoder decoder(device);
+        decode_sol(decoder, "Vulkan");
+#else
+        throw std::logic_error("Vulkan inference compiled out after validation");
+#endif
+      }
+      if (cancelled) return stop("video decode");
     } else if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
       vae::ViTDecoder decoder;

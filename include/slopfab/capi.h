@@ -232,7 +232,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major);
 #define SLOPFAB_MODEL_TOKENIZER 2
 #define SLOPFAB_MODEL_VIDEO_VAE 3
 #define SLOPFAB_MODEL_AUDIO_VAE 4
-/* Since 1.44: optional video decoder override (e.g. Sol-H3-VAE, CUDA).
+/* Since 1.44: optional video decoder override (e.g. Sol-H3-VAE, CUDA/Vulkan).
  * VIDEO_VAE still supplies reference/anchor encoding. Empty path clears override. */
 #define SLOPFAB_MODEL_VIDEO_DECODER 5
 

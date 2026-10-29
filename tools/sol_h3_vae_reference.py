@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--reference-code", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--cli")
+    parser.add_argument("--backend", choices=["cuda", "vulkan"], default="cuda")
     parser.add_argument("--compare-only", action="store_true")
     args = parser.parse_args()
     output = Path(args.out)
@@ -49,8 +50,9 @@ def main():
     results = []
     for t, h, w in cases:
         name = f"t{t}-h{h}-w{w}"
-        native = output / f"{name}-native.safetensors"
-        subprocess.run([args.cli, "decode", "--vae", args.weights, "--inference-backend", "cuda",
+        native = output / f"{name}-native-{args.backend}.safetensors"
+        subprocess.run([args.cli, "decode", "--vae", args.weights, "--inference-backend", args.backend,
+                        "--vulkan-arithmetic", "portable",
                         "--latent", str(output / f"{name}-latent.safetensors"),
                         "--dump", str(native), "--out", str(output / f"{name}.y4m")], check=True)
         ref = load_file(output / f"{name}-ref.safetensors")["pixels"].numpy()
@@ -63,7 +65,7 @@ def main():
         results.append(dict(case=name, psnr=psnr, max_error=float(np.abs(error).max())))
         print(results[-1], flush=True)
         assert psnr >= 40, f"reference mismatch: {results[-1]}"
-    (output / "comparison.json").write_text(json.dumps(results, indent=2))
+    (output / f"comparison-{args.backend}.json").write_text(json.dumps(results, indent=2))
 
 
 if __name__ == "__main__":

@@ -19,8 +19,6 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     decoder.open(r.video_decode_path());
     if (vae::is_sol_h3_vae(decoder)) {
       vae::validate_sol_h3_vae(decoder);
-      require(o.inference_backend == DeviceBackend::kCuda,
-              "Sol-H3-VAE currently requires the CUDA backend");
     }
   }
   if (p.model.family == "h3" && (!r.conditioning_image_paths().empty() ||

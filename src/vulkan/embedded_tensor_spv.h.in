@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 namespace slopfab::vulkan::detail {
+inline constexpr uint8_t kTensorSolVaeSpirv[] = {@SLOPFAB_TENSOR_SOL_VAE_SPV_BYTES@};
 inline constexpr uint8_t kTensorOpsSpirv[] = {@SLOPFAB_TENSOR_OPS_SPV_BYTES@};
 inline constexpr uint8_t kTensorOpsDenormSpirv[] = {
     @SLOPFAB_TENSOR_OPS_DENORM_SPV_BYTES@};

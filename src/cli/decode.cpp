@@ -27,6 +27,7 @@
 // is not, so a build with SLOPFAB_ENABLE_CUDA=OFF could not see this type at
 // all. It is a core header and costs a CPU-only build nothing.
 #include "slopfab/attention_mode.h"
+#include "slopfab/vae/sol_h3.h"
 #include "slopfab/dtype.h"
 #include "slopfab/json.h"
 #include "slopfab/dit/checkpoint.h"
@@ -45,6 +46,7 @@
 
 #if SLOPFAB_WITH_VULKAN
 #include "slopfab/vulkan/runtime.h"
+#include "slopfab/vulkan/sol_h3_vae.h"
 #include "slopfab/vulkan/yuv_converter.h"
 #include "slopfab/vulkan/vae_decoder.h"
 #include "../generation/helpers.h"
@@ -83,6 +85,9 @@ uint64_t decoder_bytes(const slopfab::cuda::SolH3Decoder& decoder) {
 }
 #endif
 #if SLOPFAB_WITH_VULKAN
+uint64_t decoder_bytes(const slopfab::vulkan::SolH3Decoder& decoder) {
+  return decoder.weight_bytes();
+}
 uint64_t decoder_bytes(const slopfab::vulkan::VideoVaeDecoder& decoder) {
   return decoder.persistent_bytes();
 }
@@ -355,12 +360,16 @@ int cmd_decode(int argc, char** argv) {
     return 0;
   };
   if (slopfab::vae::is_sol_h3_vae(ckpt)) {
-    if (backend != "cuda")
-      throw std::invalid_argument("Sol-H3-VAE currently requires the CUDA backend");
+#if SLOPFAB_WITH_VULKAN
+    if (backend == "vulkan") {
+      auto device = slopfab::generation::create_vulkan_inference_device(portable_arithmetic);
+      return run_decode([&] { return slopfab::vulkan::SolH3Decoder(device); });
+    }
+#endif
 #if SLOPFAB_WITH_CUDA
     return run_decode([] { return slopfab::cuda::SolH3Decoder(); });
 #else
-    throw std::invalid_argument("Sol-H3-VAE requires a build with CUDA enabled");
+    throw std::invalid_argument("no Sol-H3-VAE inference backend available");
 #endif
   }
 #if SLOPFAB_WITH_VULKAN

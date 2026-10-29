@@ -1,0 +1,128 @@
+// Sol-H3-VAE pointwise/packing operations. BF16 is stored as packed uint words.
+// Rebuild: glslang -V --target-env vulkan1.2 -o tensor_sol_vae.comp.spv tensor_sol_vae.comp
+#version 450
+layout(local_size_x=256) in;
+layout(push_constant) uniform Params { uint p[16]; } pc;
+layout(set=0,binding=0,std430) buffer B0 { uint b0[]; };
+layout(set=0,binding=1,std430) buffer B1 { uint b1[]; };
+layout(set=0,binding=2,std430) buffer B2 { uint b2[]; };
+layout(set=0,binding=3,std430) buffer B3 { uint b3[]; };
+layout(set=0,binding=4,std430) buffer B4 { uint b4[]; };
+layout(set=0,binding=5,std430) buffer B5 { uint b5[]; };
+layout(set=0,binding=6,std430) buffer B6 { uint b6[]; };
+layout(set=0,binding=7,std430) buffer B7 { uint b7[]; };
+shared float sums[256];
+shared float qs[64], ks[64], vs[64];
+uint bitsbf(float x) {
+  uint u=floatBitsToUint(x);
+  return ((u&0x7fffffffu)>0x7f800000u) ? 0x7fc0u : (u+0x7fffu+((u>>16)&1u))>>16;
+}
+float bf(float x) { return uintBitsToFloat(bitsbf(x)<<16); }
+uint pairbf(float a,float b) { return bitsbf(a)|(bitsbf(b)<<16); }
+float bf0(uint i) { return uintBitsToFloat(((b0[i/2]>>((i&1)*16))&65535u)<<16); }
+float reduce_sum(float v) {
+  uint l=gl_LocalInvocationID.x; sums[l]=v; barrier();
+  for(uint s=128;s>0;s/=2) { if(l<s) sums[l]+=sums[l+s]; barrier(); }
+  float result=sums[0]; barrier(); return result;
+}
+void main() {
+  uint g=gl_WorkGroupID.x+gl_WorkGroupID.y*pc.p[15], l=gl_LocalInvocationID.x;
+  uint i=g*256+l, op=pc.p[0], count=pc.p[1], first=pc.p[2];
+  if(op==0) { // Planar normalized FP32 latent -> padded token-major BF16 rows.
+    if(i>=pc.p[4]*12) return;
+    uint row=i/12,c=(i%12)*2; float a=0,b=0;
+    if(row<count) {
+      precise float ma=uintBitsToFloat(b0[c*pc.p[3]+first+row])*uintBitsToFloat(b2[c]);
+      precise float mb=uintBitsToFloat(b0[(c+1)*pc.p[3]+first+row])*uintBitsToFloat(b2[c+1]);
+      a=ma+uintBitsToFloat(b1[c]); b=mb+uintBitsToFloat(b1[c+1]);
+    }
+    b3[i]=pairbf(a,b);
+  } else if(op==1) { // BF16-rounded input embedding in the FP32 residual stream.
+    if(i<count*2048) b3[first*2048+i]=floatBitsToUint(bf(uintBitsToFloat(b0[i])));
+  } else if(op==2) { // Four learned registers and one zero per native block.
+    if(i<count*2048) b3[first*2048+i]=(i/2048)%5==4 ? 0u :
+        floatBitsToUint(bf(uintBitsToFloat(b0[((i/2048)%5)*2048+i%2048])));
+  } else if(op==3 || op==9) { // RMSNorm BF16 / final LayerNorm FP32.
+    uint dim=pc.p[3], row=g;
+    if(row>=count) {
+      if(op==3) for(uint c=l;c<dim/2;c+=256) b3[row*(dim/2)+c]=0u;
+      else for(uint c=l;c<dim;c+=256) b3[row*dim+c]=0u;
+      return;
+    }
+    float mean=0;
+    if(op==9) {
+      float sum=0; for(uint c=l;c<dim;c+=256) sum+=uintBitsToFloat(b0[(first+row)*dim+c]);
+      mean=reduce_sum(sum)/float(dim);
+    }
+    float sq=0;
+    for(uint c=l;c<dim;c+=256) { float a=uintBitsToFloat(b0[(first+row)*dim+c])-mean; sq+=a*a; }
+    float inv=inversesqrt(reduce_sum(sq)/float(dim)+1e-5);
+    if(op==3) {
+      for(uint c=2*l;c<dim;c+=512) {
+        float a=uintBitsToFloat(b0[(first+row)*dim+c])*inv*uintBitsToFloat(b1[c]);
+        float b=uintBitsToFloat(b0[(first+row)*dim+c+1])*inv*uintBitsToFloat(b1[c+1]);
+        b3[(row*dim+c)/2]=pairbf(a,b);
+      }
+    } else {
+      for(uint c=l;c<dim;c+=256) {
+        precise float a=(uintBitsToFloat(b0[(first+row)*dim+c])-mean)*inv*uintBitsToFloat(b1[c]);
+        b3[row*dim+c]=floatBitsToUint(a+uintBitsToFloat(b2[c]));
+      }
+    }
+  } else if(op==4) { // Per-head interleaved QKV, affine-free RMSNorm, local RoPE.
+    uint row=g/32, head=g%32, src=row*6144+head*192;
+    float q=0,k=0;
+    if(l<64) { q=bf0(src+l); k=bf0(src+64+l); vs[l]=bf0(src+128+l); }
+    float rq=inversesqrt(reduce_sum(q*q)/64.0+1e-5);
+    float rk=inversesqrt(reduce_sum(k*k)/64.0+1e-5);
+    if(l<64) { qs[l]=bf(q*rq); ks[l]=bf(k*rk); }
+    barrier();
+    if(l<32) {
+      float qo[2],ko[2];
+      for(uint j=0;j<2;++j) {
+        uint c=2*l+j; qo[j]=qs[c]; ko[j]=ks[c];
+        if(first+row<pc.p[3] && c<48) {
+          uint pos=(first+row)*48+c, other=c<24 ? c+24 : c-24;
+          float co=bf(uintBitsToFloat(b1[pos])), si=bf(uintBitsToFloat(b2[pos]))*(c<24 ? -1.0 : 1.0);
+          qo[j]=bf(bf(qo[j]*co)+bf(qs[other]*si));
+          ko[j]=bf(bf(ko[j]*co)+bf(ks[other]*si));
+        }
+      }
+      uint dst=((first+row)*2048+head*64)/2+l;
+      b3[dst]=pairbf(qo[0],qo[1]); b4[dst]=pairbf(ko[0],ko[1]); b5[dst]=pairbf(vs[2*l],vs[2*l+1]);
+    }
+  } else if(op==5) { // FP32 residual plus BF16 projected branch times FP32 layer scale.
+    if(i<count*2048) {
+      uint dst=first*2048+i;
+      precise float scaled=bf0(i)*uintBitsToFloat(b1[i%2048]);
+      b3[dst]=floatBitsToUint(uintBitsToFloat(b3[dst])+scaled);
+    }
+  } else if(op==6) {
+    if(i>=count*4096) return;
+    uint row=i/4096,c=(i%4096)*2; float outv[2];
+    for(uint j=0;j<2;++j) {
+      float a=bf0(row*16384+c+j), b=bf0(row*16384+8192+c+j);
+      outv[j]=bf(a/(1.0+exp(-a)))*b;
+    }
+    b3[i]=pairbf(outv[0],outv[1]);
+  } else if(op==7) { // Packed BF16 indexed gather, also into rank-3 attention inputs.
+    if(i>=count*1024) return;
+    uint row=b1[first+i/1024];
+    b3[i]=row<pc.p[3] ? b0[row*1024+i%1024] : 0u;
+  } else if(op==8) { // Indexed scatter of selected query rows (unique CPU-produced indices).
+    if(i>=count*1024) return;
+    uint row=b1[first+i/1024];
+    if(row<pc.p[4]) b3[row*1024+i%1024]=b0[pc.p[3]*1024+i];
+  } else if(op==10) { // Patch output -> planar RGB; remove three frames per native block.
+    if(i>=count*3072) return;
+    uint H=pc.p[3], W=pc.p[4], F=pc.p[5], row=first+i/3072,c=i%3072;
+    uint t=row/(H*W),y=(row/W)%H,x=row%W,ch=c/1024,phase=(c/256)%4;
+    if(t%5==0 && phase<3) return;
+    uint f=t*4+phase-3*(t/5+1),idx=(f*H*16+y*16+(c/16)%16)*W*16+x*16+c%16;
+    float means[3]=float[3](.485,.456,.406),stds[3]=float[3](.229,.224,.225);
+    precise float value=uintBitsToFloat(b0[i])*stds[ch]; value+=means[ch];
+    if(ch==0) b5[idx]=floatBitsToUint(value);
+    else if(ch==1) b6[idx]=floatBitsToUint(value);
+    else b7[idx]=floatBitsToUint(value);
+  }
+}

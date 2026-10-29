@@ -33,6 +33,7 @@ class PreparedNVFP4WeightView;
 class StreamedNVFP4WeightCache;
 
 enum class TensorPipelineSet : uint32_t {
+  kSolVae = 1u << 11,
   kMusic = 1u << 10,
   kCore = 1u << 0, // storage, conversion, GEMM, normalization and positions
   kVideo = 1u << 1,
@@ -45,7 +46,7 @@ enum class TensorPipelineSet : uint32_t {
   kSageAttention = 1u << 8,
   kTextAttention = 1u << 9,
   kLegacy = 0x3efu, // all historical defaults, excluding reference encoding
-  kAll = 0x7ffu,
+  kAll = 0xfffu,
 };
 
 constexpr TensorPipelineSet operator|(TensorPipelineSet a, TensorPipelineSet b) {
@@ -151,6 +152,10 @@ public:
   TensorBatch& operator=(const TensorBatch&) = delete;
 
   void copy(DeviceTensor& source, DeviceTensor& destination);
+  // Internal Sol-H3 decoder primitive. The decoder validates shapes/indices;
+  // write_mask identifies modified bindings, including in-place residuals.
+  void sol_vae_operation(DeviceTensor* const* tensors, uint32_t write_mask,
+                         const uint32_t* parameters, uint32_t groups);
   // Internal reference-encoder primitive. Parameters describe a validated
   // graph operation; callers own shape validation and must not alias output.
   void reference_operation(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,

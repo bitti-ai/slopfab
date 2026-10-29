@@ -28,6 +28,8 @@ if(SLOPFAB_ENABLE_VULKAN)
     generated/vulkan/embedded_tensor_spv.h @ONLY)
 
   add_library(slopfab_vulkan STATIC
+    src/vulkan/sol_h3_vae.cpp
+    src/vulkan/tensor_sol_vae.cpp
     src/vulkan/tensor_music.cpp
     src/music/vulkan_runtime.cpp
     src/music/yue_vulkan.cpp
