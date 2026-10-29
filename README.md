@@ -190,6 +190,8 @@ slopfab devices
 
 The API supports request validation, asynchronous generation, progress callbacks, cancellation, reusable model caches, still-image generation and latent continuation. Results are returned as decoded video pixels and audio samples; hosts can also supply decoded reference frames and PCM audio directly.
 
+Optional [TAEH3 generation previews](docs/generation_previews.md) expose small, silent RGB video previews during H3 denoising on CUDA and Vulkan (C API 1.46).
+
 ## Licensing
 
 MiniMax H3 model weights are licensed separately under their own **MiniMax H3 COMMUNITY LICENSE AGREEMENT**.

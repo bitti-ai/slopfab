@@ -2,6 +2,36 @@
 #include "slopfab/sampler/noise.h"
 #include "slopfab/generate.h"
 
+SLOPFAB_TEST_CATEGORY(denoise_preview_is_clean_and_does_not_change_trajectory, "synthetic") {
+  using namespace slopfab;
+  const auto layout = tiny_layout();
+  const auto indices = dit::build_indices(layout);
+  for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise}) {
+    sampler::FlowScheduler video(12), audio(3);
+    video.set_timesteps(4); audio.set_timesteps(4);
+    video.set_sampler(kind); audio.set_sampler(kind);
+    Transformer model;
+    auto in = make_denoise_inputs(layout,indices,video,audio);
+    std::vector<float> expected;
+    in.velocity = [&](int step, const RowTimesteps&, const float* x, const float*, float* v, float* a) {
+      const size_t count = size_t(layout.num_video_rows)*96;
+      std::fill_n(v,count,.25f); std::fill_n(a,size_t(layout.num_audio_rows)*32,-.5f);
+      expected.resize(count);
+      for (size_t i=0;i<count;++i) expected[i]=x[i]+video.sigmas()[step]*.25f;
+    };
+    const auto baseline = dit::denoise(model,in);
+    int calls = 0;
+    in.preview = [&](int step, const std::vector<float>& clean) {
+      CHECK(step == calls++);
+      CHECK_CLOSE(expected,clean,1e-6,"preview must precede scheduler noise");
+    };
+    const auto with_preview = dit::denoise(model,in);
+    CHECK(calls == 3);
+    CHECK(with_preview.video_rows == baseline.video_rows);
+    CHECK(with_preview.audio_rows == baseline.audio_rows);
+  }
+}
+
 SLOPFAB_TEST_CATEGORY(denoise_sampling_effect_updates_and_cancellation, "synthetic") {
   using namespace slopfab;
   using namespace slopfab::sampler;

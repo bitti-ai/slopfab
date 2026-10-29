@@ -297,6 +297,13 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       if (update.advance_audio && !inputs.pin_target_audio && !out.audio_rows.empty())
         audio_step_velocity = effect_audio.data();
     }
+    if (inputs.preview && update.advance_video) {
+      std::vector<float> clean(out.video_rows.size());
+      const float sigma = inputs.video_scheduler->sigmas()[update.video];
+      for (size_t j = 0; j < clean.size(); ++j)
+        clean[j] = all_video[cv+j] + sigma * video_step_velocity[j];
+      inputs.preview(i, clean);
+    }
     {
       // In place: FlowScheduler::step permits `out` to alias `sample`.
       cuda::HostSpan span("scheduler_step");

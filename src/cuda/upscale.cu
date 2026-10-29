@@ -100,6 +100,8 @@ __global__ void pointwise(const float* x, const float* y, const float* bias, flo
   if (p.op == kConv || p.op == kConv3d) {
     const float v = out[i] + bias[c];
     out[i] = p.leaky && v < 0 ? v * 0.2f : v;
+  } else if (p.op == kRelu) {
+    out[i] = fmaxf(x[i], 0);
   } else if (p.op == kConcat) {
     out[i] = c < p.input ? x[pixel * p.input + c] : y[pixel * (p.output - p.input) + c - p.input];
   } else if (p.op == kResidual) {

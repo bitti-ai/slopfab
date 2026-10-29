@@ -51,7 +51,9 @@ void main() {
     uint i = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256 + ly * 16 + lx;
     if (i >= p.count) return;
     uint c = i % p.output_channels, pixel = i / p.output_channels;
-    if (p.op == 1) {
+    if (p.op == 8) {
+      result[i] = max(x[i], 0);
+    } else if (p.op == 1) {
       result[i] = c < p.input_channels ? x[pixel * p.input_channels + c]
         : y[pixel * (p.output_channels - p.input_channels) + c - p.input_channels];
     } else if (p.op == 2) {

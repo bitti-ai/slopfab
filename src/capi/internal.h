@@ -399,6 +399,7 @@ inline void run_worker(slopfab_generation* gen) {
     options.on_progress = &progress_hook;
     options.on_samples = &samples_hook;
     options.hook_userdata = gen;
+    options.preview_cancelled = [gen] { return gen->cancel.load(); };
     const RunResult result = [&]() {
       if (gen->latent_upscale_source) {
         if (!progress_hook(RunStage::kStarting, -1, 0, gen))

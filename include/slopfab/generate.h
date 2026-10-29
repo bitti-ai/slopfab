@@ -12,6 +12,7 @@
 #pragma once
 
 #include <optional>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -79,7 +80,17 @@ enum class LatentSource {
   kSyntheticNoise,
 };
 
+struct GenerationPreview {
+  std::vector<uint8_t> rgb;
+  int frames = 0, width = 0, height = 0, step = 0;
+  double fps = 0;
+};
+
 struct RunOptions {
+  // Optional, best-effort H3 preview; never changes the sampled trajectory.
+  std::string preview_vae_path;
+  std::function<void(const GenerationPreview&)> on_preview;
+  std::function<bool()> preview_cancelled;
   SamplingEffect sampling_effect;
   std::shared_ptr<const LcsData> lcs_data;
   LcsSettings lcs;

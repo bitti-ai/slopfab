@@ -338,7 +338,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
                                           const sampler::FlowScheduler& audio,
                                           const ExactH3DenoiseProgress& progress,
                                           const ExactH3DenoiseBoundary& boundary,
-                                          const H3TransformerForwardReplayTaps* taps) {
+                                          const H3TransformerForwardReplayTaps* taps,
+                                          const std::function<void(int, const std::vector<float>&)>& preview) {
   if (!prepared())
     throw std::logic_error("Vulkan H3 denoise: not prepared");
   if (impl_->running)
@@ -591,6 +592,16 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
         result.cancelled = true;
         break;
       }
+      batch = impl_->context->begin_batch();
+    }
+    if (preview && update_step.advance_video) {
+      batch.submit().wait();
+      const size_t count = size_t(video_output) * c.transformer.video_dim;
+      std::vector<float> clean(count), velocity(count);
+      impl_->context->download(video_state, clean.data(), count);
+      impl_->context->download(s.video_velocity, velocity.data(), count);
+      for (size_t j = 0; j < count; ++j) clean[j] += video_sigma * velocity[j];
+      preview(static_cast<int>(step), clean);
       batch = impl_->context->begin_batch();
     }
     if (renoise) {

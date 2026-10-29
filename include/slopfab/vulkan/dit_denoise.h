@@ -84,7 +84,8 @@ public:
   ExactH3DenoiseResult run(const sampler::FlowScheduler& video, const sampler::FlowScheduler& audio,
                            const ExactH3DenoiseProgress& progress = {},
                            const ExactH3DenoiseBoundary& boundary = {},
-                           const H3TransformerForwardReplayTaps* taps = nullptr);
+                           const H3TransformerForwardReplayTaps* taps = nullptr,
+                           const std::function<void(int, const std::vector<float>&)>& preview = {});
 
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;

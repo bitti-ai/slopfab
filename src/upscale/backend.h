@@ -30,7 +30,8 @@ enum Operation : uint32_t {
   kConv3d,
   kDepthwiseTemporal,
   kGroupNormSilu,
-  kBilinear
+  kBilinear,
+  kRelu
 };
 
 struct Parameters {

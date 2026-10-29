@@ -1,5 +1,6 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
+#include "generation/preview.h"
 
 #include <algorithm>
 #include <chrono>
@@ -893,6 +894,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       audio_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
 
       dit::DenoiseInputs in;
+      PreviewDecoder preview(options,live,plan.sampling_frames/24.0);
+      if (!request.still_image && options.on_preview && !options.preview_vae_path.empty())
+        in.preview = [&](int step, const std::vector<float>& clean) { preview(step,clean); };
       in.sampling_effect = sampling_effect;
       in.inpaint = inpaint.get();
       in.continuation = continuation_constraint.get();
@@ -1162,6 +1166,10 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       bool cancel_requested = false;
       if (!notify(RunStage::kDenoising, -1, total_steps))
         return stop("denoising");
+      PreviewDecoder preview(options,live,plan.sampling_frames/24.0);
+      std::function<void(int,const std::vector<float>&)> preview_hook;
+      if (!request.still_image && options.on_preview && !options.preview_vae_path.empty())
+        preview_hook = [&](int step, const std::vector<float>& clean) { preview(step,clean); };
       const vulkan::ExactH3DenoiseResult out =
           model.run(video_sched, audio_sched, [&](uint32_t step, uint32_t steps) {
             if (options.verbose) {
@@ -1175,7 +1183,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
               return true;
             cancel_requested = true;
             return false;
-          });
+          }, {}, nullptr, preview_hook);
       if (options.verbose)
         std::printf("\n");
       if (cancel_requested || out.cancelled)

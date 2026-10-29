@@ -91,8 +91,21 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 45
+#define SLOPFAB_CAPI_VERSION_MINOR 46
 #define SLOPFAB_CAPI_VERSION_PATCH 0
+
+/* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
+ * is borrowed for the callback only; copy it before returning. Callbacks run
+ * on the generation thread and stop before wait/destroy returns. step is zero
+ * based; fps spans the sampled segment (not any retained continuation source).
+ * Preview errors disable previews without failing the generation. */
+typedef struct slopfab_preview {
+  const uint8_t* rgb;
+  size_t byte_count;
+  int32_t frames, width, height, step;
+  double fps;
+} slopfab_preview;
+typedef void (SLOPFAB_CALL *slopfab_preview_fn)(const slopfab_preview*, void* userdata);
 
 /* Packed as (major << 24) | (minor << 12) | patch.
  *
@@ -519,6 +532,10 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_video_decode_timings(
  * strings need not outlive the call, and every setter rejects a null handle
  * with SLOPFAB_ERR_INVALID_ARGUMENT rather than faulting. */
 SLOPFAB_C_API slopfab_request* SLOPFAB_CALL slopfab_request_create(void);
+/* Null/empty path or callback disables previews. The callback and userdata
+ * must remain valid until the generation is destroyed. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_preview(
+    slopfab_request*, const char* vae_path, slopfab_preview_fn, void* userdata);
 SLOPFAB_C_API void SLOPFAB_CALL slopfab_request_destroy(slopfab_request* request);
 
 /* UTF-8, and on Windows genuinely UTF-8 rather than the active code page. */

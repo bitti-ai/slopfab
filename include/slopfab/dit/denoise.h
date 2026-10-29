@@ -96,6 +96,8 @@ struct DenoiseInputs {
   // this null; it never changes the trajectory and exists to pin every durable
   // scheduler boundary without duplicating the canonical loop in a test.
   DenoiseBoundaryFn boundary;
+  // Read-only clean prediction before a scheduler update (including re-noise).
+  std::function<void(int, const std::vector<float>&)> preview;
 };
 
 struct DenoiseOutputs {

@@ -29,6 +29,21 @@
 #include "latent_fixture.h"
 #include "lcs_fixture.h"
 
+SLOPFAB_TEST(capi_preview_is_optional_and_does_not_change_plan) {
+  CHECK(slopfab_request_set_preview(nullptr,nullptr,nullptr,nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  auto* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  slopfab_plan before{}, after{};
+  CHECK(slopfab_resolve_plan(request,&before) == SLOPFAB_OK);
+  auto callback = +[](const slopfab_preview*, void*) {};
+  CHECK(slopfab_request_set_preview(request,"missing-taeh3.safetensors",callback,nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request,&after) == SLOPFAB_OK);
+  CHECK(after.aligned_frames == before.aligned_frames);
+  CHECK(after.canvas_width == before.canvas_width && after.canvas_height == before.canvas_height);
+  CHECK(slopfab_request_set_preview(request,nullptr,nullptr,nullptr) == SLOPFAB_OK);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_lcs_settings_snapshot_and_mask) {
   auto* request = slopfab_request_create();
   LcsFixture fixture;

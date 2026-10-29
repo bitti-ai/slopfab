@@ -6,6 +6,7 @@ target_compile_definitions(slopfab_core PUBLIC
 # a Vulkan-only build must not include or link CUDA headers or libraries.
 if(TARGET slopfab_cuda OR TARGET slopfab_vulkan)
   add_library(slopfab_generation STATIC
+    src/vae/taeh3.cpp
     src/generation/lcs_calibration.cpp
     src/upscale.cpp
     src/latent_upscale.cpp
@@ -17,6 +18,10 @@ if(TARGET slopfab_cuda OR TARGET slopfab_vulkan)
   target_sources(slopfab_generation PRIVATE src/generation/text_export.cpp)
   target_sources(slopfab_generation PRIVATE src/generation/refmod_export.cpp)
   target_link_libraries(slopfab_generation PUBLIC slopfab_core)
+  if(SLOPFAB_BUILD_TESTS)
+    add_executable(slopfab_taeh3_probe tools/taeh3_probe.cpp)
+    target_link_libraries(slopfab_taeh3_probe PRIVATE slopfab_generation)
+  endif()
   set_target_properties(slopfab_generation PROPERTIES POSITION_INDEPENDENT_CODE ON)
   if(TARGET slopfab_cuda)
     target_sources(slopfab_generation PRIVATE src/moss/generate.cpp src/fibo/generate.cpp src/fibo/render.cpp)

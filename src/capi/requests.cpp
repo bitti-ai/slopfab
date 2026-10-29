@@ -42,6 +42,22 @@ int attach_end_anchor(slopfab_request* request, std::shared_ptr<const slopfab::L
 }
 }
 extern "C" {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_preview(
+    slopfab_request* request, const char* path, slopfab_preview_fn callback, void* userdata) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT,"preview: null request");
+  return guarded([&] {
+    request->options.preview_vae_path = path ? path : "";
+    request->options.on_preview = {};
+    if (callback && !request->options.preview_vae_path.empty())
+      request->options.on_preview = [callback,userdata](const slopfab::GenerationPreview& value) {
+        const slopfab_preview preview{value.rgb.data(),value.rgb.size(),value.frames,
+                                      value.width,value.height,value.step,value.fps};
+        callback(&preview,userdata);
+      };
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs(slopfab_request* request, const char* path,
                                                        const char* json) {
   if (!request)
