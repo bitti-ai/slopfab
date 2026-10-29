@@ -222,9 +222,6 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.num_inference_steps = static_cast<int>(tail.size());
   }
   plan.video_sigmas = video.sigmas();
-  if (request.continuation && request.keystone.source && request.keystone.capstone &&
-      size_t(request.keystone.capstone_lock_after_steps) >= video.timesteps().size())
-    throw std::invalid_argument("capstone lock delay must be smaller than the number of video updates");
   plan.audio_sigmas = audio.sigmas();
   plan.video_timesteps = video.timesteps();
   plan.audio_timesteps = audio.timesteps();

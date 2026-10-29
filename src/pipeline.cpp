@@ -353,6 +353,9 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   }
 
   resolve_sampling_plan(request, plan);
+  if (request.continuation && request.keystone.source && request.keystone.capstone &&
+      size_t(request.keystone.capstone_lock_after_steps) >= plan.video_timesteps.size())
+    throw std::invalid_argument("capstone lock delay must be smaller than the number of video updates");
 
   if (plan.video_timesteps.empty() || plan.audio_timesteps.empty()) {
     throw std::runtime_error("schedule collapsed to zero model evaluations");

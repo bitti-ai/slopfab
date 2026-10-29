@@ -2,6 +2,7 @@
 
 python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . [cuda|vulkan]
 Add --source-noise 0.7 to test source initialization and the pure-noise endpoint.
+Use --keystone instead to test persistent original-clip anchors and late locking.
 Exercises a one-sided lead-in, continuation to another ending, retained-handle
 and file ownership, unequal context lengths, and further forward continuation.
 """
@@ -21,12 +22,15 @@ def main():
     parser.add_argument("root", type=pathlib.Path)
     parser.add_argument("backend", nargs="?", default="cuda", choices=("cuda", "vulkan"))
     parser.add_argument("--source-noise", type=float)
+    parser.add_argument("--keystone", action="store_true")
     parser.add_argument("--steps", type=int, default=3, help="Sigma grid points including terminal zero")
     args = parser.parse_args()
     if args.steps < 2:
         parser.error("steps must be at least two")
     if args.source_noise is not None and not 0 < args.source_noise < 1:
         parser.error("source-noise must be in (0,1) to test a nontrivial mixture")
+    if args.keystone and (args.source_noise is not None or args.steps < 3):
+        parser.error("keystone needs at least three sigma points and no source-noise")
     dll = C.CDLL(str(args.library.resolve()))
     root, backend = args.root.resolve(), args.backend
     handle = C.c_void_p
@@ -61,6 +65,10 @@ def main():
     begin_gen = bind("request_set_continuation_generation", [handle, handle, C.c_int])
     begin_file = bind("request_set_continuation_file", [handle, C.c_char_p, C.c_int])
     source_init = bind("request_set_continuation_source_init", [handle, C.c_int, C.c_float])
+    key_gen = bind("request_set_keystone_generation", [handle, handle, C.c_int, C.c_int])
+    key_file = bind("request_set_keystone_file", [handle, C.c_char_p, C.c_int, C.c_int])
+    clear_key = bind("request_clear_keystone", [handle])
+    lock_overlap = bind("request_set_continuation_lock_overlap", [handle, C.c_int])
     start = bind("generation_start", [handle, handle, handle, C.POINTER(handle)])
     wait = bind("generation_wait", [handle, C.c_int])
     gen_error = bind("generation_error", [handle], C.c_char_p)
@@ -121,6 +129,33 @@ def main():
                     assert target.endswith(original) if suffix else target.startswith(original)
 
             ending, end_rows = run("ending", 39, 39, 11)
+            if args.keystone:
+                check(begin_gen(request, ending, 22))
+                check(lock_overlap(request, 1))
+                baseline_gen, baseline = run("unanchored", 17, 56, 23)
+                release(baseline_gen)
+                check(key_gen(request, ending, 1, 1))
+                release(ending)
+                joined_gen, joined = run("keystone", 17, 56, 23)
+                preserved(joined, end_rows, False)
+                assert joined["video_rows"] != baseline["video_rows"]
+                check(key_file(request, str(work / "ending.safetensors").encode(), 1, 1))
+                (work / "ending.safetensors").unlink()
+                repeat_gen, repeated = run("keystone-file", 17, 56, 23)
+                assert repeated == joined
+                release(repeat_gen)
+                check(begin_gen(request, joined_gen, 22))
+                release(joined_gen)
+                next_gen, extended = run("keystone-next", 17, 73, 31)
+                preserved(extended, joined, False)
+                check(begin_gen(request, next_gen, 22))
+                release(next_gen)
+                check(clear_key(request))
+                _, plain = run("plain-after-keystone", 17, 90, 37)
+                preserved(plain, extended, False)
+                print("PASS: keystone retained/file parity, owned snapshots, trimmed lengths, "
+                      "persistent source and further ordinary continuation", flush=True)
+                return
             check(end_gen(request, ending, 22))
             release(ending)  # request owns the snapshot
             # Invalid replacement must leave the previous ending attached.

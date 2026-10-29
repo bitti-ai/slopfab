@@ -91,6 +91,9 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
   ContinuationConstraint constraint;
   constraint.video.target_values_per_channel = initial_v.size();
   constraint.video.original.assign(96, 2.f);
+  // A capstone-like interior slice stays free for one VIDEO update. Audio-only
+  // evaluations must not activate it early; all integrators use captured noise.
+  constraint.video.anchors.push_back({192, 1, std::vector<float>(96, 19.f), {}});
   constraint.audio.channels = 2;
   constraint.audio.target_values_per_channel = initial_a.size() / 2;
   constraint.audio.original.assign(64, 3.f);
@@ -148,12 +151,16 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
           CHECK(std::equal(anchors_a.begin(), anchors_a.end(), a));
           check(v + anchors_v.size(), a + anchors_a.size(), video.sigmas()[vi[step]],
                 audio.sigmas()[ai[step]]);
+          const float cs = video.sigmas()[vi[step]];
+          CHECK(v[anchors_v.size() + 192] == (vi[step] >= 1 ? (1 - cs) * 19.f + cs * .25f : .25f));
           std::fill_n(vv, anchors_v.size() + initial_v.size(), 1.f);
           std::fill_n(av, anchors_a.size() + initial_a.size(), 1.f);
         };
         in.boundary = [&](int step, const std::vector<float>& v, const std::vector<float>& a) {
           ++boundaries;
           check(v.data(), a.data(), video.sigmas()[vn[step]], audio.sigmas()[an[step]]);
+          const float cs = video.sigmas()[vn[step]];
+          CHECK(v[192] == (vn[step] >= 1 ? (1 - cs) * 19.f + cs * .25f : .25f));
           if (step == 0)
             CHECK(v[96] == initial_v[96]); // video did not advance on the audio-only step
         };
@@ -164,6 +171,7 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
         CHECK(calls == (cancel ? 1 : 4) && boundaries == calls);
         CHECK(output.steps_computed == calls && output.steps_skipped == 0);
         CHECK(constraint.video.noise.empty() && constraint.audio.noise.empty()); // reusable config
+        CHECK(constraint.video.anchors.front().noise.empty());
         if (!cancel) {
           check(output.video_rows.data(), output.audio_rows.data(), 0, 0);
           CHECK(output.video_rows[96] != initial_v[96]); // suffix remains generated

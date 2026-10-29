@@ -1,4 +1,5 @@
 #include "harness.h"
+#include "latent_fixture.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/safetensors_write.h"
 #include "slopfab/text/tokenizer.h"
@@ -155,6 +156,17 @@ SLOPFAB_TEST(model_descriptor_resolves_omniref_without_legacy_aliases) {
     CHECK(plan.num_model_evaluations() == 8 && !plan.fasth3_v2);
     CHECK(plan.video_sigma_shift == 12 && plan.audio_sigma_shift == 3);
     CHECK(plan.video_sigmas.front() == .999f && plan.audio_sigmas.front() == .999f);
+    {
+      LatentFixture original;
+      original.write();
+      auto anchored = request;
+      anchored.continuation = LatentClip::load(original.path.string());
+      anchored.keystone = {anchored.continuation, true, 7};
+      anchored.num_frames = 17;
+      CHECK(resolve_plan(anchored).video_timesteps.size() == 8);
+      anchored.keystone.capstone_lock_after_steps = 8;
+      CHECK(fails([&] { resolve_plan(anchored); }));
+    }
     request.sampling.sampler = sampler::SamplerKind::kRenoise;
     CHECK(fails([&] { resolve_plan(request); }));
     request.sampling.sampler.reset();

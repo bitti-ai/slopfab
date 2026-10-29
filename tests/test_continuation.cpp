@@ -90,6 +90,14 @@ SLOPFAB_TEST(keystone_planning_validation) {
   const auto plan = resolve_plan(req);
   CHECK(plan.aligned_frames == 56 && plan.sampling_frames == 56);
   CHECK(plan.continuation.tail_padding_frames == 17);
+  req.sampling.audio_steps = 3;
+  CHECK(resolve_plan(req).video_timesteps.size() == 8);
+  req.sampling.audio_steps.reset();
+  req.sampling.base_sigmas = std::vector<float>{1, .5f, 0};
+  CHECK(rejects([&] { resolve_plan(req); }));
+  req.keystone.capstone_lock_after_steps = 1;
+  CHECK(resolve_plan(req).video_timesteps.size() == 2);
+  req.sampling.base_sigmas.reset();
   req.keystone.capstone_lock_after_steps = 8;
   CHECK(rejects([&] { resolve_plan(req); }));
   req.keystone.capstone_lock_after_steps = -1;
