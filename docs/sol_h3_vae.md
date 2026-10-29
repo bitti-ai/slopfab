@@ -100,9 +100,16 @@ for CUDA and 58.46-61.10 dB for Vulkan; frame counts matched and all pixels
 were finite. This compares implementations
 of Sol, not Sol against the original H3 decoder.
 
-On an RTX 5090, synthetic `(35,48,80)` latents produced 119 frames at 1280x768
-in 3.94 seconds (3.90 seconds on the second decode), excluding a 2.28-second
-checkpoint load. These are local timings, not general speed guarantees.
+On an RTX 5090, synthetic `(35,48,80)` latents produced 119 frames at 1280x768:
+
+| Backend | First decode | Second decode | Checkpoint load |
+| --- | ---: | ---: | ---: |
+| CUDA | 3.94 s | 3.90 s | 2.28 s |
+| Vulkan, CUDA disabled | 106.91 s | 107.32 s | 5.29 s |
+
+Both outputs contained only finite pixels. Vulkan currently uses the existing
+reference blocked-attention implementation and is substantially slower than
+CUDA for this workload. These are local timings, not general speed guarantees.
 
 Reproduce the reference comparison with torch, safetensors and Diffusers in a
 test environment and the downloaded upstream `code/sol_h3_vae` sources:
