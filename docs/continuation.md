@@ -39,6 +39,86 @@ cumulative 24 fps timeline against the 40 Hz latent clock, rather than rounding
 each extension independently. The sampling window stays bounded, but stored
 latents and full output decoding grow with the cumulative clip length.
 
+## Keystone and delayed Capstone (experimental, C API 1.45)
+
+Keep an approved original clip as a persistent appearance reference while the
+continuation source advances. Front Keystone and rear Capstone anchors use
+native CUDA/Vulkan constraints and automatic joining:
+
+```sh
+slopfab generate --continue-from previous.safetensors --keystone-from original.safetensors --frames 119 --steps 9 --capstone-lock-after 4 --prompt "The same subject continues moving in one uninterrupted shot" --out extended.mp4 --save-latents extended.safetensors
+```
+
+Continue next from `extended.safetensors`, keeping `--keystone-from original.safetensors`.
+Generate the original normally, without Keystone. Keep ordinary subject/background
+references attached to every request when using Ref2VA.
+
+- **Keystone:** the original's first packed video latent replaces the first slice
+  of the locked target overlap. The rest of the overlap retains the previous
+  clip's motion context. Video and audio overlap are automatically locked.
+- **Capstone:** the original's last single-frame latent is locked into the new
+  window's last single-frame slot. H3's single-frame slots occur every five
+  latent slices; the Capstone is not the final four-frame slice.
+- **Late Lock:** `--capstone-lock-after 4` leaves that rear slice free for four
+  video updates, then constrains it before the fifth. `--steps 9` normally gives
+  eight updates. The delay counts resolved video updates, not joint evaluations
+  or audio updates, and must be smaller than their total. `0` locks immediately.
+- **Front only:** `--keystone-front-only` omits the Capstone and extra tail context.
+
+Constraints use `(1-sigma)*reference + sigma*initial_noise`, with the same captured
+noise at every step. At zero noise, locked latent values equal the reference
+exactly. Keystone modifies video only; audio context comes from the advancing
+continuation, not from the original anchor clip.
+
+The overlap must be at least 22 frames (default 22) and fit in the continuation.
+With a Capstone, the sampler generates **17 additional hidden tail frames**.
+Joining discards all starting overlap and those 17 tail frames in video and
+audio, preserving the entire previous clip. `--frames` still means new delivered
+frames rounded up to a multiple of 17. For 119 new frames and 22-frame overlap,
+the sampling window is 158 frames; the joined output adds only 119 frames.
+Audio trimming uses the cumulative timeline to avoid rounding drift.
+
+This adapts the upstream workflow's discarded anchor regions to Slopfab's full
+joined output. No manual 17+22 cut is needed, and the prior source is not shortened.
+Saved archives contain only the joined result and can resume normal continuation.
+Keep the separate original archive: anchor configuration is not embedded in output.
+
+```c
+/* Both generations must have completed with latent retention enabled. */
+slopfab_request_set_continuation_generation(request, previous, 22);
+slopfab_request_set_keystone_generation(request, original, 1, 4);
+/* File alternative: snapshot is owned immediately. */
+slopfab_request_set_keystone_file(request, "original.safetensors", 1, 4);
+/* capstone=0 selects front only; clear removes both anchors. */
+slopfab_request_clear_keystone(request);
+```
+
+Check all setter statuses. Requests keep their own source ownership after files
+are deleted or generation handles destroyed. Failed setters preserve the old
+configuration. Replacing or clearing continuation leaves Keystone attached;
+without continuation it is dormant. In C++, configure `GenerateRequest::keystone`.
+
+Sources need compatible H3 normalization and matching canvas/geometry. The mode
+supports ordinary references and independent audio schedules; it rejects other
+ending anchors, bridging, source initialization, imported initial latents,
+synthetic generation, Animate, image editing and approximate caches.
+
+This is fixed appearance anchoring, not a drift detector. It can influence poses
+and composition as well as color; Late Lock reduces early constraint influence
+but is not a guarantee of preserved motion. Temporal VAE context can affect
+decoded boundary pixels even when retained source latents are unchanged.
+Visual quality needs evaluation on the intended prompts and weights.
+
+Host tests cover persistent anchors, delayed activation, thirty joined extensions,
+source preservation and stereo trimming. CUDA/Vulkan synthetic sampler tests cover
+delayed constraints with unequal audio/video schedules. The real-weight DLL smoke
+test uses tiny synthetic prompt inputs, not a visual quality benchmark:
+
+```sh
+python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . cuda --keystone
+python tools/latent_end_anchor_smoke.py build/Release/slopfab.dll . vulkan --keystone
+```
+
 ## Source-initialized middle (experimental, C API 1.41)
 
 To initialize new video from the previous clip's appearance, add

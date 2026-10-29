@@ -89,6 +89,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string dump_latents;
   std::string save_latents;
   std::string continue_from;
+  std::string keystone_from;
+  bool saw_keystone_settings = false;
   std::string end_anchor_from;
   bool saw_end_anchor_context = false;
   std::string bridge_from, bridge_to;
@@ -423,6 +425,20 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       continue_from = next("--continue-from");
       if (continue_from.empty())
         throw std::runtime_error("--continue-from needs a nonempty path");
+    } else if (arg == "--keystone-from") {
+      keystone_from = next("--keystone-from");
+      if (keystone_from.empty())
+        throw std::invalid_argument("--keystone-from requires an archive path");
+    } else if (arg == "--keystone-front-only") {
+      req.keystone.capstone = false;
+      saw_keystone_settings = true;
+    } else if (arg == "--capstone-lock-after") {
+      const std::string value = next("--capstone-lock-after");
+      size_t used = 0;
+      req.keystone.capstone_lock_after_steps = std::stoi(value, &used);
+      if (used != value.size() || req.keystone.capstone_lock_after_steps < 0)
+        throw std::invalid_argument("--capstone-lock-after requires a nonnegative video update count");
+      saw_keystone_settings = true;
     } else if (arg == "--end-anchor-latents") {
       end_anchor_from = next("--end-anchor-latents");
       if (end_anchor_from.empty())
@@ -659,6 +675,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   if (saw_end_anchor_context && end_anchor_from.empty())
     throw std::invalid_argument("--end-anchor-context requires --end-anchor-latents");
+  if (saw_keystone_settings && keystone_from.empty())
+    throw std::invalid_argument("keystone settings require --keystone-from");
+  if (!keystone_from.empty())
+    req.keystone.source = slopfab::LatentClip::load(keystone_from);
   if (!end_anchor_from.empty()) {
     if (saw_aspect)
       throw std::invalid_argument("latent ending anchor inherits its canvas; omit --aspect");

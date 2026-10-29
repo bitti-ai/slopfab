@@ -548,6 +548,46 @@ SLOPFAB_TEST(capi_latent_bridge_snapshot_and_references) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_keystone_snapshot_lifecycle) {
+  LatentFixture source, invalid;
+  source.write(39);
+  invalid.write(39, false);
+  auto* request = slopfab_request_create();
+  const auto path = source.path.string();
+  CHECK(slopfab_request_set_keystone_file(nullptr, path.c_str(), 1, 4) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_keystone_generation(request, nullptr, 1, 4) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_clear_keystone(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_file(request, path.c_str(), 22) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_frames(request, 17) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_keystone_file(request, path.c_str(), 1, 4) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_keystone_file(request, path.c_str(), 2, 4) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_keystone_file(request, path.c_str(), 1, -1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_keystone_file(request, invalid.path.string().c_str(), 1, 0) == SLOPFAB_ERR_INVALID_REQUEST);
+  std::filesystem::remove(source.path);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 56 && plan.latent_frames == 17);
+  char* desc = nullptr;
+  CHECK(slopfab_describe_plan(request, &desc) == SLOPFAB_OK);
+  CHECK(desc && std::strstr(desc, "capstone locks after 4"));
+  slopfab_free_string(desc);
+  CHECK(slopfab_request_clear_continuation(request) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request, &desc) == SLOPFAB_OK);
+  CHECK(desc && std::strstr(desc, "inactive until continuation"));
+  slopfab_free_string(desc);
+  source.write(56);
+  CHECK(slopfab_request_set_continuation_file(request, path.c_str(), 22) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 73 && plan.latent_frames == 17);
+  CHECK(slopfab_request_set_synthetic_latents(request, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_synthetic_latents(request, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_clear_keystone(request) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.latent_frames == 12);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_continuation_lock_overlap) {
   LatentFixture fixture;
   fixture.write();

@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 44
+#define SLOPFAB_CAPI_VERSION_MINOR 45
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -950,6 +950,27 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
  * approximate caches. clear_continuation also disables this option. */
 SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t enable);
+
+/* Since 1.45. Persistent original-clip video anchors for continuation.
+ * capstone=0 locks only the front keystone; capstone=1 also locks the original
+ * clip's last single-frame latent near the new window's end. lock_after_steps
+ * is the number of video updates before locking that rear slot (0 = immediate).
+ * It must be nonnegative and, with an active capstone, less than the resolved
+ * video update count. Use 4 for an eight-update schedule.
+ * The source must be completed retained H3 video with the continuation canvas.
+ * File attachment owns a snapshot; generation attachment retains shared ownership.
+ * Replacing/clearing continuation does not clear this source. Without a
+ * continuation it is dormant. Active use requires overlap >=22 and locks both
+ * video/audio overlap. Front overlap and 17 extra capstone-context frames are
+ * excluded from the joined output/archive; frames still means NEW output frames.
+ * Other ending anchors, source initialization and approximate caches are rejected.
+ * Failed setters leave the previous configuration attached. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_keystone_file(
+    slopfab_request* request, const char* path, int32_t capstone, int32_t lock_after_steps);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_keystone_generation(
+    slopfab_request* request, const slopfab_generation* source,
+    int32_t capstone, int32_t lock_after_steps);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_keystone(slopfab_request* request);
 
 /* Since 1.41. Experimental: initialize newly generated video from the source's
  * final latent slice mixed with noise, with a matching partial video schedule.

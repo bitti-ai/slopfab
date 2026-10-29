@@ -35,6 +35,22 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     archive.write_bytes(struct.pack("<Q", len(raw)) + raw + bytes(vb + ab))
     base = ("--continue-from", archive, "--overlap-frames", "22")
     assert "conditioning only" in run(*base)
+    keystone = (*base, "--keystone-from", archive)
+    desc = run(*keystone)
+    assert "capstone locks after 4 video updates" in desc
+    assert "17 hidden tail frames trimmed" in desc
+    assert "56 frames (22 hidden overlap)" in desc
+    assert "locked video and audio" in desc
+    assert "front only" in run(*keystone, "--keystone-front-only")
+    assert "locks after 0" in run(*keystone, "--capstone-lock-after", "0", "--audio-steps", "5")
+    for options in [("--capstone-lock-after", "-1"), ("--capstone-lock-after", "4x"),
+                    ("--capstone-lock-after", "9999"), ("--overlap-frames", "5"),
+                    ("--end-anchor", "end.png"), ("--end-anchor-latents", archive),
+                    ("--continuation-source-noise", ".7"), ("--skip-every", "2"),
+                    ("--synthetic-latents",), ("--init-latents", archive)]:
+        run(*keystone, *options, success=False)
+    run("--capstone-lock-after", "4", success=False)
+    run("--keystone-front-only", success=False)
     seeded = run(*base, "--continuation-source-noise", "0.7")
     assert "held final source latent slice; video noise 0.700000" in seeded
     assert "locked video and audio" in seeded

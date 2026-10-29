@@ -17,6 +17,18 @@ int attach_bridge(slopfab_request* request, slopfab::LatentBridge bridge) {
   return SLOPFAB_OK;
 }
 
+int attach_keystone(slopfab_request* request, std::shared_ptr<const slopfab::LatentClip> clip,
+                    int capstone, int delay) {
+  slopfab::Keystone k{std::move(clip), capstone != 0, delay};
+  try {
+    slopfab::validate_keystone(k);
+  } catch (const std::exception& e) {
+    return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
+  }
+  request->request.keystone = std::move(k);
+  return SLOPFAB_OK;
+}
+
 int attach_end_anchor(slopfab_request* request, std::shared_ptr<const slopfab::LatentClip> clip,
                        int context) {
   try {
@@ -706,6 +718,37 @@ slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t 
   if (!request || (enable != 0 && enable != 1))
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "lock overlap: expected a request and enable 0 or 1");
   request->request.continuation_lock_overlap = enable != 0;
+  return SLOPFAB_OK;
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_keystone_file(
+    slopfab_request* request, const char* path, int32_t capstone, int32_t lock_after_steps) {
+  if (!request || !path || !*path || (capstone != 0 && capstone != 1) || lock_after_steps < 0)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "keystone needs a request, archive, capstone 0/1 and nonnegative lock delay");
+  return guarded([&] {
+    return attach_keystone(request, slopfab::LatentClip::load(path), capstone, lock_after_steps);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_keystone_generation(
+    slopfab_request* request, const slopfab_generation* source,
+    int32_t capstone, int32_t lock_after_steps) {
+  if (!request || !source || (capstone != 0 && capstone != 1) || lock_after_steps < 0)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "keystone needs a request, generation, capstone 0/1 and nonnegative lock delay");
+  const int terminal = report_terminal_status(source);
+  if (terminal != SLOPFAB_OK)
+    return terminal;
+  return guarded([&] {
+    if (!source->latents)
+      return fail(SLOPFAB_ERR_INVALID_REQUEST, "enable latent retention before generating the keystone source");
+    return attach_keystone(request, source->latents, capstone, lock_after_steps);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_keystone(slopfab_request* request) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear keystone: null request");
+  request->request.keystone = {};
   return SLOPFAB_OK;
 }
 
