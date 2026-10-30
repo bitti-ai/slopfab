@@ -165,7 +165,7 @@ struct GenerateRequest {
   float continuation_source_noise = 0;
   // Original-clip video anchors, independent of the advancing continuation.
   // No continuation means first-shot pass-through. Replace only continuation
-  // between shots to keep this reference fixed. Hidden context is trimmed.
+  // between shots to keep this reference fixed. Extra context exists only in model calls.
   Keystone keystone;
   // Two retained clips, with editable margins. num_frames requests gap frames.
   // Ordinary image/media/refmod references remain attached across endpoint changes.

@@ -969,18 +969,19 @@ SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t enable);
 
 /* Since 1.45. Persistent original-clip video anchors for continuation.
- * capstone=0 locks only the front keystone; capstone=1 also locks the original
- * clip's last single-frame latent near the new window's end. lock_after_steps
- * is the number of video updates before locking that rear slot (0 = immediate).
+ * capstone=0 locks only the front keystone; capstone=1 also appends the original
+ * clip's last single-frame latent as clean context during model calls.
+ * lock_after_steps counts video updates before appending it (0 = immediate).
  * It must be nonnegative and, with an active capstone, less than the resolved
  * video update count. Use 4 for an eight-update schedule.
  * The source must be completed retained H3 video with the continuation canvas.
  * File attachment owns a snapshot; generation attachment retains shared ownership.
  * Replacing/clearing continuation does not clear this source. Without a
- * continuation it is dormant. Active use requires overlap >=22 and locks both
- * video/audio overlap. Front overlap and 17 extra capstone-context frames are
- * excluded from the joined output/archive; frames still means NEW output frames.
- * Other ending anchors, source initialization and approximate caches are rejected.
+ * continuation it is dormant. Active use locks both video/audio overlap.
+ * Frame zero is restored before output; capstone context never enters sampler
+ * output or audio. Frames still means NEW output frames, with no extra tail.
+ * Other ending anchors, source initialization and approximate caches are rejected;
+ * capstone also requires attention without VEDA.
  * Failed setters leave the previous configuration attached. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_keystone_file(
     slopfab_request* request, const char* path, int32_t capstone, int32_t lock_after_steps);

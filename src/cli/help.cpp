@@ -231,7 +231,7 @@ const CommandHelp kCommands[] = {
      "  --continuation-source-noise <s> initialize new video from source; noise in (0,1], experimental.\n"
      "  --keystone-from <archive> persistent original-clip anchors for continuation (experimental).\n"
      "  --keystone-front-only    omit the rear capstone; default anchors both ends.\n"
-     "  --capstone-lock-after <n> free video updates before rear lock (default 4; 0 = immediate).\n"
+     "  --capstone-lock-after <n> video updates before appending rear context (default 4; 0 = immediate).\n"
      "  --end-anchor <image>        guide the ending toward an image (also with continuation).\n"
      "  --end-anchor-latents <f>    retain an ending archive; --frames adds a lead-in/gap.\n"
      "  --end-anchor-context <n>    locked opening context of ending, 17*k+5 (default 22).\n"
