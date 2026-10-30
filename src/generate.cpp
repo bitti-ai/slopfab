@@ -895,7 +895,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 
       dit::DenoiseInputs in;
       PreviewDecoder preview(options,live,plan.sampling_frames/24.0);
-      if (!request.still_image && options.on_preview && !options.preview_vae_path.empty())
+      if (options.on_preview && !options.preview_vae_path.empty())
         in.preview = [&](int step, const std::vector<float>& clean) { preview(step,clean); };
       in.sampling_effect = sampling_effect;
       in.inpaint = inpaint.get();
@@ -1169,7 +1169,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         return stop("denoising");
       PreviewDecoder preview(options,live,plan.sampling_frames/24.0);
       std::function<void(int,const std::vector<float>&)> preview_hook;
-      if (!request.still_image && options.on_preview && !options.preview_vae_path.empty())
+      if (options.on_preview && !options.preview_vae_path.empty())
         preview_hook = [&](int step, const std::vector<float>& clean) { preview(step,clean); };
       const vulkan::ExactH3DenoiseResult out =
           model.run(video_sched, audio_sched, [&](uint32_t step, uint32_t steps) {
