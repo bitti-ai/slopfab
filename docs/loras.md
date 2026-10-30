@@ -213,13 +213,19 @@ It never changes the adapter or base checkpoint. For offline preparation,
 pass `--source /path/to/original/diffusers/transformer`, containing the original
 shards and index. Inference requires only the quantized base, adapter and
 prepared companion, with no Python or network access.
+Remote preparation retains completed projections in a neighboring `.parts`
+directory so interrupted runs can resume. This cache is not needed for inference.
 
 ```powershell
 build/Release/slopfab.exe generate --prompt "A polar bear plays the violin in the snow." --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/minimax_h3_hyperflow_8step_v1.0.safetensors --seed 42 --out output/hyperflow.mp4
 ```
 
-Add `--inference-backend vulkan` for Vulkan. FL2VA keyframe inputs use the same
-companion. Ref2VA requires preparation with `--variant ref2va` (and its original
+Add `--inference-backend vulkan --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors`
+for Vulkan; the Vulkan audio decoder requires the floating-point checkpoint,
+so select it explicitly if discovery chooses `audio_vae_nf4.safetensors`.
+The FL2VA base is used for text-to-video here; the CLI's existing reference-input
+restrictions still apply.
+Ref2VA requires preparation with `--variant ref2va` (and its original
 `transformer_ref` directory when using `--source`), then a pruned Ref2VA base.
 Video conditioning rows use `(t,r)=(0.999,0.999)` and audio references use
 `(1,1)`; generated rows use the current and next modality-specific times.
@@ -239,6 +245,16 @@ Hyperflow adapter is supported. Attention/MLP style adapters may be stacked;
 AdaLN projection adapters cannot. Alternate grids, shifts, samplers, independent
 audio steps, approximate caches, Animate, continuation and image editing are
 rejected. Missing or mismatched companions fail before model upload.
+
+Validation covers metadata and schedule rejection, pair-aware row selection,
+companion identity and strength checks, and a separate Python time-embedding
+oracle. The released adapter runs through both text refiners and one main block
+for all eight evaluations on CUDA and Vulkan, with repeatability and finite
+audio/video checks. Flash2 backend differences are reported, not assumed to be
+bit-identical. A full 50-block CUDA/Sage2 run with the FL2VA NVFP4 base generated
+124 frames at 1344x768 and stereo audio. A full-stack Vulkan/Flash2 smoke run
+generated 22 frames at 256x256 and stereo audio using the FP32 audio VAE.
+Ref2VA has not been validated with a full generated clip.
 
 ## C and C++ APIs
 
