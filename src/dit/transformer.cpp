@@ -17,6 +17,7 @@ const TransformerConfig& Transformer::config() const {
 
 size_t Transformer::weight_bytes() const {
   return impl_->arena_bytes + impl_->lora.weight_bytes() +
+         (impl_->hyperflow ? impl_->hyperflow->weight_bytes() + impl_->hyperflow_bias.size() * sizeof(float) : 0) +
          (impl_->streamer ? impl_->streamer->device_bytes() : 0);
 }
 
@@ -160,6 +161,9 @@ std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
 }
 
 void Transformer::unload() {
+  impl_->hyperflow_weights.clear();
+  impl_->hyperflow_bias.reset();
+  impl_->hyperflow.reset();
   impl_->streamer.reset();
   impl_->lora = cuda::LoraRunner();
   impl_->blocks.clear();
@@ -327,7 +331,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   // into it. `torch.unique(sorted=True)` sorts ascending, so which of the video
   // and audio timesteps is index 0 flips over the schedule (spec 7.5) — the
   // indices have to be re-uploaded every step, not cached.
-  s.build_modulation(row_timesteps.unique);
+  s.build_modulation(row_timesteps.unique, row_timesteps.endpoints);
   prof.tick("mod.expand", s.stream.get());
   s.d_adaln.copy_from_host(row_timesteps.adaln.data(), row_timesteps.adaln.size(), s.stream.get());
   // The final layer selects on `timestep_indices` alone, with no modality

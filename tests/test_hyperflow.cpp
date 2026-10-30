@@ -140,7 +140,7 @@ SLOPFAB_TEST(hyperflow_companion_identity_code_and_lora_loading) {
     times.endpoints.clear();
     CHECK(rejects([&] { adapters.hyperflow()->code(times); }));
     CHECK(rejects([&] { adapters.load({{f.adapter, .5f}}, base); }));
-    CHECK(adapters.hyperflow()); // failed reload is transactional
+    CHECK(bool(adapters.hyperflow())); // failed reload is transactional
   }
   f.write_companion(1, "wrong");
   LoraAdapters adapters;

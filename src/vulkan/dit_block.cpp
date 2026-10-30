@@ -255,7 +255,8 @@ void validate_block_archive(const SafeTensors& st, const std::string& p, const H
         checked_product(checked_product(c.modalities, 6, "AdaLN"), c.hidden, "AdaLN");
     const TensorView& aw = st.at(p + "adaln_proj.linear.weight");
     const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
-    require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
+    require_shape(aw, {static_cast<int64_t>(adaln_out),
+        c.loras && c.loras->hyperflow() ? 8 : c.adaln_rank}, aw.name);
     require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
     (void)to_f32(aw);
     (void)to_f32(ab);
@@ -647,7 +648,8 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
       checked_product(checked_product(c.modalities, 6, "AdaLN"), c.hidden, "AdaLN");
   const TensorView& aw = st.at(p + "adaln_proj.linear.weight");
   const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
-  require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
+  require_shape(aw, {static_cast<int64_t>(adaln_out),
+        c.loras && c.loras->hyperflow() ? 8 : c.adaln_rank}, aw.name);
   require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
   const std::string adaln = p + "adaln_proj.linear";
   const bool adapted_adaln = c.loras && c.loras->has_adaln(adaln);

@@ -244,8 +244,11 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         // it is the *only* per-step work a skipped step also avoids, which is
         // why it sits inside this branch rather than above it.
         cuda::HostSpan span("build_row_timesteps");
-        row_timesteps =
-            layout.condition_audio_is_explicit
+        row_timesteps = inputs.hyperflow
+            ? build_hyperflow_timesteps(layout, indices, vt,
+                1.f - inputs.video_scheduler->sigmas()[update.video + 1], at,
+                inputs.pin_target_audio ? 1.f : 1.f - inputs.audio_scheduler->sigmas()[update.audio + 1])
+            : layout.condition_audio_is_explicit
                 ? build_row_timesteps(layout, indices, vt, at, std::max(vt, 0.999f), 1.0f)
                 : build_row_timesteps(layout, indices, vt, at);
       }

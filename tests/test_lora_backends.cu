@@ -197,12 +197,13 @@ SLOPFAB_TEST(lora_cuda_vulkan_projection_numerics) {
   }
 }
 
-static void reduced_lora_trajectory(bool dmad) {
+static void reduced_lora_trajectory(bool dmad, bool hyperflow = false) {
   using namespace slopfab::vulkan;
-  const std::string adapter = dmad ? "weights/loras/dmad_minimax_h3_4step_full_critic.safetensors"
+  const std::string adapter = hyperflow ? "weights/loras/minimax_h3_hyperflow_8step_v1.0.safetensors" : dmad ? "weights/loras/dmad_minimax_h3_4step_full_critic.safetensors"
                                    : "weights/loras/TaoMate-H3-3step-ComfyUI.safetensors";
   const std::string path = "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
-  if (!std::filesystem::exists(path) || !std::filesystem::exists(adapter)) {
+  if (!std::filesystem::exists(path) || !std::filesystem::exists(adapter) ||
+      (hyperflow && !std::filesystem::exists("weights/loras/minimax_h3_hyperflow_8step_v1.0.hyperflow-fl2va.safetensors"))) {
     SKIP_MISSING_FIXTURE("LoRA and NVFP4 checkpoints required");
     return;
   }
@@ -223,8 +224,8 @@ static void reduced_lora_trajectory(bool dmad) {
   sequence.num_text = 1;
   sequence.num_condition_video = 0;
   sequence.num_condition_audio = 0;
-  sequence.num_audio_latents = dmad ? 1 : 0;
-  sequence.num_audio_rows = dmad ? 2 : 0;
+  sequence.num_audio_latents = dmad || hyperflow ? 1 : 0;
+  sequence.num_audio_rows = dmad || hyperflow ? 2 : 0;
   sequence.num_latent_frames = 1;
   sequence.latent_height = 2;
   sequence.latent_width = 2;
@@ -237,8 +238,15 @@ static void reduced_lora_trajectory(bool dmad) {
   sampler::FlowScheduler video(12), audio(dmad ? 2 : 3);
   const auto schedule =
       dmad ? sampler::ScheduleKind::kDmad4Step : sampler::ScheduleKind::kTaoMate3Step;
-  video.set_timesteps(4, schedule);
-  audio.set_timesteps(4, schedule);
+  if (hyperflow) {
+    SafeTensors file; file.open(adapter);
+    const auto settings = dit::hyperflow_metadata(file.metadata())->sampling;
+    video.set_base_sigmas(*settings.base_sigmas);
+    audio.set_base_sigmas(*settings.base_sigmas);
+  } else {
+    video.set_timesteps(4, schedule);
+    audio.set_timesteps(4, schedule);
+  }
   if (dmad) {
     video.set_sampler(sampler::SamplerKind::kRenoise);
     audio.set_sampler(sampler::SamplerKind::kRenoise);
@@ -268,8 +276,10 @@ static void reduced_lora_trajectory(bool dmad) {
     model.prepare_sequence(sequence, indices, positions);
     std::vector<float> velocity(96);
     for (int step = 0; step < int(video.num_steps()); ++step) {
-      auto times = dit::build_row_timesteps(sequence, indices, video.timesteps()[step],
-                                            audio.timesteps()[step]);
+      auto times = hyperflow ? dit::build_hyperflow_timesteps(sequence, indices,
+          video.timesteps()[step], 1.f - video.sigmas()[step+1],
+          audio.timesteps()[step], 1.f - audio.sigmas()[step+1]) :
+          dit::build_row_timesteps(sequence, indices, video.timesteps()[step], audio.timesteps()[step]);
       model.forward(expected.data(), expected_audio.data(), times, velocity.data(),
                     audio_velocity.data());
       if (step == 0)
@@ -279,8 +289,8 @@ static void reduced_lora_trajectory(bool dmad) {
                                      fresh_noise.data(), fresh_noise.size());
       video.step(step, expected.data(), velocity.data(), expected.size(), expected.data(),
                  fresh_noise.data());
-      if (dmad) {
-        sampler::fill_renoise_normal(42, step, sampler::NoiseStream::kAudioLatents,
+      if (dmad || hyperflow) {
+        if (dmad) sampler::fill_renoise_normal(42, step, sampler::NoiseStream::kAudioLatents,
                                      fresh_noise.data(), expected_audio.size());
         audio.step(step, expected_audio.data(), audio_velocity.data(), expected_audio.size(),
                    expected_audio.data(), fresh_noise.data());
@@ -367,4 +377,8 @@ SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
 
 SLOPFAB_TEST(lora_dmad_real_transformer_four_step_cuda_vulkan) {
   reduced_lora_trajectory(true);
+}
+
+SLOPFAB_TEST(lora_hyperflow_real_transformer_eight_step_cuda_vulkan) {
+  reduced_lora_trajectory(false, true);
 }

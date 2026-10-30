@@ -2,14 +2,21 @@
 
 namespace slopfab::dit {
 
-void Transformer::Impl::build_modulation(const std::vector<float>& timesteps) {
+void Transformer::Impl::build_modulation(const std::vector<float>& timesteps,
+                                          const std::vector<float>& endpoints) {
   const int T = static_cast<int>(timesteps.size());
   if (T <= 0)
     throw std::runtime_error("transformer: no distinct timesteps");
 
   const int code_dim =
+      hyperflow ? hyperflow->rank() :
       is_pruned_table_architecture(architecture) ? AdaLNTable::kRank : cfg.timestep_embed_dim;
-  if (is_pruned_table_architecture(architecture)) {
+  if (hyperflow) {
+    RowTimesteps times;
+    times.unique = timesteps;
+    times.endpoints = endpoints;
+    host_code = hyperflow->code(times);
+  } else if (is_pruned_table_architecture(architecture)) {
     host_code.assign(static_cast<size_t>(T) * code_dim, 0.0f);
     for (int i = 0; i < T; ++i) {
       const std::array<float, AdaLNTable::kRank> c = table.lookup(timesteps[i], lookup);
@@ -41,7 +48,8 @@ void Transformer::Impl::build_modulation(const std::vector<float>& timesteps) {
 
   for (size_t b = 0; b < blocks.size(); ++b) {
     if (is_pruned_table_architecture(architecture)) {
-      cuda::launch_adaln_expand(blocks[b].adaln_w, blocks[b].adaln_b, d_code.get(),
+      cuda::launch_adaln_expand(hyperflow ? hyperflow_weights[b].get() : blocks[b].adaln_w,
+                                hyperflow ? hyperflow_bias.get() : blocks[b].adaln_b, d_code.get(),
                                 mod.get() + b * per_block, T, kNumModalities, kNumParams,
                                 cfg.hidden_size, code_dim, stream.get());
     } else {
@@ -49,7 +57,8 @@ void Transformer::Impl::build_modulation(const std::vector<float>& timesteps) {
     }
   }
   if (is_pruned_table_architecture(architecture)) {
-    cuda::launch_adaln_expand(final_adaln_w, final_adaln_b, d_code.get(), final_mod.get(), T,
+    cuda::launch_adaln_expand(hyperflow ? hyperflow_weights.back().get() : final_adaln_w,
+                              hyperflow ? hyperflow_bias.get() : final_adaln_b, d_code.get(), final_mod.get(), T,
                               /*num_modality=*/1, kFinalParams, cfg.hidden_size, code_dim,
                               stream.get());
   } else {

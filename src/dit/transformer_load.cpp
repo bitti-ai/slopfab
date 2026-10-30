@@ -41,6 +41,7 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   checkpoint.prefetch();
   unload();
   s.cfg = config;
+  s.hyperflow = loras ? loras->hyperflow() : nullptr;
   s.model = resolve_model_descriptor(checkpoint);
   s.cfg.pdd_steps = s.model.pdd_steps;
   s.architecture = s.model.compatibility_architecture;
@@ -248,6 +249,8 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   for (int i = 0; i < config.num_refiner_layers; ++i)
     count_adapters("token_refiner.blocks." + std::to_string(i) + ".", fixed_bytes);
 
+  if (s.hyperflow) fixed_bytes += s.hyperflow->weight_bytes() + size_t(adaln_out) * sizeof(float);
+
   const int forced = options.offload_blocks;
   size_t cap = options.device_budget_bytes;
   if (const char* value = std::getenv("SLOPFAB_DIT_VRAM_GIB")) {
@@ -422,7 +425,7 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
         copy(wide.data(), wide.size() * sizeof(float), false);
         continue;
       }
-      if (loras && !full_adaln) {
+      if (loras && !full_adaln && !s.hyperflow) {
         const bool weight =
             kv.first.size() > 7 && kv.first.compare(kv.first.size() - 7, 7, ".weight") == 0;
         const bool bias =
@@ -799,6 +802,21 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
                               config.timestep_embed_dim);
   } else {
     s.table.load(checkpoint);
+  }
+  if (s.hyperflow) {
+    s.hyperflow_weights.resize(config.num_layers + 1);
+    for (int i = 0; i <= config.num_layers; ++i) {
+      const auto name = i == config.num_layers ? "final_layer.adaln_proj.linear" :
+          "blocks." + std::to_string(i) + ".adaln_proj.linear";
+      const auto values = s.hyperflow->weight(name);
+      s.hyperflow_weights[i].allocate(values.size());
+      s.hyperflow_weights[i].copy_from_host(values.data(), values.size(), s.stream.get());
+      s.stream.synchronize();
+    }
+    std::vector<float> zero(adaln_out, 0);
+    s.hyperflow_bias.allocate(zero.size());
+    s.hyperflow_bias.copy_from_host(zero.data(), zero.size(), s.stream.get());
+    s.stream.synchronize();
   }
 }
 

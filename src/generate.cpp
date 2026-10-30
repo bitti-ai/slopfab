@@ -913,6 +913,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       audio_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
 
       dit::DenoiseInputs in;
+      in.hyperflow = plan.hyperflow;
       PreviewDecoder preview(options,live,plan.sampling_frames/24.0);
       if (options.on_preview && !options.preview_vae_path.empty())
         in.preview = [&](int step, const std::vector<float>& clean) { preview(step,clean); };

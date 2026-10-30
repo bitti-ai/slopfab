@@ -113,6 +113,15 @@ def time_embedding(source, adapter, times, endpoint, alpha, strength):
 def prepare(args):
     if not math.isfinite(args.strength) or args.strength == 0:
         raise ValueError('Prepare a finite, nonzero adapter strength')
+    digest_state = hashlib.sha256()
+    with args.adapter.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+            digest_state.update(chunk)
+    digest = digest_state.hexdigest()
+    output = args.output or args.adapter.with_suffix(f'.hyperflow-{args.variant}.safetensors')
+    cache = output.with_suffix('.parts') if not args.source else None
+    if cache:
+        cache.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(args.threads)
     torch.set_grad_enabled(False)
     with safe_open(args.adapter, framework='pt') as adapter:
@@ -136,11 +145,22 @@ def prepare(args):
     # At most two full projections live in memory; no whole-model download.
     def projection(target):
         upstream, native = target
+        cache_path = cache / (native + '.safetensors') if cache else None
+        cache_metadata = {'adapter_sha256': digest, 'variant': args.variant,
+                          'strength': str(args.strength), 'version': '1',
+                          'revision': m['base_model_revision']}
+        if cache_path and cache_path.exists():
+            with safe_open(cache_path, framework='pt') as saved:
+                if saved.metadata() == cache_metadata:
+                    return native, saved.get_tensor('modulation')
         w, b = source.tensor(upstream + '.weight'), source.tensor(upstream + '.bias')
         # Match the official BF16 projection, including its output rounding.
         result = F.linear(activated.to(w.dtype), w, b).float().T.contiguous()
         if not torch.isfinite(result).all():
             raise ValueError('Non-finite modulation: ' + upstream)
+        if cache_path:
+            save_file({'modulation': result}, str(cache_path) + '.tmp', metadata=cache_metadata)
+            os.replace(str(cache_path) + '.tmp', cache_path)
         return native, result
     with ThreadPoolExecutor(max_workers=2) as pool:
         # Submit in bounded batches; Executor.map would retain completed large tensors.
@@ -148,12 +168,9 @@ def prepare(args):
             for name, tensor in pool.map(projection, targets[i:i+2]):
                 tensors[name] = tensor
                 print(f'Prepared {name} ({len(tensors)-1}/51)', flush=True)
-    with args.adapter.open('rb') as f:
-        digest = hashlib.file_digest(f, 'sha256').hexdigest()
     metadata = {'slopfab.hyperflow': '1', 'variant': args.variant,
                 'base_model_revision': m['base_model_revision'], 'adapter_sha256': digest,
                 'strength': str(args.strength)}
-    output = args.output or args.adapter.with_suffix(f'.hyperflow-{args.variant}.safetensors')
     if output.resolve() == args.adapter.resolve():
         raise ValueError('Companion output must not replace the adapter')
     output.parent.mkdir(parents=True, exist_ok=True)

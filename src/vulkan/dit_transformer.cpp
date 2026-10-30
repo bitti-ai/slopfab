@@ -11,6 +11,7 @@
 
 #include "slopfab/dtype.h"
 #include "slopfab/dit/pdd.h"
+#include "slopfab/dit/adaln.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/vulkan/gemm.h"
 
@@ -71,7 +72,8 @@ void validate_config(const ExactH3TransformerConfig& c) {
 
 void validate_endpoint_archive(const SafeTensors& st, const ExactH3TransformerConfig& c) {
   const uint32_t h = c.main.block.hidden;
-  const uint32_t r = c.main.block.adaln_rank;
+  const uint32_t r = c.main.block.loras && c.main.block.loras->hyperflow() ?
+      dit::AdaLNTable::kRank : c.main.block.adaln_rank;
   auto require_float_weight = [&](const char* name, std::initializer_list<int64_t> shape) {
     const TensorView& view = st.at(name);
     require_shape(view, shape, name);
@@ -203,8 +205,11 @@ ExactH3Transformer& ExactH3Transformer::operator=(ExactH3Transformer&&) noexcept
 
 ExactH3Transformer ExactH3Transformer::create(TensorContext& context,
                                               const ExactH3TransformerConfig& config) {
-  validate_config(config);
-  return ExactH3Transformer(std::make_shared<Impl>(context, config));
+  auto resolved = config;
+  if (resolved.main.block.loras && resolved.main.block.loras->hyperflow())
+    resolved.main.block.adaln_rank = resolved.main.block.loras->hyperflow()->rank();
+  validate_config(resolved);
+  return ExactH3Transformer(std::make_shared<Impl>(context, resolved));
 }
 
 void ExactH3Transformer::load(const SafeTensors& checkpoint) {

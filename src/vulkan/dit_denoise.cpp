@@ -86,7 +86,8 @@ void validate_config(const ExactH3DenoiseConfig& c) {
       c.transformer.video_rows != total_video || c.transformer.audio_rows != total_audio ||
       c.transformer.main.block.timesteps != (conditioned ? 4u : 2u) ||
       c.transformer.main.block.modalities != 3 ||
-      c.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank ||
+      (c.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank &&
+       c.transformer.main.block.adaln_rank != 18) ||
       c.transformer.video_dim == 0 || c.transformer.audio_dim == 0 || c.attention_band < 0 ||
       (c.attention_band != 0 && !c.attention_ranges.empty()) ||
       c.position_ids.size() != static_cast<size_t>(sequence) * 3 ||
@@ -147,6 +148,7 @@ void validate_config(const ExactH3DenoiseConfig& c) {
 struct ExactH3Denoiser::Impl {
   struct State {
     dit::AdaLNTable table;
+    std::shared_ptr<const dit::Hyperflow> hyperflow;
     ExactH3Transformer transformer;
     DeviceTensor video;
     DeviceTensor audio;
@@ -228,8 +230,11 @@ ExactH3Denoiser& ExactH3Denoiser::operator=(ExactH3Denoiser&&) noexcept = defaul
 
 ExactH3Denoiser ExactH3Denoiser::create(TensorContext& context,
                                         const ExactH3DenoiseConfig& config) {
-  validate_config(config);
-  return ExactH3Denoiser(std::make_shared<Impl>(context, config));
+  auto resolved = config;
+  if (resolved.transformer.main.block.loras && resolved.transformer.main.block.loras->hyperflow())
+    resolved.transformer.main.block.adaln_rank = resolved.transformer.main.block.loras->hyperflow()->rank();
+  validate_config(resolved);
+  return ExactH3Denoiser(std::make_shared<Impl>(context, resolved));
 }
 
 void ExactH3Denoiser::load(const SafeTensors& checkpoint) {
@@ -239,6 +244,10 @@ void ExactH3Denoiser::load(const SafeTensors& checkpoint) {
     throw std::logic_error("Vulkan H3 denoise: unload before load");
   auto next = std::make_unique<Impl::State>();
   next->table.load(checkpoint);
+  const auto* loras = impl_->config.transformer.main.block.loras;
+  next->hyperflow = loras ? loras->hyperflow() : nullptr;
+  if (!next->hyperflow && impl_->config.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank)
+    throw std::invalid_argument("Vulkan H3: nonstandard code rank requires a Hyperflow companion");
   next->transformer = ExactH3Transformer::create(*impl_->context, impl_->config.transformer);
   next->transformer.load(checkpoint);
   try {
@@ -267,7 +276,7 @@ void ExactH3Denoiser::load(const SafeTensors& checkpoint) {
     next->selectors =
         context.allocate(vector(c.transformer.main.block.sequence), ScalarType::kInt32);
     next->code =
-        context.allocate(matrix(c.transformer.main.block.timesteps, dit::AdaLNTable::kRank));
+        context.allocate(matrix(c.transformer.main.block.timesteps, c.transformer.main.block.adaln_rank));
     const dit::H3RopeTables rope = dit::build_h3_rope_tables(c.position_ids, 10000.0f, 16);
     if (rope.rows != c.transformer.main.block.sequence ||
         rope.cosine.size() != static_cast<size_t>(rope.rows) * 96 ||
@@ -444,7 +453,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     throw std::invalid_argument("Langevin refinement requires still-image sampling without caches");
   if (c.pin_target_audio && c.layout.num_audio_rows == 0)
     throw std::invalid_argument("Vulkan H3 denoise: pinned target audio needs target rows");
-  std::vector<float> code(uint64_t(code_rows) * dit::AdaLNTable::kRank);
+  std::vector<float> code(uint64_t(code_rows) * c.transformer.main.block.adaln_rank);
   std::vector<int32_t> video_indices(video_output);
   std::vector<int32_t> audio_indices(audio_output);
   ExactH3DenoiseResult result;
@@ -511,8 +520,11 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
       impl_->resize_context(true);
     const float video_t = video.timesteps()[update_step.video];
     const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[update_step.audio];
-    dit::RowTimesteps row =
-        conditioned ? dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t,
+    dit::RowTimesteps row = s.hyperflow
+        ? dit::build_hyperflow_timesteps(c.layout, c.indices, video_t,
+            1.f - video.sigmas()[update_step.video + 1], audio_t,
+            c.pin_target_audio ? 1.f : 1.f - audio.sigmas()[update_step.audio + 1])
+        : conditioned ? dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t,
                                                std::max(video_t, 0.999f), 1.0f)
                     : dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t);
     if (tack)
@@ -520,7 +532,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     if (row.unique.empty() || row.unique.size() > code_rows ||
         row.adaln.size() != s.transformer.config().main.block.sequence)
       throw std::runtime_error("Vulkan H3 denoise: invalid row timestep plan");
-    for (uint32_t t = 0; t < code_rows; ++t) {
+    if (s.hyperflow) code = s.hyperflow->code(row, code_rows);
+    else for (uint32_t t = 0; t < code_rows; ++t) {
       const float value = row.unique[std::min<size_t>(t, row.unique.size() - 1)];
       const auto selected = s.table.lookup(value);
       std::copy(selected.begin(), selected.end(),

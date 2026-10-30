@@ -9,6 +9,9 @@ struct Transformer::Impl {
   TransformerArchitecture architecture = TransformerArchitecture::kUnknown;
   AdaLNLookup lookup = AdaLNLookup::kLinear;
   AdaLNTable table;
+  std::shared_ptr<const Hyperflow> hyperflow;
+  std::vector<DeviceBuffer<float>> hyperflow_weights;
+  DeviceBuffer<float> hyperflow_bias;
   FullAdaLNTimestepEmbedding timestep_embedding;
 
   cuda::Stream stream;
@@ -288,7 +291,8 @@ struct Transformer::Impl {
   // rank-8 projections. 38.7 MB in fp32 at T = 2, which is the whole per-step
   // AdaLN cost — the pruned checkpoint replaced 13 billion parameters with
   // this (spec 3.4).
-  void build_modulation(const std::vector<float>& timesteps);
+  void build_modulation(const std::vector<float>& timesteps,
+                        const std::vector<float>& endpoints = {});
 
   // --- one block -----------------------------------------------------------
 
