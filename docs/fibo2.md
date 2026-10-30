@@ -47,6 +47,11 @@ Masked editing takes exactly one source image. Reference-image lists support mul
 
 Current limitations: CUDA only, no Vulkan, LoRA, H3 schedules/caches/LCS, video, rectangular outpaint, upscaling or H3 latent archives. `--dump-latents` saves packed FP32 `image_latents` shaped `[H/16,W/16,128]`. Precomputed `prompt_embedding` accepts `[tokens,46080]` with six consecutive 7680-wide bundles and must already include the intended reference-image conditioning.
 
+Optional `--sampler er_sde --schedule beta` uses the three-stage stochastic
+solver with a beta-quantile schedule and the same image-size-dependent shift.
+The options can also be selected independently; Euler and the original schedule
+remain defaults. See [sampling settings](sampling_settings.md#er-sde-and-beta).
+
 ## Validation
 
 `tests/test_fibo.cpp` and the C API tests exercise planning, schedule values, mask dimensions, prompt formatting and unsupported options. Development-only checks use local weights:

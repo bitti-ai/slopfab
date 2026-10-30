@@ -19,11 +19,61 @@ slopfab generate --prompt "A moonlit forest" --sampling-settings sampling.json -
 
 The example specifies four evaluations. It illustrates the format; choose values appropriate to the model's training recipe. `base_sigmas` contains **unshifted** sigma points, including terminal zero. Each modality applies its shift as `shift * base / (1 + (shift - 1) * base)` in float32. Do not put already-shifted sigmas here.
 
-Only `version` is required. Omitting a field inherits it. `sampler` accepts `"euler"`, `"ab2"`, or `"renoise"`; absent a selection, Euler is used. Shifts must be finite and positive. A grid must have at least two finite points, start in `(0,1]`, decrease strictly, and end at zero. Shifted grids must also remain valid in float32. Unsupported versions, unknown fields, incorrect types and invalid grids are errors. JSON syntax uses the repository's existing parser.
+Only `version` is required. Omitting a field inherits it. `sampler` accepts `"euler"`, `"ab2"`, `"renoise"`, or `"er_sde"`; absent a selection, Euler is used. Shifts must be finite and positive. A grid must have at least two finite points, start in `(0,1]`, decrease strictly, and end at zero. Shifted grids must also remain valid in float32. Unsupported versions, unknown fields, incorrect types and invalid grids are errors. JSON syntax uses the repository's existing parser.
 
-Omit `base_sigmas` to inherit the selected grid, or use the ordinary linspace if no lower layer supplies a grid. `default_steps` is an integer from 2 to 1,000,000 specifying grid points. Explicit `--steps` takes precedence over this default and resolves conflicting adapter step defaults. A fixed grid determines its own length and takes precedence over `--steps`. Fixed grids support Euler or re-noising and disable approximate step, block and MotionCache reuse. AB2 is rejected with fixed grids. These restrictions also apply when the grid comes from metadata.
+Omit `base_sigmas` to inherit the selected grid, or use the ordinary linspace if no lower layer supplies a grid. `default_steps` is an integer from 2 to 1,000,000 specifying grid points. Explicit `--steps` takes precedence over this default and resolves conflicting adapter step defaults. A fixed grid determines its own length and takes precedence over `--steps`. Fixed grids support Euler, re-noising or ER-SDE and disable approximate step, block and MotionCache reuse. AB2 is rejected with fixed grids. These restrictions also apply when the grid comes from metadata; FastH3 and OmniRef still require Euler.
 
 CLI, C++ and C API now inherit the same recipe defaults: ordinarily 50 grid points, or 4 for Animate. The CLI previously forced 15. `GenerateRequest::num_inference_steps = 0` means inherit; positive explicit counts are retained when toggling Animate. Set an explicit count to preserve an old CLI invocation's evaluation count.
+
+## ER-SDE and beta
+
+```sh
+slopfab generate --model krea2 --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple.ppm
+slopfab generate --model krea2 --inference-backend vulkan --vulkan-arithmetic portable --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple-vulkan.ppm
+```
+
+`--scheduler` is an alias for `--schedule`. ER-SDE and beta are independent:
+either can be selected without the other. Both support H3 on CUDA/Vulkan,
+Krea 2 on CUDA/Vulkan, and MOSS/Fibo on CUDA. Music retains its own flow solver.
+
+ER-SDE implements the three-stage extended reverse-time SDE solver with one
+model evaluation per update, unit noise strength and the reference noise-scaling
+function. It ramps through first, second and third order, keeps separate histories
+for each modality, and uses fresh seeded noise except at the terminal denoise.
+It follows [ComfyUI's flow ER-SDE implementation](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/k_diffusion/sampling.py),
+with stable double-precision scalar coefficients. Native noise uses slopfab's
+counter-based RNG, so seeds are repeatable but do not match PyTorch images.
+Sigma 1 is offset by 0.0001 in unshifted time before model evaluation to avoid
+an infinite noise/data ratio. Default Euler arithmetic is unchanged.
+
+Vulkan uses the same host ER-SDE update as CUDA, downloading/updating/uploading
+the latent rows between GPU predictions, as its existing re-noising path does.
+ER-SDE rejects approximate step/block/MotionCache reuse, H3 image editing and
+recipes requiring Euler. FastH3 and OmniRef retain their trained grids.
+
+Beta follows [ComfyUI's beta quantile scheduler](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/samplers.py):
+descending beta quantiles select nearest-even rounded training-grid indices;
+consecutive duplicates are removed and terminal zero is appended. The training
+grid has 1,000 points for H3/MOSS and 10,000 for Krea/Fibo. Each model's shift
+is applied to the selected training times. Defaults are alpha=beta=0.6.
+H3 `--steps` still counts grid points including zero; image-model `--steps`
+counts requested evaluations. Quantization may reduce the realized count.
+
+The JSON/C API equivalent, with optional shape overrides, is:
+
+```json
+{"version":1,"sampler":"er_sde","scheduler":"beta","beta_alpha":0.6,"beta_beta":0.6}
+```
+
+`scheduler` accepts `default` or `beta`; `beta_alpha` and `beta_beta` must be
+finite values in `[0.01,100]`. These fields follow the normal metadata and
+override precedence. Beta cannot be combined with `base_sigmas`, including a
+fixed grid inherited from a model or LoRA. Independent audio counts use beta
+too when selected. C callers can also select `SLOPFAB_SCHEDULE_BETA` through
+`slopfab_request_set_schedule`, then set the sampler through sampling JSON.
+
+CPU tests compare ER-SDE trajectories with upstream and beta indices with SciPy.
+Regenerate those reference values with `tools/sampler_reference.py --source PATH_TO_COMFYUI`.
 
 ## Independent audio steps (experimental)
 
@@ -35,7 +85,7 @@ slopfab generate --prompt "A person playing a piano" --steps 4 --audio-steps 25 
 ```
 
 Like `--steps`, this counts grid points **including terminal zero**: the example
-runs 3 video updates and 24 audio updates. Audio uses an ordinary linspace with
+runs 3 video updates and 24 audio updates. Audio uses the selected generated schedule with
 the resolved `audio_sigma_shift`. Video retains its selected grid, including a
 fixed grid from a LoRA, `base_sigmas`, or a named schedule. Without this option,
 audio continues to inherit the video count and base grid exactly as before.
@@ -60,9 +110,9 @@ It accepts integers from 2 to 1,000,000 and follows the usual field precedence
 and adapter conflict rules. Explicit `--audio-steps` wins over the JSON file
 regardless of argument order. A fixed `base_sigmas` grid still governs video;
 `audio_steps` overrides that grid for audio. Even an explicit equal count uses
-the ordinary audio grid, so omit the option to preserve a fixed audio recipe.
+the generated audio grid, so omit the option to preserve a fixed audio recipe.
 
-Independent counts support Euler and re-noising on both backends, and AB2 on
+Independent counts support Euler, re-noising and ER-SDE on both backends, and AB2 on
 CUDA when no fixed grid is selected. Different counts cannot use step, block,
 or MotionCache reuse. `audio_steps` is rejected for still images, preserved
 target audio, and FastH3 V2, which requires its trained audio grid.

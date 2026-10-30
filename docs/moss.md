@@ -56,6 +56,10 @@ of grid points including terminal zero. Snapping can remove duplicate steps.
 Use sampling-settings `video_sigma_shift` to override the image shift. Native
 seeded noise is reproducible but does not reproduce PyTorch's RNG.
 
+Optional `--sampler er_sde` and `--schedule beta` are supported independently or
+together. Beta uses the 1,000-point shifted training grid and defaults to
+alpha=beta=0.6. See [sampling settings](sampling_settings.md#er-sde-and-beta).
+
 The current MOSS implementation supports CUDA with `flash2` attention, which the
 CLI selects by default for MOSS. It does not implement Vulkan, references/image
 editing, LoRA, H3 caching/continuation/latent archives, or upscaling. These options

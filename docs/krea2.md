@@ -44,6 +44,11 @@ with `--sampling-settings FILE`, using `video_sigma_shift = exp(mu)`, where
 from tensor shapes; this family always defaults to Turbo settings. RAW weights
 have not been tested locally.
 
+`--sampler er_sde --schedule beta` selects the optional three-stage stochastic
+solver and beta-quantile grid on CUDA or Vulkan. Either option also works
+independently. Beta defaults to alpha=beta=0.6; sampling JSON can override
+`beta_alpha` and `beta_beta`. See [sampling settings](sampling_settings.md#er-sde-and-beta).
+
 The conditioner retains up to 507 prompt tokens plus five suffix tokens after the
 34-token system prefix, matching upstream truncation. Padding is removed without
 changing valid-token attention. Seeded native noise is reproducible but differs
