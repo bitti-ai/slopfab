@@ -30,6 +30,9 @@ struct LcsSettings {
   int start_step = 0, end_step = 2147483647; // inclusive, video updates
   int anchor = 0;                            // none=0, self=1, smooth=2
   float anchor_strength = 0;
+  // Grade the assembled end-anchor clip once; step ranges still govern the
+  // other sampling effects. Previously retained source frames are excluded.
+  bool tone_after_denoise = false;
   bool active() const;
   void validate() const;
 };
@@ -44,6 +47,10 @@ void fit_lcs_sharpness(LcsData& data, const std::vector<float>& differences);
 // orthogonal residual. Native arithmetic runs on CPU for both GPU backends.
 SamplingEffect make_lcs_effect(std::shared_ptr<const LcsData> data, LcsSettings settings,
                                std::vector<float> mask = {});
+LcsSettings lcs_sampling_settings(LcsSettings settings);
+void apply_lcs_output_tone(std::shared_ptr<const LcsData> data, LcsSettings settings,
+                           const std::vector<float>& mask, SamplingStep video,
+                           int preserved_frames = 0);
 std::string lcs_vae_fingerprint(const std::string& path);
 // Synchronous native calibration; false means cancelled, no output is written.
 bool calibrate_lcs(const std::string& vae_path, DeviceBackend backend, bool portable,

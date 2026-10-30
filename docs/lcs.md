@@ -124,7 +124,24 @@ mask value preserves that patch exactly. Pass `NULL, 0` to clear the mask.
 `slopfab_request_set_lcs(request, NULL, NULL)` disables native LCS and clears its
 mask, while preserving the application callback.
 
+## Single Shot output Tone (API 1.48)
+
+For a latent end-anchor request, `"tone_after_denoise": true` moves contrast,
+brightness, saturation and temperature out of sampling. Generate the temporary
+ending without these four controls, then enable them with this flag on the full
+request. After joining, Tone runs once over the new main section and the entire
+ending, before the latent archive is saved and the video VAE decodes it. A retained
+beginning is excluded. This avoids independently grading the short ending and the
+main generation, and keeps the ending used for conditioning free of this Tone pass.
+
+Step limits continue to govern color steering, sharpness and color stabilization;
+output Tone is independent of those limits. Region masks still apply, but this
+mode accepts only a spatial mask (or no mask), not a full sampling-volume mask.
+Sampling previews do not include this final Tone pass. Other generation modes
+keep their existing in-sampling Tone behavior.
+
 ## Implement a custom sampling effect
+
 
 ```c
 static int SLOPFAB_CALL effect(const slopfab_sampling_step* step, void* userdata) {

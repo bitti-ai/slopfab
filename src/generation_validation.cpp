@@ -79,6 +79,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
             "LCS calibration has no sharpness direction");
   }
   const size_t lcs_plane = size_t(p.layout.latent_height / 2) * size_t(p.layout.latent_width / 2);
+  require(!o.lcs.tone_after_denoise ||
+              (r.end_anchor_latents && (o.lcs_mask.empty() || o.lcs_mask.size() == lcs_plane)),
+          "output tone requires a latent ending anchor and a spatial mask");
   require(o.lcs_mask.empty() ||
               (o.lcs_data && (o.lcs_mask.size() == lcs_plane ||
                               o.lcs_mask.size() == size_t(p.layout.num_video_rows))),

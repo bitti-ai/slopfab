@@ -456,6 +456,8 @@ LcsSettings parse_lcs_settings(const std::string& text) try {
       s.start_step = integer();
     else if (k == "end_step")
       s.end_step = integer();
+    else if (k == "tone_after_denoise")
+      s.tone_after_denoise = v.as_bool();
     else
       throw std::invalid_argument("LCS: unknown setting " + k);
   }
@@ -464,6 +466,45 @@ LcsSettings parse_lcs_settings(const std::string& text) try {
 } catch (const std::runtime_error& e) {
 
   throw std::invalid_argument(std::string("LCS settings: ") + e.what());
+}
+
+LcsSettings lcs_sampling_settings(LcsSettings s) {
+  if (s.tone_after_denoise) {
+    s.contrast = s.saturation = 1;
+    s.brightness = s.temperature = 0;
+  }
+  return s;
+}
+
+void apply_lcs_output_tone(std::shared_ptr<const LcsData> data, LcsSettings s,
+                           const std::vector<float>& mask, SamplingStep video,
+                           int preserved_frames) {
+  if (!s.tone_after_denoise)
+    return;
+  s.validate();
+  LcsSettings tone;
+  tone.contrast = s.contrast;
+  tone.brightness = s.brightness;
+  tone.saturation = s.saturation;
+  tone.temperature = s.temperature;
+  if (!tone.active())
+    return;
+  require(video.modality == 0 && video.denoised && video.frames > 0 &&
+              video.height > 0 && video.width > 0 && video.height % 2 == 0 &&
+              video.width % 2 == 0 && video.row_width == D &&
+              preserved_frames >= 0 && preserved_frames <= video.frames,
+          "invalid output tone geometry");
+  const size_t plane = size_t(video.height / 2) * size_t(video.width / 2);
+  require(video.count == size_t(video.frames) * plane * D,
+          "output tone rows do not match geometry");
+  require(mask.empty() || mask.size() == plane, "output tone needs a spatial mask");
+  const size_t offset = size_t(preserved_frames) * plane * D;
+  video.denoised += offset;
+  video.count -= offset;
+  video.frames -= preserved_frames;
+  video.step = 0;
+  if (video.frames)
+    make_lcs_effect(std::move(data), tone, mask)(video);
 }
 
 SamplingEffect make_lcs_effect(std::shared_ptr<const LcsData> data, LcsSettings s,

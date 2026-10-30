@@ -121,11 +121,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     if (options.lcs_data && options.lcs.active()) {
       if (options.lcs_data->vae_sha256 != lcs_vae_fingerprint(request.video_vae_path))
         throw std::invalid_argument("LCS calibration belongs to a different VAE checkpoint");
-      auto native = make_lcs_effect(options.lcs_data, options.lcs, options.lcs_mask);
-      sampling_effect = [native = std::move(native),
-                         host = options.sampling_effect](const SamplingStep& step) {
-        return (!native || native(step)) && (!host || host(step));
-      };
+      auto native = make_lcs_effect(options.lcs_data, lcs_sampling_settings(options.lcs), options.lcs_mask);
+      if (native)
+        sampling_effect = [native = std::move(native),
+                           host = options.sampling_effect](const SamplingStep& step) {
+          return native(step) && (!host || host(step));
+        };
     }
     if (!options.latent_upscale_model_path.empty()) {
       SafeTensors checkpoint;
@@ -1288,6 +1289,17 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   completed->audio_vae = request.audio_vae_path;
   completed->validate();
   layout = completed->layout();
+  if (options.lcs.tone_after_denoise) {
+    SamplingStep tone;
+    tone.frames = layout.num_latent_frames;
+    tone.height = layout.latent_height;
+    tone.width = layout.latent_width;
+    tone.row_width = 96;
+    tone.count = completed->video_rows.size();
+    tone.denoised = completed->video_rows.data();
+    apply_lcs_output_tone(options.lcs_data, options.lcs, options.lcs_mask, tone,
+                          request.continuation ? request.continuation->layout().num_latent_frames : 0);
+  }
   if (!options.save_latents_path.empty()) {
     completed->save(options.save_latents_path);
     result.outputs.push_back(options.save_latents_path);

@@ -1,5 +1,7 @@
 #include "harness.h"
 #include "slopfab/lcs.h"
+#include "slopfab/continuation.h"
+#include "latent_fixture.h"
 #include "../src/core/lcs_fingerprint_cache.h"
 #include <fstream>
 #include <thread>
@@ -153,6 +155,57 @@ SLOPFAB_TEST(lcs_settings_and_anchor_isolation) {
   CHECK(second(step));
   for (float x : values)
     CHECK(x == .8f);
+}
+
+SLOPFAB_TEST(lcs_single_shot_tone_grades_body_and_ending_once_preserving_source) {
+  using namespace slopfab;
+  auto data = std::make_shared<LcsData>(fixture());
+  auto tone = parse_lcs_settings(R"({"tone_after_denoise":true,"contrast":0.9,"brightness":0.1,"saturation":0.95,"temperature":0.05,"start_step":2,"end_step":4})");
+  CHECK(!lcs_sampling_settings(tone).active());
+  auto mixed = tone;
+  mixed.sharpness = .5f;
+  auto sampling = lcs_sampling_settings(mixed);
+  CHECK(sampling.sharpness == .5f && sampling.start_step == 2 && sampling.end_step == 4);
+  CHECK(sampling.contrast == 1 && sampling.brightness == 0 && sampling.saturation == 1 && sampling.temperature == 0);
+  CHECK(rejects([] { parse_lcs_settings(R"({"tone_after_denoise":1})"); }));
+
+  LatentFixture file;
+  file.write(22);
+  auto ending = *LatentClip::load(file.path.string());
+  // Identical neutral patches either side of the join must receive exactly
+  // the same grade, with no dependence on the ending pass's length or steps.
+  std::fill(ending.video_rows.begin(), ending.video_rows.end(), .2f);
+  const auto original = ending;
+  for (bool continued : {false, true}) {
+    for (const std::vector<float> mask : {std::vector<float>{}, std::vector<float>{0, 1}, std::vector<float>{1, 0}}) {
+      const LatentClip* source = continued ? &original : nullptr;
+      const auto plan = plan_latent_end_anchor(ending, 22, 34, source);
+      auto layout = ending.layout();
+      const size_t row = size_t(layout.rows_per_frame()) * 96;
+      const int window_latents = plan.prefix_video_latents + plan.generated_video_latents + plan.suffix_video_latents;
+      std::vector<float> video(size_t(window_latents) * row, .2f);
+      std::vector<float> audio(size_t(plan.window_audio_latents) * 64, 0);
+      auto joined = join_latent_end_anchor(ending, source, plan, video, audio);
+      const auto before = joined;
+      const auto output = joined.layout();
+      const int preserved = continued ? original.layout().num_latent_frames : 0;
+      SamplingStep step;
+      step.frames = output.num_latent_frames; step.height = output.latent_height; step.width = output.latent_width;
+      step.row_width = 96; step.count = joined.video_rows.size(); step.denoised = joined.video_rows.data();
+      apply_lcs_output_tone(data, tone, mask, step, preserved);
+      CHECK(joined.audio_rows == before.audio_rows);
+      CHECK(ending.video_rows == original.video_rows);
+      CHECK(std::equal(joined.video_rows.begin(), joined.video_rows.begin() + preserved * row, before.video_rows.begin()));
+      auto expected = std::vector<float>(row, .2f);
+      step.frames = 1; step.count = row; step.denoised = expected.data(); step.step = 0;
+      auto once = tone; once.tone_after_denoise = false; once.start_step = 0;
+      CHECK(make_lcs_effect(data, once, mask)(step));
+      CHECK(expected != std::vector<float>(row, .2f));
+      for (int f = preserved; f < output.num_latent_frames; ++f)
+        for (size_t i = 0; i < row; ++i)
+          CHECK_NEAR(joined.video_rows[size_t(f) * row + i], expected[i], 1e-6);
+    }
+  }
 }
 
 SLOPFAB_TEST(lcs_fingerprint_reuses_unchanged_files_and_invalidates_edits) {
