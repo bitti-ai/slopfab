@@ -1,6 +1,6 @@
 # slopfab
 
-Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), using CUDA or Vulkan, and image generation with [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) and [Fibo 2.0 editing](https://huggingface.co/briaai/Fibo-2.0-edit-turbo) on CUDA. No Python is required at runtime.
+Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), using CUDA or Vulkan, and image generation with [Krea 2](https://github.com/krea-ai/krea-2), [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) and [Fibo 2.0 editing](https://huggingface.co/briaai/Fibo-2.0-edit-turbo) on CUDA. No Python is required at runtime.
 
 ## Features
 
@@ -114,6 +114,8 @@ For YuE2 and MiniMax Music3 audio generation on CUDA or Vulkan, see [music setup
 For the H3 W4A8 ConvRot transformer, see [packed INT4 setup](docs/w4a8.md).
 For H3 W6A8 checkpoints, including the Singularity/PRISM merge, see [packed INT6 setup](docs/w6a8.md).
 
+For Krea 2 Turbo, see [Krea setup and usage](docs/krea2.md).
+
 For Fibo 2.0 Edit Turbo, see [Fibo setup and DLL usage](docs/fibo2.md).
 
 For MOSS Image SFT, see [MOSS setup and usage](docs/moss.md). For example:
@@ -123,7 +125,7 @@ slopfab generate --model moss --prompt "A red apple on a wooden table" --resolut
 ```
 
 Model family is inferred from an explicit transformer checkpoint, or selected
-with `--model h3|moss|fibo2|yue2|minimax_music3`. Discovery selects matching conditioner and VAE families.
+with `--model h3|moss|fibo2|krea2|yue2|minimax_music3`. Discovery selects matching conditioner and VAE families.
 The default family remains H3.
 
 H3 generation uses a Qwen3-VL text encoder, an H3 transformer, a video VAE and an audio VAE. Place compatible checkpoints under:

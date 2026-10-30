@@ -23,14 +23,16 @@ GeneratePlan resolve_krea_plan(const GenerateRequest& r) {
   if (r.has_references() || r.image_edit.image || r.continuation || r.bridge || r.animate ||
       r.video_transition || r.preserve_driving_audio || r.keystone.source || r.end_anchor_latents ||
       !r.end_anchor_path.empty() || !r.loras.empty() || r.cache_threshold != 0 || r.skip_every ||
-      r.block_cache_span || r.motion_cache.active() || r.schedule != sampler::ScheduleKind::kDefault)
-    throw std::invalid_argument("Krea 2 supports text-to-image without references, H3 conditioning, LoRAs or caches");
+      r.block_cache_span || r.motion_cache.active() ||
+      r.schedule != sampler::ScheduleKind::kDefault)
+    throw std::invalid_argument(
+        "Krea 2 supports text-to-image without references, H3 conditioning, LoRAs or caches");
   validate_sampling_settings(r.sampling);
   const auto& c = r.conditioning;
-  if (c.require_prompt_embedding || c.fixed_prompt_tokens || c.image_short_edge || c.media_short_edge ||
-      c.media_max_pixels || c.references_at_target_canvas || c.canvas_from_reference_video ||
-      c.include_reference_audio || c.video_first || c.pin_target_audio || c.max_frames ||
-      c.require_euler || c.allow_caches)
+  if (c.require_prompt_embedding || c.fixed_prompt_tokens || c.image_short_edge ||
+      c.media_short_edge || c.media_max_pixels || c.references_at_target_canvas ||
+      c.canvas_from_reference_video || c.include_reference_audio || c.video_first ||
+      c.pin_target_audio || c.max_frames || c.require_euler || c.allow_caches)
     throw std::invalid_argument("Krea 2 does not use H3 conditioning settings");
   if (r.sampling.audio_steps || r.sampling.audio_sigma_shift || r.sampling.base_sigmas ||
       r.sampling.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler)
@@ -64,7 +66,8 @@ GeneratePlan resolve_krea_plan(const GenerateRequest& r) {
   p.layout.latent_height = p.canvas_height / 16;
   p.layout.num_video_rows = p.layout.latent_width * p.layout.latent_height;
   p.video_sigma_shift = r.sampling.video_sigma_shift.value_or(float(std::exp(1.15)));
-  p.num_inference_steps = r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(8);
+  p.num_inference_steps =
+      r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(8);
   p.video_sigmas = krea_sigma_schedule(p.num_inference_steps, p.video_sigma_shift);
   p.video_timesteps.assign(p.video_sigmas.begin(), p.video_sigmas.end() - 1);
   p.sampler = sampler::SamplerKind::kEuler;

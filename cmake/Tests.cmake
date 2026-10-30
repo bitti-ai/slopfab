@@ -17,6 +17,9 @@ if(SLOPFAB_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_music_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(music_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     if(SLOPFAB_ENABLE_CUDA)
+      add_test(NAME krea_cli COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_krea_cli.py" "$<TARGET_FILE:slopfab>")
+      set_tests_properties(krea_cli PROPERTIES LABELS synthetic TIMEOUT 60)
       add_test(NAME moss_cli COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_moss_cli.py" "$<TARGET_FILE:slopfab>")
       set_tests_properties(moss_cli PROPERTIES LABELS synthetic TIMEOUT 60)
@@ -42,6 +45,8 @@ if(SLOPFAB_BUILD_TESTS)
     target_link_libraries(slopfab_musicprobe PRIVATE slopfab_cuda)
     add_executable(slopfab_w4a8probe tools/w4a8probe.cpp)
     target_link_libraries(slopfab_w4a8probe PRIVATE slopfab_cuda)
+    add_executable(slopfab_kreaprobe tools/kreaprobe.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
+    target_link_libraries(slopfab_kreaprobe PRIVATE slopfab_generation)
     add_executable(slopfab_fiboprobe tools/fiboprobe.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
     target_link_libraries(slopfab_fiboprobe PRIVATE slopfab_generation)
     add_executable(slopfab_mossprobe tools/mossprobe.cpp)
@@ -86,6 +91,7 @@ if(SLOPFAB_BUILD_TESTS)
   add_executable(slopfab_tests
     tests/test_sampling_effect.cpp
     tests/test_lcs.cpp
+    tests/test_krea.cpp
     tests/test_fibo.cpp
     tests/test_music.cpp
     tests/test_moss.cpp

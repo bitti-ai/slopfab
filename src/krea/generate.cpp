@@ -15,19 +15,32 @@
 namespace slopfab::krea {
 namespace {
 struct Cancelled {};
+
 using Clock = std::chrono::steady_clock;
-double elapsed(Clock::time_point start) { return std::chrono::duration<double>(Clock::now()-start).count(); }
-float bf(float v) { return __bfloat162float(__float2bfloat16(v)); }
-void parent(const std::string& path) {
-  auto p=std::filesystem::path(path).parent_path();
-  if(!p.empty())std::filesystem::create_directories(p);
+
+double elapsed(Clock::time_point start) {
+  return std::chrono::duration<double>(Clock::now() - start).count();
 }
+
+float bf(float v) {
+  return __bfloat162float(__float2bfloat16(v));
+}
+
+void parent(const std::string& path) {
+  auto p = std::filesystem::path(path).parent_path();
+  if (!p.empty())
+    std::filesystem::create_directories(p);
+}
+
 Tensor load_context(const std::string& path) {
-  SafeTensors st;st.open(path);
-  const auto& t=st.at("prompt_embedding");
-  if(t.shape.size()!=3||t.shape[0]<1||t.shape[0]>512||t.shape[1]!=12||t.shape[2]!=2560)
-    throw std::invalid_argument("Krea 2 prompt_embedding must have shape [1..512,12,2560], valid tokens only");
-  return from_host(to_f32(t),int(t.shape[0])*12,2560);
+  SafeTensors st;
+  st.open(path);
+  const auto& t = st.at("prompt_embedding");
+  if (t.shape.size() != 3 || t.shape[0] < 1 || t.shape[0] > 512 || t.shape[1] != 12 ||
+      t.shape[2] != 2560)
+    throw std::invalid_argument(
+        "Krea 2 prompt_embedding must have shape [1..512,12,2560], valid tokens only");
+  return from_host(to_f32(t), int(t.shape[0]) * 12, 2560);
 }
 }
 
@@ -46,18 +59,25 @@ RunResult run(const GenerateRequest& request, const GeneratePlan& plan, const Ru
     notify(RunStage::kConditioning);
     auto start = Clock::now();
     std::vector<float> latent(size_t(n) * 64);
-    sampler::fill_normal(request.seed, sampler::NoiseStream::kVideoLatents, latent.data(), latent.size());
-    for (auto& v : latent) v = bf(v);
+    sampler::fill_normal(request.seed, sampler::NoiseStream::kVideoLatents, latent.data(),
+                         latent.size());
+    for (auto& v : latent)
+      v = bf(v);
     {
       auto context = options.prompt_embedding_path.empty()
-          ? fibo::encode_krea_prompt(request.text_encoder_path, request.tokenizer_path,
-                                    request.prompt, [&] { notify(RunStage::kConditioning); })
-          : load_context(options.prompt_embedding_path);
+                         ? fibo::encode_krea_prompt(request.text_encoder_path,
+                                                    request.tokenizer_path, request.prompt,
+                                                    [&] {
+                                                      notify(RunStage::kConditioning);
+                                                    })
+                         : load_context(options.prompt_embedding_path);
       Tensor negative;
       const float guidance = krea_guidance(request);
       if (guidance > 0)
         negative = fibo::encode_krea_prompt(request.text_encoder_path, request.tokenizer_path,
-                         request.negative_prompt, [&] { notify(RunStage::kConditioning); });
+                                            request.negative_prompt, [&] {
+                                              notify(RunStage::kConditioning);
+                                            });
       result.conditioner_executed = options.prompt_embedding_path.empty() || guidance > 0;
       result.seconds_conditioning = elapsed(start);
       notify(RunStage::kTransformerLoad);
@@ -65,36 +85,41 @@ RunResult run(const GenerateRequest& request, const GeneratePlan& plan, const Ru
       size_t free = 0, total = 0;
       SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
       const bool streaming = free < std::filesystem::file_size(request.transformer_path) +
-                                   size_t(4) * 1024 * 1024 * 1024;
+                                        size_t(4) * 1024 * 1024 * 1024;
       Runtime transformer(request.transformer_path);
       auto text = fuse_text(transformer, context);
       context = Tensor();
       Tensor uncond;
-      if (guidance > 0) uncond = fuse_text(transformer, negative);
+      if (guidance > 0)
+        uncond = fuse_text(transformer, negative);
       negative = Tensor();
       const int steps = int(plan.video_timesteps.size());
       notify(RunStage::kDenoising, -1, steps);
       for (int step = 0; step < steps; ++step) {
-        const auto check = [&] { notify(RunStage::kDenoising, step - 1, steps); };
-        auto prediction = to_host(predict(transformer, from_host(latent,n,64),text,h,w,
-                                          plan.video_sigmas[step],streaming,check));
+        const auto check = [&] {
+          notify(RunStage::kDenoising, step - 1, steps);
+        };
+        auto prediction = to_host(predict(transformer, from_host(latent, n, 64), text, h, w,
+                                          plan.video_sigmas[step], streaming, check));
         if (guidance > 0) {
-          auto u = to_host(predict(transformer,from_host(latent,n,64),uncond,h,w,
-                                   plan.video_sigmas[step],streaming,check));
+          auto u = to_host(predict(transformer, from_host(latent, n, 64), uncond, h, w,
+                                   plan.video_sigmas[step], streaming, check));
           // Upstream CFG is cond + guidance * (cond - uncond).
-          for(size_t i=0;i<prediction.size();++i)
-            prediction[i]=bf(prediction[i]+bf(guidance*bf(prediction[i]-u[i])));
+          for (size_t i = 0; i < prediction.size(); ++i)
+            prediction[i] = bf(prediction[i] + bf(guidance * bf(prediction[i] - u[i])));
         }
-        float dt=plan.video_sigmas[step+1]-plan.video_sigmas[step];
-        for(size_t i=0;i<latent.size();++i){
-          latent[i]=bf(latent[i]+bf(dt*prediction[i]));
-          if(!std::isfinite(latent[i]))throw std::runtime_error("non-finite Krea 2 latent");
+        float dt = plan.video_sigmas[step + 1] - plan.video_sigmas[step];
+        for (size_t i = 0; i < latent.size(); ++i) {
+          latent[i] = bf(latent[i] + bf(dt * prediction[i]));
+          if (!std::isfinite(latent[i]))
+            throw std::runtime_error("non-finite Krea 2 latent");
         }
         ++result.steps_computed;
-        notify(RunStage::kDenoising,step,steps);
-        if(options.verbose)std::printf("Krea 2 step %d/%d\n",step+1,steps);
+        notify(RunStage::kDenoising, step, steps);
+        if (options.verbose)
+          std::printf("Krea 2 step %d/%d\n", step + 1, steps);
       }
-      result.seconds_denoise=result.seconds_denoise_loop=elapsed(start);
+      result.seconds_denoise = result.seconds_denoise_loop = elapsed(start);
     }
     if (!options.dump_latents_path.empty()) {
       parent(options.dump_latents_path);
