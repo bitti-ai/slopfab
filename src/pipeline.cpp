@@ -68,7 +68,7 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
       : request.bridge ? plan_bridge(*request.bridge, request.num_frames).window_frames
       : request.continuation
           ? plan_continuation(*request.continuation, request.continuation_overlap_frames,
-                              request.num_frames)
+                              request.num_frames, 0, request.continuation_regenerate_frames)
                 .window_frames
           : (request.still_image ? 1 : dit::align_num_frames(request.num_frames));
   key += "decoded-media-preprocessing-v2:" + std::to_string(frames);
@@ -137,6 +137,10 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::invalid_argument("MotionCache requires the default schedule without other caches");
   if (request.continuation_lock_overlap && !request.continuation)
     throw std::invalid_argument("lock-overlap requires a continuation source");
+  if (request.continuation_regenerate_frames &&
+      (!request.continuation || !request.continuation_lock_overlap || request.end_anchor_latents ||
+       request.continuation_source_noise > 0 || request.video_transition || request.bridge))
+    throw std::invalid_argument("regenerating overlap requires locked continuation without source initialization, bridges or ending anchors");
   if (request.continuation_lock_overlap &&
       (request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
        request.motion_cache.active()))
@@ -247,7 +251,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
         plan.canvas_height != request.continuation->height)
       throw std::invalid_argument("continuation canvas must match the saved latents");
     plan.continuation = plan_continuation(*request.continuation,
-        request.continuation_overlap_frames, request.num_frames);
+        request.continuation_overlap_frames, request.num_frames, 0, request.continuation_regenerate_frames);
     if (request.keystone.source)
       (void)make_keystone_constraint(*request.continuation, plan.continuation, request.keystone);
     plan.aligned_frames = plan.continuation.output_frames;
@@ -337,9 +341,9 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   } else if (request.continuation) {
     plan.layout.condition_audio_is_explicit = true;
     plan.layout.num_condition_video +=
-        plan.continuation.overlap_video_latents * plan.layout.rows_per_frame(plan.geometry);
+        plan.continuation.held_video_latents * plan.layout.rows_per_frame(plan.geometry);
     plan.layout.num_condition_audio +=
-        plan.geometry.audio_channels * plan.continuation.overlap_audio_latents;
+        plan.geometry.audio_channels * plan.continuation.held_audio_latents;
   }
 
   if (request.bridge) {
@@ -671,6 +675,11 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
         ((request.continuation_lock_overlap || request.continuation_source_noise > 0 || request.keystone.source)
              ? "locked video and audio" : "conditioning only") + "\n";
   }
+  if (request.continuation_regenerate_frames)
+    description += "  overlap replacement " + std::to_string(plan.continuation.overlap_frames) +
+        " frames; hold " + std::to_string(plan.continuation.overlap_frames - plan.continuation.regenerate_frames) +
+        ", regenerate " + std::to_string(plan.continuation.regenerate_frames) +
+        "; join replaces full overlap in video and audio\n";
   if (request.keystone.source) {
     description += "  keystone            persistent original-clip front anchor";
     if (!request.continuation)

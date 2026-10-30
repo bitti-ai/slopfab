@@ -59,12 +59,14 @@ void read_rows(const SafeTensors& file, const char* name, int rows, int columns,
 
 void validate_plan(const LatentClip& source, const ContinuationPlan& p) {
   const auto expected = plan_continuation(source, p.overlap_frames, p.extension_frames,
-                                          p.tail_padding_frames);
+                                          p.tail_padding_frames, p.regenerate_frames);
   require(p.extension_frames == expected.extension_frames &&
               p.window_frames == expected.window_frames &&
               p.output_frames == expected.output_frames &&
               p.overlap_video_latents == expected.overlap_video_latents &&
               p.overlap_audio_latents == expected.overlap_audio_latents &&
+              p.held_video_latents == expected.held_video_latents &&
+              p.held_audio_latents == expected.held_audio_latents &&
               p.window_audio_latents == expected.window_audio_latents,
           "continuation plan does not match its source timeline");
 }
@@ -168,12 +170,14 @@ std::shared_ptr<const LatentClip> LatentClip::load(const std::string& path) {
 }
 
 ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int extension,
-                                   int tail_padding_frames) {
+                                   int tail_padding_frames, int regenerate_frames) {
   source.validate();
   require(source.sampled && source.frames >= 22, "continuation needs completed video latents");
   require(overlap >= 5 && overlap % 17 == 5 && overlap <= source.frames,
           "overlap must be 17*k+5 frames, at least 5, and fit in the source clip");
   require(extension > 0, "extension must be positive");
+  require(regenerate_frames >= 0 && regenerate_frames % 17 == 0 && regenerate_frames < overlap,
+          "regenerated overlap must be a multiple of 17 and leave held context");
   require(tail_padding_frames == 0 || tail_padding_frames == 17,
           "continuation tail padding must be 0 or 17 frames");
   const int64_t added = ((int64_t(extension) + 16) / 17) * 17;
@@ -181,15 +185,18 @@ ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int ex
           "extension is too long");
   ContinuationPlan p;
   p.overlap_frames = overlap;
+  p.regenerate_frames = regenerate_frames;
   p.extension_frames = static_cast<int>(added);
   p.tail_padding_frames = tail_padding_frames;
   p.window_frames = overlap + p.extension_frames + tail_padding_frames;
   p.output_frames = source.frames + p.extension_frames;
   p.overlap_video_latents = dit::video_latent_num_frames(overlap);
+  p.held_video_latents = dit::video_latent_num_frames(overlap - regenerate_frames);
   const int64_t boundary = (int64_t(source.frames - overlap) * 5 + 1) / 3;
   const int64_t output_audio = ((int64_t(p.output_frames) + tail_padding_frames) * 5 + 1) / 3;
   require(output_audio <= std::numeric_limits<int>::max() / 64, "audio timeline is too long");
   p.overlap_audio_latents = source.layout().num_audio_latents - static_cast<int>(boundary);
+  p.held_audio_latents = static_cast<int>((int64_t(source.frames - regenerate_frames) * 5 + 1) / 3 - boundary);
   p.window_audio_latents = static_cast<int>(output_audio - boundary);
   LatentClip output_geometry;
   output_geometry.geometry = source.geometry;
@@ -298,16 +305,18 @@ ContinuationConstraint make_continuation_constraint(const LatentClip& source,
   const auto layout = source.layout();
   ContinuationConstraint constraint;
   const size_t frame_size = size_t(layout.rows_per_frame()) * 96;
-  const size_t prefix = size_t(p.overlap_video_latents) * frame_size;
+  const size_t prefix = size_t(p.held_video_latents) * frame_size;
   constraint.video.target_values_per_channel =
       size_t(dit::video_latent_num_frames(p.window_frames)) * frame_size;
-  constraint.video.original.assign(source.video_rows.end() - prefix, source.video_rows.end());
+  const auto video_start = source.video_rows.end() - size_t(p.overlap_video_latents) * frame_size;
+  constraint.video.original.assign(video_start, video_start + prefix);
   constraint.audio.channels = 2;
   constraint.audio.target_values_per_channel = size_t(p.window_audio_latents) * 32;
   for (int c = 0; c < 2; ++c) {
     const auto end = source.audio_rows.begin() + size_t(c + 1) * layout.num_audio_latents * 32;
-    constraint.audio.original.insert(constraint.audio.original.end(),
-                                     end - size_t(p.overlap_audio_latents) * 32, end);
+    const auto start = end - size_t(p.overlap_audio_latents) * 32;
+    constraint.audio.original.insert(constraint.audio.original.end(), start,
+                                     start + size_t(p.held_audio_latents) * 32);
   }
   return constraint;
 }
@@ -351,26 +360,27 @@ void append_continuation_guide(const LatentClip& source, const ContinuationPlan&
                                std::vector<float>& video, std::vector<float>& audio) {
   validate_plan(source, p);
   const auto l = source.layout();
-  const size_t n = size_t(p.overlap_video_latents) * l.rows_per_frame() * 96;
+  const size_t n = size_t(p.held_video_latents) * l.rows_per_frame() * 96;
   require(n <= source.video_rows.size() && p.overlap_audio_latents <= l.num_audio_latents,
           "guide exceeds source");
   // Match H3 visual condition augmentation (t=0.999); audio anchors are clean.
   const auto noise =
-      sampler::video_noise(seed, p.overlap_video_latents, l.latent_height, l.latent_width);
+      sampler::video_noise(seed, p.held_video_latents, l.latent_height, l.latent_width);
   auto guide_layout = l;
-  guide_layout.num_latent_frames = p.overlap_video_latents;
-  guide_layout.num_video_rows = p.overlap_video_latents * l.rows_per_frame();
+  guide_layout.num_latent_frames = p.held_video_latents;
+  guide_layout.num_video_rows = p.held_video_latents * l.rows_per_frame();
   std::vector<float> packed(n);
   dit::patchify_video(noise.data(), guide_layout, packed.data());
-  const size_t start = source.video_rows.size() - n;
+  const size_t start = source.video_rows.size() - size_t(p.overlap_video_latents) * l.rows_per_frame() * 96;
   for (size_t i = 0; i < n; ++i)
     video.push_back(0.999f * source.video_rows[start + i] + (1.0f - 0.999f) * packed[i]);
   for (int c = 0; c < 2; ++c) {
     const auto end = source.audio_rows.begin() + size_t(c + 1) * l.num_audio_latents * 32;
-    audio.insert(audio.end(), end - size_t(p.overlap_audio_latents) * 32, end);
+    const auto begin = end - size_t(p.overlap_audio_latents) * 32;
+    audio.insert(audio.end(), begin, begin + size_t(p.held_audio_latents) * 32);
   }
-  geometry.push_back({dit::ReferenceKind::kVideo, p.overlap_video_latents, l.latent_height,
-                      l.latent_width, p.overlap_audio_latents, true});
+  geometry.push_back({dit::ReferenceKind::kVideo, p.held_video_latents, l.latent_height,
+                      l.latent_width, p.held_audio_latents, true});
 }
 
 LatentClip join_continuation(const LatentClip& source, const ContinuationPlan& p,
@@ -389,20 +399,24 @@ LatentClip join_continuation(const LatentClip& source, const ContinuationPlan& p
   out.transformer = source.transformer;
   out.video_vae = source.video_vae;
   out.audio_vae = source.audio_vae;
-  out.video_rows = source.video_rows;
+  const size_t kept_video = source.video_rows.size() -
+      (p.regenerate_frames ? size_t(p.overlap_video_latents) * frame_size : 0);
+  out.video_rows.assign(source.video_rows.begin(), source.video_rows.begin() + kept_video);
   const size_t tail = size_t(p.tail_padding_frames / 17 * 5) * frame_size;
   out.video_rows.insert(out.video_rows.end(),
-                        video.begin() + size_t(p.overlap_video_latents) * frame_size, video.end() - tail);
-  const int new_audio = out.layout().num_audio_latents - l.num_audio_latents;
+                        video.begin() + (p.regenerate_frames ? 0 : size_t(p.overlap_video_latents) * frame_size), video.end() - tail);
+  const int kept_audio = l.num_audio_latents - (p.regenerate_frames ? p.overlap_audio_latents : 0);
+  const int skipped_audio = p.regenerate_frames ? 0 : p.overlap_audio_latents;
+  const int new_audio = out.layout().num_audio_latents - kept_audio;
   for (int c = 0; c < 2; ++c) {
     out.audio_rows.insert(out.audio_rows.end(),
                           source.audio_rows.begin() + size_t(c) * l.num_audio_latents * 32,
-                          source.audio_rows.begin() + size_t(c + 1) * l.num_audio_latents * 32);
+                          source.audio_rows.begin() + (size_t(c) * l.num_audio_latents + kept_audio) * 32);
     out.audio_rows.insert(out.audio_rows.end(),
                           audio.begin() +
-                              (size_t(c) * p.window_audio_latents + p.overlap_audio_latents) * 32,
+                              (size_t(c) * p.window_audio_latents + skipped_audio) * 32,
                           audio.begin() +
-                              (size_t(c) * p.window_audio_latents + p.overlap_audio_latents + new_audio) * 32);
+                              (size_t(c) * p.window_audio_latents + skipped_audio + new_audio) * 32);
   }
   out.validate();
   return out;

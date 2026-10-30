@@ -29,6 +29,24 @@
 #include "latent_fixture.h"
 #include "lcs_fixture.h"
 
+SLOPFAB_TEST(capi_regenerated_overlap_validates_and_resets) {
+  LatentFixture fixture; fixture.write(192);
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_continuation_regenerate_frames(nullptr,17) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_regenerate_frames(request,18) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_regenerate_frames(request,-17) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_regenerate_frames(request,17) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request,&plan) != SLOPFAB_OK);
+  CHECK(slopfab_request_set_continuation_file(request,fixture.path.string().c_str(),39) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_resolution(request,64,32) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_continuation_lock_overlap(request,1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request,&plan) == SLOPFAB_OK);
+  CHECK(slopfab_request_clear_continuation(request) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request,&plan) == SLOPFAB_OK);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_preview_is_optional_and_does_not_change_plan) {
   CHECK(slopfab_request_set_preview(nullptr,nullptr,nullptr,nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
   auto* request = slopfab_request_create();

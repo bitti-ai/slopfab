@@ -478,6 +478,12 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       saw_overlap = true;
     } else if (arg == "--lock-overlap") {
       req.continuation_lock_overlap = true;
+    } else if (arg == "--regenerate-overlap-frames") {
+      const std::string value = next("--regenerate-overlap-frames");
+      size_t used = 0;
+      req.continuation_regenerate_frames = std::stoi(value, &used);
+      if (used != value.size() || req.continuation_regenerate_frames < 0 || req.continuation_regenerate_frames % 17)
+        throw std::invalid_argument("--regenerate-overlap-frames requires a nonnegative multiple of 17");
     } else if (arg == "--continuation-source-noise") {
       const std::string value = next("--continuation-source-noise");
       size_t used = 0;

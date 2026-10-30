@@ -20,6 +20,23 @@ def run(*args, success=True):
 
 
 run("--lock-overlap", success=False)
+run("--regenerate-overlap-frames", "17", success=False)
+with tempfile.TemporaryDirectory(prefix="slopfab-regenerated-overlap-") as directory:
+    archive = Path(directory) / "source.safetensors"
+    vb, ab = 24 * 96 * 4, 130 * 32 * 4
+    header = {"__metadata__": {"slopfab_latents": "h3-av-v1", "width": "64", "height": "32",
+                               "frames": "39", "fps": "24", "sampled": "1"},
+              "video_rows": {"dtype": "F32", "shape": [24, 96], "data_offsets": [0, vb]},
+              "audio_rows": {"dtype": "F32", "shape": [130, 32], "data_offsets": [vb, vb + ab]}}
+    raw = json.dumps(header).encode()
+    raw += b" " * (-len(raw) % 8)
+    archive.write_bytes(struct.pack("<Q", len(raw)) + raw + bytes(vb + ab))
+    base = ("--continue-from", archive, "--overlap-frames", "39", "--lock-overlap")
+    desc = run(*base, "--keystone-from", archive, "--regenerate-overlap-frames", "17")
+    assert "39 frames; hold 22, regenerate 17" in desc
+    assert "56 frames (39 hidden overlap)" in desc
+    for value in ("-17", "18", "51", "17x"):
+        run(*base, "--regenerate-overlap-frames", value, success=False)
 assert "ending anchor" in run("--end-anchor", "ending.png")
 for args in [("--synthetic-latents",), ("--animate",)]:
     run("--end-anchor", "ending.png", *args, success=False)

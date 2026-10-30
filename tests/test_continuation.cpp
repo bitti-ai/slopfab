@@ -117,6 +117,68 @@ SLOPFAB_TEST(keystone_persistent_anchors_and_trimmed_chain) {
   CHECK(make_keystone_constraint(*previous, plan_continuation(*previous, 5, 17), k).video_restore_prefix.size() == frame);
 }
 
+SLOPFAB_TEST(continuation_replaces_39_frame_window_with_22_held_and_17_regenerated) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(192);
+  const auto original = LatentClip::load(fixture.path.string());
+  auto previous = *original;
+  const size_t frame = 192;
+  for (int shot = 0; shot < 12; ++shot) {
+    const auto before = previous;
+    const int extension = 17 * (shot % 3 + 1);
+    const auto p = plan_continuation(previous, 39, extension, 0, 17);
+    CHECK(p.window_frames == 39 + extension && p.output_frames == previous.frames + extension);
+    CHECK(p.overlap_video_latents == 12 && p.held_video_latents == 7);
+    const size_t cut = previous.video_rows.size() - 12 * frame;
+    auto context = make_keystone_constraint(previous, p, Keystone{original, true, 4});
+    CHECK(context.video.original.size() == 7 * frame);
+    CHECK(context.video.original[frame] == previous.video_rows[cut + frame]);
+    CHECK(context.video_restore_prefix[0] == previous.video_rows[cut]);
+    const int audio_cut = ((previous.frames - 39) * 5 + 1) / 3;
+    const int audio_end = ((previous.frames - 17) * 5 + 1) / 3;
+    CHECK(p.held_audio_latents == audio_end - audio_cut);
+    const size_t old_audio = previous.layout().num_audio_latents * 32;
+    const size_t held_audio = size_t(p.held_audio_latents) * 32;
+    for (size_t c = 0; c < 2; ++c)
+      CHECK(context.audio.original[c * held_audio] == previous.audio_rows[c * old_audio + audio_cut * 32]);
+    std::vector<float> video(context.video.target_values_per_channel, .25f);
+    std::vector<float> audio(size_t(p.window_audio_latents) * 64, .5f);
+    context.video.capture_noise(video.data(), video.size());
+    context.audio.capture_noise(audio.data(), audio.size());
+    const float generated = -100.f - shot;
+    std::fill(video.begin(), video.end(), generated);
+    std::fill(audio.begin(), audio.begin() + audio.size() / 2, generated - 1);
+    std::fill(audio.begin() + audio.size() / 2, audio.end(), generated - 2);
+    context.video.apply(video.data(), video.size(), 0, 8);
+    context.audio.apply(audio.data(), audio.size(), 0, 8);
+    context.restore_video(video);
+    CHECK(video[7 * frame] == generated); // Released final 17 frames stay generated.
+    auto joined = join_continuation(previous, p, video, audio);
+    CHECK(std::equal(previous.video_rows.begin(), previous.video_rows.begin() + cut + 7 * frame, joined.video_rows.begin()));
+    CHECK(std::all_of(joined.video_rows.begin() + cut + 7 * frame, joined.video_rows.end(),
+                      [generated](float x) { return x == generated; }));
+    const size_t new_audio = joined.layout().num_audio_latents * 32;
+    for (size_t c = 0; c < 2; ++c) {
+      CHECK(std::equal(previous.audio_rows.begin() + c * old_audio,
+                       previous.audio_rows.begin() + c * old_audio + audio_end * 32,
+                       joined.audio_rows.begin() + c * new_audio));
+      CHECK(std::all_of(joined.audio_rows.begin() + c * new_audio + audio_end * 32,
+                        joined.audio_rows.begin() + (c + 1) * new_audio,
+                        [generated, c](float x) { return x == generated - 1 - c; }));
+    }
+    std::vector<dit::ReferenceGeometry> geometry;
+    std::vector<float> guide_video, guide_audio;
+    append_continuation_guide(previous, p, 42, geometry, guide_video, guide_audio);
+    CHECK(guide_video.size() == 7 * frame && guide_audio == context.audio.original);
+    CHECK(previous.video_rows == before.video_rows && previous.audio_rows == before.audio_rows);
+    previous = std::move(joined);
+  }
+  CHECK(previous.frames == 192 + 4 * (17 + 34 + 51));
+  CHECK(rejects([&] { plan_continuation(*original, 39, 51, 0, 18); }));
+  CHECK(rejects([&] { plan_continuation(*original, 39, 51, 0, 51); }));
+}
+
 SLOPFAB_TEST(keystone_planning_validation) {
   using namespace slopfab;
   LatentFixture fixture;

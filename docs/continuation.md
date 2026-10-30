@@ -50,6 +50,22 @@ slopfab generate --continue-from previous.safetensors --keystone-from original.s
 ```
 
 Continue next from `extended.safetensors`, keeping `--keystone-from original.safetensors`.
+
+To use the Long Context overlap recipe (C API 1.47), add
+`--overlap-frames 39 --lock-overlap --regenerate-overlap-frames 17`.
+The sampler holds the first 22 frames of the previous clip's 39-frame tail and
+regenerates the remaining 17 frames, in video and audio. Joining removes that
+39-frame tail and inserts the complete sampled window. The original archive is
+never modified. `--frames` still specifies newly added timeline frames, so the
+sampling window is 39 frames longer than the rounded extension. The previous
+clip must contain at least 39 frames. This changes overlap and joining only;
+it does not select the example workflow's sampler, schedule or LoRAs.
+
+For the C API, attach the source with overlap 39, enable
+`slopfab_request_set_continuation_lock_overlap(request, 1)`, and call
+`slopfab_request_set_continuation_regenerate_frames(request, 17)`. Zero disables
+overlap replacement; clearing continuation also resets it. The retained portion
+supplies the continuation guide; released tail frames are not reused as guidance.
 Generate the original normally, without Keystone. Keep ordinary subject/background
 references attached to every request when using Ref2VA.
 
@@ -73,14 +89,15 @@ advancing continuation, not from the original anchor clip.
 
 The overlap must be at least 5 frames (default 22) and fit in the continuation.
 The sampler retains its ordinary video and audio sizes, with **no extra tail
-frames**. Joining discards starting overlap and preserves the entire previous
+frames**. By default, joining discards starting overlap and preserves the entire previous
 clip. `--frames` still means new delivered frames rounded up to a multiple of 17.
 For 119 new frames and 22-frame overlap, the sampling window is 141 frames;
 the joined output adds only 119 frames.
 Audio trimming uses the cumulative timeline to avoid rounding drift.
 
 The front swap is undone and the rear context is removed before sampler output.
-No manual tail cut is needed, and the prior source is not shortened.
+No manual tail cut is needed. With overlap replacement enabled, joining instead
+replaces the overlap using the sampled window; the source archive remains unchanged.
 Saved archives contain only the joined result and can resume normal continuation.
 Keep the separate original archive: anchor configuration is not embedded in output.
 

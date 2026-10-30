@@ -31,6 +31,8 @@ struct ContinuationPlan {
   int output_frames = 0;
   int overlap_video_latents = 0, overlap_audio_latents = 0;
   int window_audio_latents = 0;
+  int regenerate_frames = 0; // Release the end of the overlap and replace it when joining.
+  int held_video_latents = 0, held_audio_latents = 0;
 };
 
 // A contiguous target region locked after a number of modality updates.
@@ -88,7 +90,7 @@ void initialize_continuation_middle(const LatentClip& source, int prefix_latents
 // Extension rounds up to a multiple of 17. Overlap is exactly 17*k+5,
 // at least 5 frames. Audio boundaries are rounded on the cumulative timeline.
 ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int extension,
-                                   int tail_padding_frames = 0);
+                                   int tail_padding_frames = 0, int regenerate_frames = 0);
 void append_continuation_guide(const LatentClip& source, const ContinuationPlan& plan,
                                uint64_t seed, std::vector<dit::ReferenceGeometry>& geometry,
                                std::vector<float>& video, std::vector<float>& audio);

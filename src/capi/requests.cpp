@@ -737,6 +737,14 @@ slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t 
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_regenerate_frames(
+    slopfab_request* request, int32_t frames) {
+  if (!request || frames < 0 || frames % 17 != 0)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "regenerated overlap must be a nonnegative multiple of 17");
+  request->request.continuation_regenerate_frames = frames;
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_keystone_file(
     slopfab_request* request, const char* path, int32_t capstone, int32_t lock_after_steps) {
   if (!request || !path || !*path || (capstone != 0 && capstone != 1) || lock_after_steps < 0)
@@ -827,6 +835,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
   return guarded([&] {
     request->request.continuation.reset();
     request->request.continuation_lock_overlap = false;
+    request->request.continuation_regenerate_frames = 0;
     request->request.continuation_source_noise = 0;
     return SLOPFAB_OK;
   });

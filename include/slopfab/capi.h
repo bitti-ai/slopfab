@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 46
+#define SLOPFAB_CAPI_VERSION_MINOR 47
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
@@ -967,6 +967,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
  * approximate caches. clear_continuation also disables this option. */
 SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t enable);
+
+/* Since 1.47: regenerate the last N frames of a locked overlap and splice the
+ * complete sampled window into the joined output. N must be a multiple of 17
+ * smaller than overlap_frames. Zero preserves the entire previous clip.
+ * clear_continuation resets this option. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_regenerate_frames(
+    slopfab_request* request, int32_t frames);
 
 /* Since 1.45. Persistent original-clip video anchors for continuation.
  * capstone=0 locks only the front keystone; capstone=1 also appends the original

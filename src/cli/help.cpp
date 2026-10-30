@@ -224,6 +224,8 @@ const CommandHelp kCommands[] = {
      "                               --dump-latents writes. Off by default.\n"
      "  --video-decoder <f>         decoder override (Sol-H3-VAE); --vae encodes references.\n"
      "  --save-latents <f>           save a versioned AV latent archive for continuation.\n"
+     "  --regenerate-overlap-frames <n> release the last n overlap frames (multiples of 17);\n"
+     "                               requires --lock-overlap; join replaces the overlap.\n"
      "  --continue-from <f>          extend a saved archive; --frames is NEW frames,\n"
      "                               rounded up to a multiple of 17. Output is joined.\n"
      "  --overlap-frames <n>         hidden context, 17*k+5 frames (default 22).\n"
