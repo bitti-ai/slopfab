@@ -41,6 +41,20 @@ SLOPFAB_TEST(sampling_settings_parse_and_overlay) {
   }));
 }
 
+SLOPFAB_TEST(sampling_settings_beta_and_er_sde) {
+  auto s=parse_sampling_settings(R"({"version":1,"sampler":"er_sde","scheduler":"beta","beta_alpha":0.7,"beta_beta":0.5})");
+  CHECK(s.sampler==sampler::SamplerKind::kErSde);
+  CHECK(s.scheduler==sampler::SigmaSchedule::kBeta);
+  CHECK(s.beta_alpha==.7f && s.beta_beta==.5f);
+  SamplingSettings dest;
+  overlay_sampling_settings(dest,s);
+  CHECK(dest.scheduler==s.scheduler && dest.beta_alpha==s.beta_alpha && dest.beta_beta==s.beta_beta);
+  for(const char* invalid : {R"({"version":1,"scheduler":"unknown"})",
+      R"({"version":1,"scheduler":"beta","base_sigmas":[1,0]})",
+      R"({"version":1,"beta_alpha":0})",R"({"version":1,"beta_beta":101})"})
+    CHECK(rejects([&]{parse_sampling_settings(invalid);}));
+}
+
 SLOPFAB_TEST(sampling_settings_reject_malformed_schema_and_values) {
   for (const char* invalid : {"",
                               "{",

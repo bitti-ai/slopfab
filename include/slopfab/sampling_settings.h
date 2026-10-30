@@ -14,6 +14,9 @@ namespace slopfab {
 // points including terminal zero; its length determines the evaluation count.
 struct SamplingSettings {
   std::optional<sampler::SamplerKind> sampler;
+  std::optional<sampler::SigmaSchedule> scheduler;
+  std::optional<float> beta_alpha;
+  std::optional<float> beta_beta;
   std::optional<int> default_steps;
   // Independent audio grid points, including terminal zero. Unset inherits
   // the video count/base grid; set uses an ordinary linspace for audio only.

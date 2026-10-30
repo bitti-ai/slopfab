@@ -19,7 +19,13 @@
 
 namespace slopfab::sampler {
 
-enum class ScheduleKind { kDefault, kTaoMate3Step, kFastH3V2, kDmad4Step };
+enum class ScheduleKind { kDefault, kTaoMate3Step, kFastH3V2, kDmad4Step, kBeta };
+enum class SigmaSchedule { kUniform, kBeta };
+
+// Beta quantiles select rounded indices in the model's ascending training grid.
+// steps counts evaluations; duplicate training indices are removed, then zero appended.
+std::vector<float> beta_sigma_schedule(int steps, float shift, float alpha = .6f,
+                                       float beta = .6f, int training_steps = 1000);
 
 // Which integrator advances the trajectory. Both cost exactly one model
 // evaluation per step; the difference is what they do with the velocity they
@@ -36,9 +42,12 @@ enum class SamplerKind {
   kAb2,
   // Predict x0, then mix it with fresh noise at the next sigma (DMAD).
   kRenoise,
+  // Extended reverse-time SDE, up to third order, one model evaluation per step.
+  kErSde,
 };
 
 const char* sampler_name(SamplerKind kind);
+bool stochastic_sampler(SamplerKind kind) noexcept;
 
 // Canonical fp32 arithmetic used by the production Euler path on both CUDA
 // (through FlowScheduler) and Vulkan. Subnormal operands and results become
@@ -120,10 +129,14 @@ public:
 
 private:
   void clear_history();
+  void adjust_first_sigma();
+  void er_sde_step(int step, const float* sample, const float* velocity, size_t count,
+                   float* out, const float* noise);
 
   float shift_;
   std::vector<float> sigmas_;
   std::vector<float> timesteps_;
+  float original_first_sigma_ = 0;
 
   SamplerKind sampler_ = SamplerKind::kEuler;
   // v_{n-1}, kept only under kAb2. One buffer per scheduler, so the video and
@@ -131,6 +144,9 @@ private:
   // and may differ in length.
   std::vector<float> previous_velocity_;
   bool has_previous_ = false;
+  std::vector<float> previous_denoised_, previous_derivative_;
+  double previous_lambda_ = 0, older_lambda_ = 0;
+  int er_history_ = 0;
   // The only index `step` will accept next, or -1 for "fresh, any index".
   int expected_step_ = -1;
 };

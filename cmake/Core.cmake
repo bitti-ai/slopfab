@@ -56,6 +56,8 @@ add_library(slopfab_core STATIC
   src/sampling_plan.cpp
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
+  src/sampler/er_sde.cpp
+  src/sampler/beta.cpp
   src/text/tokenizer.cpp
   src/text/nfc.cpp
   src/text/tokenizer_contract.cpp

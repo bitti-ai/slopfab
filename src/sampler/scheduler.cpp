@@ -82,12 +82,18 @@ const char* sampler_name(SamplerKind kind) {
     return "ab2";
   case SamplerKind::kRenoise:
     return "renoise";
+  case SamplerKind::kErSde:
+    return "er_sde";
   }
   throw std::invalid_argument("unknown sampler");
 }
 
 void FlowScheduler::clear_history() {
   previous_velocity_.clear();
+  previous_denoised_.clear();
+  previous_derivative_.clear();
+  er_history_ = 0;
+  previous_lambda_ = older_lambda_ = 0;
   has_previous_ = false;
   expected_step_ = -1;
 }
@@ -97,11 +103,17 @@ void FlowScheduler::reset() {
 }
 
 void FlowScheduler::set_sampler(SamplerKind kind) {
+  sampler_name(kind);
   sampler_ = kind;
+  adjust_first_sigma();
   clear_history();
 }
 
 void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule) {
+  if (schedule == ScheduleKind::kBeta) {
+    set_sigmas(beta_sigma_schedule(num_inference_steps - 1, shift_));
+    return;
+  }
   if (schedule != ScheduleKind::kDefault) {
     set_base_sigmas(*sampling_schedule_defaults(schedule).base_sigmas);
     return;
@@ -138,6 +150,8 @@ void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule
   for (size_t i = 0; i + 1 < sigmas_.size(); ++i) {
     timesteps_.push_back(1.0f - sigmas_[i]);
   }
+  original_first_sigma_ = sigmas_.front();
+  adjust_first_sigma();
 }
 
 void FlowScheduler::set_base_sigmas(const std::vector<float>& base_sigmas) {
@@ -163,6 +177,8 @@ void FlowScheduler::set_sigmas(const std::vector<float>& sigmas) {
   timesteps_.clear();
   for (size_t i = 0; i + 1 < sigmas_.size(); ++i)
     timesteps_.push_back(1.0f - sigmas_[i]);
+  original_first_sigma_ = sigmas_.front();
+  adjust_first_sigma();
   clear_history();
 }
 
@@ -174,9 +190,9 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
                              " sigmas");
   }
 
-  if (sampler_ == SamplerKind::kRenoise && count && !noise &&
+  if (stochastic_sampler(sampler_) && count && !noise &&
       sigmas_[static_cast<size_t>(step_index) + 1] != 0.0f)
-    throw std::invalid_argument("scheduler: re-noising requires fresh noise");
+    throw std::invalid_argument("scheduler: stochastic sampling requires fresh noise");
 
   // Ordering. kAb2 carries v_{n-1} across calls, so an index that is neither a
   // restart nor the successor of the last one would extrapolate from a
@@ -195,6 +211,8 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
         "run in sequence");
   }
   const bool extrapolate = sampler_ == SamplerKind::kAb2 && has_previous_;
+  if (sampler_ == SamplerKind::kErSde && er_history_ && previous_denoised_.size() != count)
+    throw std::invalid_argument("scheduler: ER-SDE sample length changed inside trajectory");
   if (extrapolate && previous_velocity_.size() != count) {
     throw std::runtime_error("scheduler: sample length changed from " +
                              std::to_string(previous_velocity_.size()) + " to " +
@@ -203,6 +221,10 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
                              "buffer");
   }
   expected_step_ = step_index + 1;
+  if (sampler_ == SamplerKind::kErSde) {
+    er_sde_step(step_index, sample, velocity, count, out, noise);
+    return;
+  }
 
   // The sigma used to recover x0 comes from the *timestep the transformer was
   // conditioned on*, while the Euler ratio uses the sigma grid. For sigma <
