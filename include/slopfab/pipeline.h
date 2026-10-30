@@ -61,6 +61,7 @@ struct GenerateRequest {
   std::string model_family;
   std::string negative_prompt;
   float guidance_scale = 3.0f;
+  bool guidance_scale_set = false; // Distinguishes explicit CFG from family defaults.
   std::vector<int> uncond_skip_layers = {22};
   std::string prompt;
   // The CLI replaces this default with output/video-<timestamp>.mp4; the

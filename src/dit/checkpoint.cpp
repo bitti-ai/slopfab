@@ -168,6 +168,21 @@ ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
     model.origin = "Fibo 2.0 Comfy fused tensor contract";
     return model;
   }
+  if (has(checkpoint, "txtfusion.projector.weight") && has(checkpoint, "first.weight")) {
+    for (const auto& item : std::vector<std::pair<std::string, std::vector<int64_t>>>{
+        {"first.weight", {6144,64}}, {"txtfusion.projector.weight", {1,12}},
+        {"blocks.27.attn.wq.weight", {6144,6144}}, {"blocks.27.attn.wk.weight", {1536,6144}},
+        {"txtmlp.1.weight", {6144,2560}}, {"last.linear.weight", {64,6144}},
+        {"last.modulation.lin", {2,6144}}})
+      if (!checkpoint.find(item.first) || checkpoint.at(item.first).shape != item.second)
+        throw std::invalid_argument("Krea 2: incompatible tensor " + item.first);
+    model.family = "krea2";
+    model.compatibility_architecture = TransformerArchitecture::kKrea2;
+    model.modulation = ModulationImplementation::kTimestepMlp;
+    model.quantization = detect_transformer_quantization(checkpoint);
+    model.origin = "Krea 2 single-stream tensor contract";
+    return model;
+  }
   model.pdd_steps = pdd_heads(checkpoint);
   if (model.pdd_steps > 1) {
     if (model.pdd_steps != 32 || !has(checkpoint, "adaln_t_table") ||
@@ -361,6 +376,8 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
 
 const char* transformer_architecture_name(TransformerArchitecture architecture) {
   switch (architecture) {
+  case TransformerArchitecture::kKrea2:
+    return "Krea 2 transformer";
   case TransformerArchitecture::kFibo2EditTurbo:
     return "Fibo 2.0 Edit Turbo transformer";
   case TransformerArchitecture::kMossImage:

@@ -19,6 +19,7 @@ enum class TransformerArchitecture {
   kMossImage,
   kOmniRefPrunedTable,
   kFibo2EditTurbo,
+  kKrea2,
 };
 
 constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture) {

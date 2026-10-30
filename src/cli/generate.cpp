@@ -202,6 +202,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       const std::string value = next("--guidance");
       size_t used = 0;
       req.guidance_scale = std::stof(value, &used);
+      req.guidance_scale_set = true;
       if (used != value.size())
         throw std::invalid_argument("--guidance expects a finite nonnegative number");
     } else if (arg == "--uncond-skip-layers") {
@@ -711,7 +712,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (!saw_out) req.out_path = std::filesystem::path(req.out_path).replace_extension(".wav").string();
     if (std::filesystem::path(req.out_path).extension() != ".wav") throw std::invalid_argument("music output requires --out FILE.wav");
   }
-  if (slopfab::request_model_family(req) == "moss" || slopfab::request_model_family(req) == "fibo2") {
+  if (slopfab::request_model_family(req) == "moss" || slopfab::request_model_family(req) == "fibo2" || slopfab::request_model_family(req) == "krea2") {
     if (saw_frames)
       throw std::invalid_argument("This model generates one image; omit --frames");
     if (!saw_attention)

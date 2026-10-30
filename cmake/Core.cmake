@@ -1,6 +1,7 @@
 # --- core -------------------------------------------------------------------
 
 add_library(slopfab_core STATIC
+  src/krea/plan.cpp
   src/fibo/plan.cpp
   src/music/plan.cpp
   src/music/tokenizer.cpp

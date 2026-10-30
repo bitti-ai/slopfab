@@ -162,6 +162,8 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   }
   if (req.video_vae_path.empty())
     req.video_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
+  if (std::string_view(profile.family) == "krea2" && req.video_vae_path.empty())
+    req.video_vae_path = find_checkpoint(weights / "text_encoder", profile.vae_hint);
   if (std::string_view(profile.family) == "moss" && req.tokenizer_path.empty()) {
     const auto tokenizer = weights / "text_encoder" / "qwen3.5_tokenizer.json";
     if (std::filesystem::exists(tokenizer))

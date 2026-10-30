@@ -100,7 +100,7 @@ const CommandHelp kCommands[] = {
      "  --width N                  base transformer hidden width\n"
      "  Requires an embedded grid or a local companion file.\n"},
     {"generate", "slopfab generate --prompt <text> [options]", "text to image, video and audio",
-     "  --model NAME                h3, moss, fibo2, yue2 or minimax_music3\n"
+     "  --model NAME                h3, moss, fibo2, krea2, yue2 or minimax_music3\n"
      "  --lyrics TEXT               music lyrics; --prompt supplies style/tags\n"
      "  --music-duration SECONDS    music duration ceiling (default 30, maximum 300)\n"
      "  --music-planning MODE       YuE2 full (default), melody or off\n"
@@ -109,7 +109,7 @@ const CommandHelp kCommands[] = {
      "  MiniMax Music3 defaults: CUDA, 30 Euler steps, stereo 44.1 kHz .wav.\n"
      "  --prompt <text>              the prompt\n"
      "  --negative-prompt <text>     MOSS negative prompt (default empty)\n"
-     "  --guidance <number>          MOSS CFG scale (default 3)\n"
+     "  --guidance <number>          CFG scale (MOSS: 3; Krea 2: 0)\n"
      "  --uncond-skip-layers <list>   MOSS negative-branch layers, e.g. 22,24 or none\n"
      "                               (default 22; disabled on the first step)\n"
      "  MOSS defaults: CUDA/flash2, 1024x1024, 50 Euler updates, .ppm output.\n"

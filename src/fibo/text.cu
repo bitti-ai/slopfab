@@ -237,4 +237,58 @@ std::vector<Tensor> encode_prompt(const std::string& path, const std::string& to
   }
   return result;
 }
+// Krea selects raw Qwen hidden states, not Fibo's normalized bundles. Masked
+// padding rows can be removed: they never participate as keys and Qwen assigns
+// positions using the cumulative attention mask. Keep the five suffix tokens.
+Tensor encode_krea_prompt(const std::string& path, const std::string& tokenizer_path,
+                          const std::string& prompt, const std::function<void()>& check_cancel) {
+  text::Tokenizer tokenizer;
+  if (tokenizer_path.empty()) tokenizer.load_embedded();
+  else tokenizer.load(tokenizer_path);
+  if (tokenizer.token_to_id("<|im_start|>") != 151644)
+    throw std::invalid_argument("Krea 2 requires the Qwen3-VL tokenizer");
+  const std::string prefix = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n";
+  auto ids = tokenizer.encode(prefix + prompt);
+  if (tokenizer.encode(prefix).size() != 34 || ids.size() < 34)
+    throw std::invalid_argument("Krea 2 tokenizer prefix mismatch");
+  ids.resize(std::min(size_t(541), ids.size()));
+  const auto suffix = tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n");
+  if (suffix.size() != 5) throw std::invalid_argument("Krea 2 tokenizer suffix mismatch");
+  ids.insert(ids.end(), suffix.begin(), suffix.end());
+  Runtime rt(path);
+  auto x = embedding(rt, ids);
+  std::vector<float> c, s;
+  for (int r = 0; r < int(ids.size()); ++r)
+    for (int j = 0; j < 64; ++j) {
+      float angle = float(r * std::pow(5000000., -double(j) / 64));
+      // Qwen computes trig in float32 and casts tables to the activation dtype.
+      c.push_back(bf(std::cos(angle))); s.push_back(bf(std::sin(angle)));
+    }
+  const int tokens = int(ids.size()) - 34;
+  Tensor result(tokens * 12, 2560);
+  int tap = 0;
+  for (int i = 0; i < 35; ++i) {
+    check_cancel();
+    const std::string p = "model.language_model.layers." + std::to_string(i) + ".";
+    auto y = rt.norm(x, p + "input_layernorm.weight");
+    auto q = rt.norm(rt.project(y, p + "self_attn.q_proj"), p + "self_attn.q_norm.weight", 128);
+    auto k = rt.norm(rt.project(y, p + "self_attn.k_proj"), p + "self_attn.k_norm.weight", 128);
+    auto v = rt.project(y, p + "self_attn.v_proj");
+    rope(q, 32, c, s, false); rope(k, 8, c, s, false);
+    auto update = rt.project(rt.attend(q, k, v, 32, 8, true), p + "self_attn.o_proj");
+    moss::residual(x, update);
+    y = rt.norm(x, p + "post_attention_layernorm.weight");
+    auto gate = rt.project(y, p + "mlp.gate_proj"), up = rt.project(y, p + "mlp.up_proj");
+    update = rt.project(moss::activate(up, &gate), p + "mlp.down_proj");
+    moss::residual(x, update);
+    if ((i + 1) % 3 == 2) {
+      SLOPFAB_CUDA_CHECK(cudaMemcpy2D(result.ptr() + tap * 2560, 12 * 2560 * 2,
+          x.ptr() + 34 * 2560, 2560 * 2, 2560 * 2, tokens, cudaMemcpyDeviceToDevice));
+      ++tap;
+    }
+    rt.release_prefix(p);
+  }
+  return result;
+}
+
 }

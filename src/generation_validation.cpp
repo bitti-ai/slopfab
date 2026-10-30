@@ -39,6 +39,15 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     require(o.upscale_model_path.empty() && o.latent_upscale_model_path.empty() && o.save_latents_path.empty() && !o.on_latents && !o.attention_band && o.veda.predictor_path.empty(), "music does not support video archives, upscaling or attention overrides");
     return;
   }
+  if (p.model.family == "krea2") {
+    require(o.inference_backend == DeviceBackend::kCuda, "Krea 2 requires the CUDA backend");
+    require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Krea 2 requires generation from fresh noise");
+    require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "Krea 2 requires Euler sampling");
+    require(o.attention_mode == AttentionMode::kFlash2, "Krea 2 supports flash2 attention");
+    require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty(), "Krea 2 does not support H3 sampling effects or LCS");
+    require(o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() && o.save_latents_path.empty() && !o.on_latents && o.attention_band == 0 && o.veda.predictor_path.empty(), "Krea 2 does not support H3 latent archives, upscaling or attention overrides");
+    return;
+  }
   if (p.model.family == "fibo2") {
     require(o.inference_backend == DeviceBackend::kCuda, "Fibo requires the CUDA backend");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Fibo requires editing from fresh noise");

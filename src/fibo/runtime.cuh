@@ -25,6 +25,8 @@ void rope(Tensor& x, int heads, const std::vector<float>& cosine, const std::vec
           bool adjacent);
 void scatter(Tensor& x, const Tensor& source, const std::vector<int32_t>& indices, bool add);
 Tensor vision(Runtime& rt, const text::QwenPixelValues& image, std::vector<Tensor>& deep);
+Tensor encode_krea_prompt(const std::string& path, const std::string& tokenizer_path,
+                          const std::string& prompt, const std::function<void()>& check_cancel);
 std::vector<Tensor> encode_prompt(const std::string& path, const std::string& tokenizer_path,
                                   const std::string& prompt, const std::vector<RGBImage>& images,
                                   const std::function<void()>& check_cancel);

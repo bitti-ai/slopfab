@@ -1,5 +1,6 @@
 #include "slopfab/pipeline.h"
 #include "slopfab/model_profile.h"
+#include "slopfab/krea.h"
 
 #include <algorithm>
 #include <cmath>
@@ -116,6 +117,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   if (request_model_family(request) == "yue2" || request_model_family(request) == "minimax_music3") return resolve_music_plan(request);
   if (request_model_family(request) == "moss")
     return resolve_moss_plan(request);
+  if (request_model_family(request) == "krea2")
+    return resolve_krea_plan(request);
   if (request_model_family(request) == "fibo2")
     return resolve_fibo_plan(request);
   if (request.bridge &&
@@ -559,7 +562,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
         "model       %s\ncanvas      %d x %d\nmode        text-to-image\n"
         "steps       %zu Euler updates (shift %.3g)\nguidance    %.3g\nseed        %llu\noutput      %s\n",
         model_profile(plan.model.family).name, plan.canvas_width, plan.canvas_height,
-        plan.video_timesteps.size(), double(plan.video_sigma_shift), double(request.guidance_scale),
+        plan.video_timesteps.size(), double(plan.video_sigma_shift), double(plan.model.family == "krea2" ? krea_guidance(request) : request.guidance_scale),
         static_cast<unsigned long long>(request.seed), request.out_path.c_str());
     return info;
   }
