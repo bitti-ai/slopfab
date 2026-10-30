@@ -7,6 +7,8 @@ import math
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--library", required=True, type=Path)
 parser.add_argument("--weights", default="weights", type=Path)
+parser.add_argument("--backend", choices=["cuda", "vulkan"], default="cuda")
+parser.add_argument("--steps", type=int, default=8)
 args = parser.parse_args()
 dll = C.CDLL(str(args.library.resolve()))
 handle = C.c_void_p
@@ -51,8 +53,10 @@ try:
     check(bind("slopfab_request_set_model_family", [handle, C.c_char_p])(request, b""))
     check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, b"A blue ceramic vase on a wooden table"))
     check(bind("slopfab_request_set_resolution", [handle, C.c_int, C.c_int])(request, 64, 96))
-    check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, 8))
-    check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, 0))
+    check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, args.steps))
+    check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, int(args.backend == "vulkan")))
+    if args.backend == "vulkan":
+        check(bind("slopfab_request_set_vulkan_arithmetic", [handle, C.c_int])(request, 1))
     check(bind("slopfab_request_set_attention", [handle, C.c_char_p])(request, b"flash2"))
     check(start(request, None, None, C.byref(generation)))
     status = wait(generation, -1)
@@ -65,13 +69,13 @@ try:
     pixels = output.video[:output.video_float_count]
     assert all(math.isfinite(p) and 0 <= p <= 1 for p in pixels)
     assert max(pixels)-min(pixels) > .01
-    assert output.steps_computed == 8
+    assert output.steps_computed == args.steps
     destroy(generation)
     generation = handle()
     check(start(request, None, None, C.byref(generation)))
     bind("slopfab_generation_cancel", [handle], None)(generation)
     assert wait(generation, -1) == -8, "expected cancellation"
-    print("Krea 2 C API", "generation, pixels and cancellation passed")
+    print("Krea 2 C API", args.backend, "generation, pixels and cancellation passed")
 finally:
     if generation:
         destroy(generation)

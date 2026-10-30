@@ -135,17 +135,20 @@ def text_reference(args):
 @torch.no_grad()
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--probe", default="build/Release/slopfab_kreaprobe.exe")
+    parser.add_argument("--backend", choices=["cuda", "vulkan"], default="cuda")
+    parser.add_argument("--probe", help="Override the native backend probe executable")
     parser.add_argument("--source", default="ref/krea-2")
     parser.add_argument("--model", required=True)
     parser.add_argument("--mode", choices=["fusion", "transformer", "vae", "text"], required=True)
     parser.add_argument("--tokenizer", default="ref/text_encoder/tokenizer.json")
     parser.add_argument("--prompt", default="A red apple on a wooden table")
     args = parser.parse_args()
+    if not args.probe:
+        args.probe = "build/Release/slopfab_kreaprobe" + ("_vulkan" if args.backend == "vulkan" else "") + ".exe"
     torch.manual_seed(41)
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    root = Path("build/krea-support")
+    root = Path("build/krea-support" if args.backend == "cuda" else "build/krea-vulkan-support")
     root.mkdir(parents=True, exist_ok=True)
     data = {"prompt_embedding": torch.randn(9, 12, 2560),
             "image_latents": torch.randn(3, 4, 64), "sigma": torch.tensor([.75])}
@@ -167,6 +170,10 @@ def main():
     relative = float(error.square().mean().sqrt() / expected.square().mean().sqrt())
     print(args.mode, "relative_rms", relative, "max_abs", float(error.abs().max()), flush=True)
     tolerance = .001 if args.mode == "vae" else .04
+    # Portable GEMM/attention round in a different order. The deep transformer
+    # amplifies BF16 rounding more than the individual conditioning stages.
+    if args.backend == "vulkan" and args.mode == "transformer":
+        tolerance = .05
     if not torch.isfinite(observed).all() or relative > tolerance:
         raise SystemExit("Krea numerical comparison failed")
 

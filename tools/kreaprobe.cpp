@@ -9,12 +9,15 @@ int main(int argc, char** argv) {
     if (argc != 5)
       throw std::invalid_argument("kreaprobe text|fusion|transformer|vae MODEL INPUT OUTPUT");
     using namespace slopfab;
-    using namespace krea;
+    using namespace SLOPFAB_KREA_NS;
     std::string mode = argv[1];
+#ifdef SLOPFAB_KREA_VULKAN
+    Runtime scope(argv[2]);
+#endif
     std::vector<float> output;
     std::vector<int64_t> shape;
     if (mode == "text") {
-      auto x = fibo::encode_krea_prompt(argv[2], "", argv[3], [] {
+      auto x = encode_prompt(argv[2], "", argv[3], [] {
       });
       output = to_host(x);
       shape = {x.rows / 12, 12, 2560};

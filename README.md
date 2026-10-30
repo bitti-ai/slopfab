@@ -1,6 +1,6 @@
 # slopfab
 
-Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), using CUDA or Vulkan, and image generation with [Krea 2](https://github.com/krea-ai/krea-2), [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) and [Fibo 2.0 editing](https://huggingface.co/briaai/Fibo-2.0-edit-turbo) on CUDA. No Python is required at runtime.
+Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), and image generation with [Krea 2](https://github.com/krea-ai/krea-2), using CUDA or Vulkan. [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) and [Fibo 2.0 editing](https://huggingface.co/briaai/Fibo-2.0-edit-turbo) use CUDA. No Python is required at runtime.
 
 ## Features
 

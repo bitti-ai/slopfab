@@ -642,7 +642,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_langevin_steps(
 /* Since 1.30. Family is h3, moss, fibo2 (since 1.34), krea2, yue2 or minimax_music3
  * (since 1.37), or empty for checkpoint detection.
  * MOSS is image-only and uses CUDA/flash2, Qwen3.5-9B and the FLUX.2 small VAE.
- * Krea 2 uses CUDA/flash2, Qwen3-VL-4B and Qwen-Image VAE; defaults to 8 steps, CFG 0.
+ * Krea 2 uses CUDA or portable Vulkan, flash2, Qwen3-VL-4B and Qwen-Image VAE;
+ * defaults to 8 steps, CFG 0.
  * Supply paths using the existing model-path setter, including TOKENIZER and
  * VIDEO_VAE. Family selection does not download/discover files in the C API. */
 /* Replace music settings with a JSON object. Fields: lyrics, duration (seconds),

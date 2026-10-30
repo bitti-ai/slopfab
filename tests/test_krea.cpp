@@ -69,6 +69,8 @@ SLOPFAB_TEST(krea_rejects_incompatible_requests) {
   auto p = slopfab::resolve_plan(base);
   slopfab::RunOptions o;
   o.inference_backend = slopfab::DeviceBackend::kVulkan;
+  o.vulkan_portable_arithmetic = false;
+  o.attention_mode = slopfab::AttentionMode::kFlash2;
   bool rejected = false;
   try {
     slopfab::validate_generation_options(base, p, o);
@@ -76,4 +78,6 @@ SLOPFAB_TEST(krea_rejects_incompatible_requests) {
     rejected = true;
   }
   CHECK(rejected);
+  o.vulkan_portable_arithmetic = true;
+  slopfab::validate_generation_options(base, p, o);
 }

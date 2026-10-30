@@ -1021,16 +1021,20 @@ SLOPFAB_TEST(capi_existing_latents_upscale_lifecycle) {
   fixture.write(39);
   const auto path = fixture.path.string();
   slopfab_generation* job = nullptr;
-  CHECK(slopfab_latent_upscale_decode_file_start(path.c_str(), "missing", 2, nullptr, nullptr, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+#if SLOPFAB_WITH_CUDA
+  int backend = SLOPFAB_INFERENCE_CUDA;
+#else
+  int backend = SLOPFAB_INFERENCE_VULKAN;
+#endif
+  CHECK(slopfab_latent_upscale_decode_file_start(path.c_str(), "missing", 2, nullptr, nullptr, backend, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(job == nullptr);
-  CHECK(slopfab_latent_upscale_decode_file_start(nullptr, "missing", 2, "video", "audio", 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_latent_upscale_decode_file_start(nullptr, "missing", 2, "video", "audio", backend, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 0, 1, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(job == nullptr);
-  CHECK(slopfab_latent_upscale_generation_start(nullptr, "missing", 1, 1, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_latent_upscale_generation_start(nullptr, "missing", 1, 1, backend, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 2, 0, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, 9, nullptr, nullptr, &job) == SLOPFAB_ERR_INVALID_ARGUMENT);
   // Identity needs no checkpoint/GPU, but still exercises the asynchronous API.
-  int backend = SLOPFAB_INFERENCE_CUDA;
   int started = slopfab_latent_upscale_file_start(path.c_str(), "missing", 1, 1, backend, nullptr, nullptr, &job);
   if (started == SLOPFAB_ERR_UNSUPPORTED) {
     backend = SLOPFAB_INFERENCE_VULKAN;
@@ -1453,7 +1457,8 @@ SLOPFAB_TEST(capi_krea_plan_and_guidance) {
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 52);
   CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_VULKAN) == SLOPFAB_OK);
-  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_vulkan_arithmetic(request.handle, SLOPFAB_VULKAN_ARITHMETIC_PORTABLE) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
 }
 
 SLOPFAB_TEST(capi_fibo_plan_and_mask) {
