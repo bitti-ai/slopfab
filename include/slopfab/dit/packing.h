@@ -152,6 +152,12 @@ struct RowTimesteps {
   std::vector<int32_t> adaln;   // [S], = indices[s]*3 + max(tag[s], 0)
 };
 
+// Extend only the model-call sequence by one video slice. Existing reference,
+// text and audio indices/positions remain exact; the sampler uses the base layout.
+void append_video_context(SequenceLayout& layout, PackedIndices& indices,
+                          std::vector<double>& positions);
+void append_clean_video_timesteps(RowTimesteps& timesteps, int rows);
+
 RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,
                                  float video_t, float audio_t);
 RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,

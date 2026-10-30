@@ -36,6 +36,7 @@ public:
   // Scratch is allocated lazily here. Reloading an active graph is rejected
   // to avoid a transient second copy of all layer weights; call unload first.
   void load(const SafeTensors& checkpoint);
+  void resize_sequence(uint32_t rows, std::shared_ptr<const dit::VsaTiles> tiles);
   // Releases all layer weights and the shared scratch/cache arena.
   void unload() noexcept;
   bool loaded() const noexcept;

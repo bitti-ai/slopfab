@@ -68,7 +68,7 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
       : request.bridge ? plan_bridge(*request.bridge, request.num_frames).window_frames
       : request.continuation
           ? plan_continuation(*request.continuation, request.continuation_overlap_frames,
-                              request.num_frames, request.keystone.source && request.keystone.capstone ? 17 : 0)
+                              request.num_frames)
                 .window_frames
           : (request.still_image ? 1 : dit::align_num_frames(request.num_frames));
   key += "decoded-media-preprocessing-v2:" + std::to_string(frames);
@@ -247,8 +247,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
         plan.canvas_height != request.continuation->height)
       throw std::invalid_argument("continuation canvas must match the saved latents");
     plan.continuation = plan_continuation(*request.continuation,
-        request.continuation_overlap_frames, request.num_frames,
-        request.keystone.source && request.keystone.capstone ? 17 : 0);
+        request.continuation_overlap_frames, request.num_frames);
     if (request.keystone.source)
       (void)make_keystone_constraint(*request.continuation, plan.continuation, request.keystone);
     plan.aligned_frames = plan.continuation.output_frames;
@@ -678,7 +677,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       description += "; inactive until continuation is attached\n";
     else if (request.keystone.capstone)
       description += "; capstone locks after " + std::to_string(request.keystone.capstone_lock_after_steps) +
-                     " video updates; 17 hidden tail frames trimmed\n";
+                     " video updates; one call-only video latent; front restored before output\n";
     else
       description += "; front only\n";
   }

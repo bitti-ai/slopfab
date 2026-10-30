@@ -66,6 +66,21 @@ void LoraProjection::prepare(TensorContext& context, LoraScratch& scratch) const
   }
 }
 
+void LoraProjection::resize_rows(TensorContext& context, uint32_t rows) {
+  if (!rows)
+    throw std::invalid_argument("LoRA: empty sequence");
+  for (auto& f : factors_) {
+    auto down = DenseGemmPlan::create(context,
+        {rows, f.rank, static_cast<uint32_t>(f.a.layout().extent[1]),
+         DenseGemmMode::kBFloat16, DenseGemmBias::kNone, false});
+    auto up = DenseGemmPlan::create(context,
+        {rows, f.out, f.rank, DenseGemmMode::kBFloat16, DenseGemmBias::kNone, false});
+    f.down = std::move(down);
+    f.up = std::move(up);
+    f.rows = rows;
+  }
+}
+
 void LoraProjection::record(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output,
                             uint32_t rows, LoraScratch& scratch) {
   for (auto& f : factors_) {

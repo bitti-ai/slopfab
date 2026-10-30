@@ -326,22 +326,24 @@ ContinuationConstraint make_keystone_constraint(const LatentClip& source,
   require(source.width == k.source->width && source.height == k.source->height &&
               source.geometry.fingerprint() == k.source->geometry.fingerprint(),
           "keystone and continuation must have matching canvas and latent geometry");
-  require(p.overlap_frames >= 22 && p.tail_padding_frames == (k.capstone ? 17 : 0),
-          "keystone needs at least 22 hidden overlap frames and matching capstone padding");
+  require(p.tail_padding_frames == 0,
+          "keystone uses call-only context, not output tail padding");
   auto out = make_continuation_constraint(source, p);
   const size_t frame = size_t(source.layout().rows_per_frame()) * 96;
+  out.video_restore_prefix.assign(out.video.original.begin(), out.video.original.begin() + frame);
   // Override the first slice of the locked overlap, keeping the remaining motion context.
   std::copy_n(k.source->video_rows.begin(), frame, out.video.original.begin());
   if (k.capstone) {
     const size_t src = size_t(5 * ((k.source->layout().num_latent_frames - 1) / 5)) * frame;
-    const size_t dst = size_t(5 * ((dit::video_latent_num_frames(p.window_frames) - 1) / 5)) * frame;
-    LatentAnchorConstraint anchor;
-    anchor.offset = dst;
-    anchor.lock_after_steps = k.capstone_lock_after_steps;
-    anchor.original.assign(k.source->video_rows.begin() + src, k.source->video_rows.begin() + src + frame);
-    out.video.anchors.push_back(std::move(anchor));
+    out.capstone_start_step = k.capstone_lock_after_steps;
+    out.capstone.assign(k.source->video_rows.begin() + src, k.source->video_rows.begin() + src + frame);
   }
   return out;
+}
+
+void ContinuationConstraint::restore_video(std::vector<float>& rows) const {
+  require(video_restore_prefix.size() <= rows.size(), "restored front exceeds video buffer");
+  std::copy(video_restore_prefix.begin(), video_restore_prefix.end(), rows.begin());
 }
 
 void append_continuation_guide(const LatentClip& source, const ContinuationPlan& p, uint64_t seed,

@@ -901,6 +901,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       in.inpaint = inpaint.get();
       in.continuation = continuation_constraint.get();
       in.layout = &live;
+      in.position_ids = &pos;
       in.indices = &idx;
       in.video_timesteps = &plan.video_timesteps;
       in.audio_timesteps = &plan.audio_timesteps;

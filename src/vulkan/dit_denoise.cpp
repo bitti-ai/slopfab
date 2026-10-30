@@ -67,6 +67,12 @@ void validate_config(const ExactH3DenoiseConfig& c) {
                                    ? 0u
                                    : static_cast<uint32_t>(total_audio_wide);
   const bool conditioned = condition_video != 0 || condition_audio != 0;
+  if (c.continuation && !c.continuation->capstone.empty() &&
+      (!conditioned || c.continuation->capstone_start_step < 0 ||
+       c.continuation->capstone.size() != uint64_t(l.rows_per_frame()) * c.transformer.video_dim ||
+       !finite_span(c.continuation->capstone.data(), c.continuation->capstone.size()) ||
+       c.transformer.main.block.veda || !c.attention_ranges.empty()))
+    throw std::invalid_argument("Vulkan H3 denoise: invalid call-only Capstone configuration");
   if (c.transformer.main.block.vsa_tiles &&
       (c.attention_band != 0 || !c.attention_ranges.empty()))
     throw std::invalid_argument("Vulkan VSA requires unbanded attention");
@@ -157,6 +163,7 @@ struct ExactH3Denoiser::Impl {
     DeviceTensor video_row_indices;
     DeviceTensor audio_row_indices;
     H3AttentionRanges ranges;
+    bool capstone_appended = false;
   };
 
   TensorContext* context = nullptr;
@@ -167,6 +174,46 @@ struct ExactH3Denoiser::Impl {
 
   Impl(TensorContext& owner, ExactH3DenoiseConfig value)
       : context(&owner), config(std::move(value)) {
+  }
+  void resize_context(bool append) {
+    auto& s = *state;
+    if (append == s.capstone_appended)
+      return;
+    auto layout = config.layout;
+    auto indices = config.indices;
+    auto positions = config.position_ids;
+    if (append)
+      dit::append_video_context(layout, indices, positions);
+    const uint32_t rows = static_cast<uint32_t>(indices.video.size());
+    std::vector<float> video(uint64_t(rows) * config.transformer.video_dim);
+    std::vector<float> old_video(s.video.layout().elements());
+    context->download(s.video, old_video.data(), old_video.size());
+    std::copy_n(old_video.begin(), std::min(video.size(), old_video.size()), video.begin());
+    if (append)
+      std::copy(config.continuation->capstone.begin(), config.continuation->capstone.end(),
+                video.end() - config.continuation->capstone.size());
+    auto tiles = config.transformer.main.block.vsa_tiles;
+    if (append && tiles)
+      tiles = std::make_shared<dit::VsaTiles>(dit::build_vsa_tiles(layout,
+          config.transformer.pdd_steps > 1 ? 128 : 64, config.transformer.pdd_steps > 1 ? 10 : 5));
+    s.transformer.resize_video_context(rows, tiles);
+    s.video = context->allocate(matrix(rows, config.transformer.video_dim));
+    context->upload(s.video, video.data(), video.size());
+    s.selectors = context->allocate(vector(layout.total_rows()), ScalarType::kInt32);
+    const auto rope = dit::build_h3_rope_tables(positions, 10000.f, 16);
+    s.cosine = context->allocate(matrix(rope.rows, 96));
+    s.sine = context->allocate(matrix(rope.rows, 96));
+    context->upload(s.cosine, rope.cosine.data(), rope.cosine.size());
+    context->upload(s.sine, rope.sine.data(), rope.sine.size());
+    s.video_row_indices = context->allocate(vector(rows), ScalarType::kInt32);
+    context->upload_bytes(s.video_row_indices, indices.video.data(), indices.video.size() * sizeof(int32_t));
+    s.ranges = {};
+    if (config.attention_band) {
+      const auto band = dit::build_banded_key_ranges(layout, config.attention_band, 128, 64);
+      s.ranges = H3AttentionRanges::create(*context, layout.total_rows(), band.ranges.data(),
+                                          static_cast<uint32_t>(band.ranges.size()));
+    }
+    s.capstone_appended = append;
   }
 };
 
@@ -298,6 +345,7 @@ void ExactH3Denoiser::prepare(const float* prompt, uint64_t prompt_elements,
     throw std::logic_error("Vulkan H3 denoise: not loaded");
   if (impl_->running)
     throw std::logic_error("Vulkan H3 denoise: run is active");
+  impl_->resize_context(false);
   const auto& c = impl_->config.transformer;
   const uint64_t expected_prompt = uint64_t(c.text_rows) * c.text_dim;
   const uint64_t expected_video = uint64_t(c.video_rows) * c.video_dim;
@@ -344,6 +392,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     throw std::logic_error("Vulkan H3 denoise: not prepared");
   if (impl_->running)
     throw std::logic_error("Vulkan H3 denoise: run is active");
+  impl_->resize_context(false);
   const bool renoise = video.sampler() == sampler::SamplerKind::kRenoise;
   if (video.sampler() != audio.sampler() ||
       (!renoise && video.sampler() != sampler::SamplerKind::kEuler))
@@ -375,6 +424,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   Impl::State& s = *impl_->state;
   const auto& c = impl_->config;
   const uint32_t code_rows = c.transformer.main.block.timesteps;
+  const bool has_capstone = c.continuation && !c.continuation->capstone.empty();
+  if (has_capstone && size_t(c.continuation->capstone_start_step) >= video.num_steps())
+    throw std::invalid_argument("Vulkan H3: Capstone delay exceeds video updates");
   if (c.continuation && (c.inpaint || c.pin_target_audio || c.motion_cache.active()))
     throw std::invalid_argument(
         "Vulkan H3 denoise: locked overlap is incompatible with image editing, pinned audio or MotionCache");
@@ -452,14 +504,19 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     if (c.transformer.main.block.veda)
       c.transformer.main.block.veda->step = static_cast<int>(step);
     const auto& update_step = schedule[step];
+    const bool tack = has_capstone && update_step.video >= size_t(c.continuation->capstone_start_step);
+    if (tack)
+      impl_->resize_context(true);
     const float video_t = video.timesteps()[update_step.video];
     const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[update_step.audio];
-    const dit::RowTimesteps row =
+    dit::RowTimesteps row =
         conditioned ? dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t,
                                                std::max(video_t, 0.999f), 1.0f)
                     : dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t);
+    if (tack)
+      dit::append_clean_video_timesteps(row, c.layout.rows_per_frame());
     if (row.unique.empty() || row.unique.size() > code_rows ||
-        row.adaln.size() != c.transformer.main.block.sequence)
+        row.adaln.size() != s.transformer.config().main.block.sequence)
       throw std::runtime_error("Vulkan H3 denoise: invalid row timestep plan");
     for (uint32_t t = 0; t < code_rows; ++t) {
       const float value = row.unique[std::min<size_t>(t, row.unique.size() - 1)];
@@ -676,6 +733,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     DeviceTensor& final_audio = conditioned ? s.audio_result : s.audio;
     impl_->context->download(final_audio, result.audio_rows.data(), result.audio_rows.size());
   }
+  if (c.continuation)
+    c.continuation->restore_video(result.video_rows);
   return result;
 }
 

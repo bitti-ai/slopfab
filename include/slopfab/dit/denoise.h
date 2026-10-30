@@ -36,6 +36,7 @@ struct DenoiseInputs {
   const ContinuationConstraint* continuation = nullptr;
   const SequenceLayout* layout = nullptr;
   const PackedIndices* indices = nullptr;
+  const std::vector<double>* position_ids = nullptr; // Required for call-only Capstone.
 
   // Substitutes the transformer. Null in production, in which case
   // `Transformer::forward` runs.

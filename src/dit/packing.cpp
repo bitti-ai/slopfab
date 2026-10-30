@@ -522,6 +522,38 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
   return out;
 }
 
+void append_video_context(SequenceLayout& l, PackedIndices& idx, std::vector<double>& pos) {
+  const int rows = l.rows_per_frame(), total = l.total_rows();
+  if (rows <= 0 || l.num_latent_frames <= 0 ||
+      int64_t(l.num_latent_frames) * rows != l.num_video_rows ||
+      int64_t(total) + rows > std::numeric_limits<int>::max() ||
+      idx.tags.size() != size_t(total) || pos.size() != size_t(total) * 3)
+    throw std::invalid_argument("invalid call-only video context geometry");
+  const auto& g = h3_latent_geometry();
+  const double delta = g.rope_frame_rescale *
+      g.rope_frames_per_latent[(l.num_latent_frames - 1) % g.rope_frames_per_latent.size()];
+  // Copy the last spatial plane, advancing its temporal coordinate one slot.
+  for (int i = 0; i < rows; ++i) {
+    const size_t from = size_t(total - rows + i) * 3;
+    const double t = pos[from], y = pos[from + 1], x = pos[from + 2];
+    pos.insert(pos.end(), {t + delta, y, x});
+    idx.video.push_back(total + i);
+    idx.tags.push_back(kTagVideo);
+  }
+  ++l.num_latent_frames;
+  l.num_video_rows += rows;
+}
+
+void append_clean_video_timesteps(RowTimesteps& t, int rows) {
+  if (rows <= 0 || t.unique.empty() || t.unique.back() > 1)
+    throw std::invalid_argument("invalid call-only video timesteps");
+  if (t.unique.back() != 1.f)
+    t.unique.push_back(1.f);
+  const int32_t clean = static_cast<int32_t>(t.unique.size() - 1);
+  t.indices.insert(t.indices.end(), rows, clean);
+  t.adaln.insert(t.adaln.end(), rows, clean * 3 + kTagVideo);
+}
+
 BandedKeyRanges build_banded_key_ranges(const SequenceLayout& layout, int band_frames,
                                         int query_tile, int key_align) {
   if (query_tile <= 0 || key_align <= 0) {

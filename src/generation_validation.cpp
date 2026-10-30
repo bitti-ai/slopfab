@@ -105,6 +105,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   require(!r.keystone.source ||
               (!caches && o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
           "keystone requires denoising from fresh noise without approximate caches");
+  require(!(r.continuation && r.keystone.source && r.keystone.capstone) ||
+              o.attention_mode != AttentionMode::kVeda,
+          "call-only Capstone requires attention without a fixed VEDA predictor layout");
   require(!r.bridge ||
               (!caches && o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
           "latent bridge requires denoising from fresh noise without approximate caches");

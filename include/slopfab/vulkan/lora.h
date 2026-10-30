@@ -17,6 +17,7 @@ public:
   void load(TensorContext& context, const std::vector<LoraFactors>& factors, uint32_t row_offset,
             uint32_t out, uint32_t rows);
   void prepare(TensorContext& context, LoraScratch& scratch) const;
+  void resize_rows(TensorContext& context, uint32_t rows);
   void record(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output, uint32_t rows,
               LoraScratch& scratch);
   uint64_t resident_bytes() const;

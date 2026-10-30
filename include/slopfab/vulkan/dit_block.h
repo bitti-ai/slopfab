@@ -86,6 +86,8 @@ public:
   // Allocate only the optional AWQ/ConvRot activation buffers required by
   // the loaded weight metadata. Call after load and before opening a batch.
   void prepare(ExactH3BlockScratch& scratch) const;
+  // Changes activation geometry only; all loaded weights remain resident.
+  void resize_sequence(uint32_t rows, std::shared_ptr<const dit::VsaTiles> tiles);
   void unload() noexcept;
   bool loaded() const noexcept;
   // tokens [S,H], selectors [S] in [0,T*M), code [T,R], tables [S,96].

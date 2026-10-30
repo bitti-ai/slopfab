@@ -85,6 +85,29 @@ void ExactH3MainGraph::unload() noexcept {
   }
 }
 
+void ExactH3MainGraph::resize_sequence(uint32_t rows, std::shared_ptr<const dit::VsaTiles> tiles) {
+  if (!loaded())
+    throw std::logic_error("Vulkan H3 graph: resize before load");
+  auto next = impl_->config;
+  next.block.sequence = rows;
+  next.block.vsa_tiles = std::move(tiles);
+  validate_graph_config(next);
+  // An allocation failure invalidates the graph, never leaving mixed stage shapes.
+  try {
+    impl_->scratch = {};
+    auto scratch = ExactH3BlockScratch::create(*impl_->context, next.block);
+    for (auto& stage : impl_->stages) {
+      stage.resize_sequence(rows, next.block.vsa_tiles);
+      stage.prepare(scratch);
+    }
+    impl_->scratch = std::move(scratch);
+    impl_->config = std::move(next);
+  } catch (...) {
+    unload();
+    throw;
+  }
+}
+
 bool ExactH3MainGraph::loaded() const noexcept {
   return impl_ && impl_->stages.size() == impl_->config.layers;
 }

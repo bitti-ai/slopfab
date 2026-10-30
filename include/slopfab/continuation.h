@@ -59,6 +59,11 @@ struct LatentPrefixConstraint {
 
 struct ContinuationConstraint {
   LatentPrefixConstraint video, audio;
+  // Sampling-only front substitution and model-call-only clean rear context.
+  // Neither changes the scheduler's shapes or the output timeline.
+  std::vector<float> video_restore_prefix, capstone;
+  int capstone_start_step = 0;
+  void restore_video(std::vector<float>& rows) const;
 };
 
 ContinuationConstraint make_continuation_constraint(const LatentClip& source,

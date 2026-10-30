@@ -869,6 +869,21 @@ void ExactH3BlockStage::prepare(ExactH3BlockScratch& scratch) const {
   }
 }
 
+void ExactH3BlockStage::resize_sequence(uint32_t rows, std::shared_ptr<const dit::VsaTiles> tiles) {
+  if (!loaded() || impl_->config.veda || bool(tiles) != bool(impl_->config.vsa_tiles))
+    throw std::invalid_argument("Vulkan H3 block: incompatible sequence resize");
+  auto next = impl_->config;
+  next.sequence = rows;
+  next.vsa_tiles = std::move(tiles);
+  validate_config(next);
+  if (next.vsa_tiles && next.vsa_tiles->row_tiles.size() != rows)
+    throw std::invalid_argument("Vulkan H3 block: resized VSA geometry mismatch");
+  auto& w = *impl_->weights;
+  for (Projection* p : {&w.q, &w.k, &w.v, &w.out, &w.fc1, &w.fc2, &w.compress_gate})
+    p->lora.resize_rows(*impl_->context, rows);
+  impl_->config = std::move(next);
+}
+
 void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& selectors,
                                DeviceTensor& code, DeviceTensor& cosine, DeviceTensor& sine,
                                ExactH3BlockScratch& scratch, const H3AttentionRanges* ranges,

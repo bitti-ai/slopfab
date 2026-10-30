@@ -387,6 +387,38 @@ void ExactH3Transformer::unload() noexcept {
   }
 }
 
+void ExactH3Transformer::resize_video_context(uint32_t video_rows,
+                                             std::shared_ptr<const dit::VsaTiles> tiles) {
+  if (!loaded() || !impl_->config.video_output_rows || impl_->config.main.block.veda)
+    throw std::invalid_argument("Vulkan H3 transformer: context resize needs explicit output rows");
+  auto c = impl_->config;
+  const uint64_t sequence = uint64_t(c.text_rows) + c.audio_rows + video_rows;
+  if (sequence > INT32_MAX)
+    throw std::invalid_argument("Vulkan H3 transformer: context sequence overflows");
+  c.video_rows = video_rows;
+  c.main.block.sequence = static_cast<uint32_t>(sequence);
+  c.main.block.vsa_tiles = std::move(tiles);
+  validate_config(c);
+  auto& s = *impl_->state;
+  auto& context = *impl_->context;
+  const uint32_t h = c.main.block.hidden;
+  try {
+    s.hidden = {};
+    s.video_projected = {};
+    s.video_projected_bf16 = {};
+    s.main.resize_sequence(c.main.block.sequence, c.main.block.vsa_tiles);
+    s.hidden = context.allocate(matrix(c.main.block.sequence, h), ScalarType::kBFloat16);
+    s.video_projected = context.allocate(matrix(video_rows, h));
+    s.video_projected_bf16 = context.allocate(matrix(video_rows, h), ScalarType::kBFloat16);
+    s.video_in_plan = DenseGemmPlan::create(context,
+        {video_rows, h, c.video_dim, DenseGemmMode::kFloat32, DenseGemmBias::kFloat32, false});
+    impl_->config = std::move(c);
+  } catch (...) {
+    unload();
+    throw;
+  }
+}
+
 bool ExactH3Transformer::loaded() const noexcept {
   return impl_ && impl_->state && impl_->state->main.loaded();
 }

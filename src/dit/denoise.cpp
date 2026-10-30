@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -183,6 +184,24 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   });
   std::vector<float> signature;
   std::vector<float> effect_video, effect_audio, effect_prediction;
+  const bool has_capstone = inputs.continuation && !inputs.continuation->capstone.empty();
+  auto call_layout = layout;
+  auto call_indices = indices;
+  std::vector<double> call_positions;
+  std::vector<float> call_video, call_velocity;
+  bool context_prepared = false;
+  if (has_capstone) {
+    require(inputs.position_ids && inputs.continuation->capstone_start_step >= 0 &&
+                size_t(inputs.continuation->capstone_start_step) < video_t.size() &&
+                inputs.continuation->capstone.size() == size_t(layout.rows_per_frame()) * patch,
+            "invalid call-only Capstone");
+    require(std::all_of(inputs.continuation->capstone.begin(), inputs.continuation->capstone.end(),
+                        [](float x) { return std::isfinite(x); }), "non-finite Capstone");
+    call_positions = *inputs.position_ids;
+    append_video_context(call_layout, call_indices, call_positions);
+    call_video.resize(all_video.size() + inputs.continuation->capstone.size());
+    call_velocity.resize(call_video.size());
+  }
 
   out.decisions.reserve(static_cast<size_t>(std::max(0, steps)));
   for (int i = 0; i < steps; ++i) {
@@ -230,14 +249,29 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                 : build_row_timesteps(layout, indices, vt, at);
       }
       const auto evaluate = [&] {
+        const bool tack = has_capstone && update.video >= size_t(inputs.continuation->capstone_start_step);
+        auto call_times = row_timesteps;
+        if (tack) {
+          append_clean_video_timesteps(call_times, layout.rows_per_frame());
+          std::copy(all_video.begin(), all_video.end(), call_video.begin());
+          std::copy(inputs.continuation->capstone.begin(), inputs.continuation->capstone.end(),
+                    call_video.begin() + all_video.size());
+          if (!inputs.velocity && !context_prepared) {
+            transformer.prepare_sequence(call_layout, call_indices, call_positions);
+            context_prepared = true;
+          }
+        }
         if (inputs.velocity) {
-          inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(), video_velocity.data(),
+          inputs.velocity(i, call_times, tack ? call_video.data() : all_video.data(), all_audio.data(),
+                          tack ? call_velocity.data() : video_velocity.data(),
                           audio_velocity.data());
         } else {
           transformer.set_denoise_step(i);
-          transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
-                              video_velocity.data(), audio_velocity.data());
+          transformer.forward(tack ? call_video.data() : all_video.data(), all_audio.data(), call_times,
+                              tack ? call_velocity.data() : video_velocity.data(), audio_velocity.data());
         }
+        if (tack)
+          std::copy_n(call_velocity.begin(), video_velocity.size(), video_velocity.begin());
         ++model_evaluations;
       };
       if (refine) {
@@ -351,6 +385,10 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
 
   out.steps_computed = model_evaluations;
   out.steps_skipped = motion.enabled() ? motion.skipped() : cache.skipped();
+  if (inputs.continuation)
+    inputs.continuation->restore_video(out.video_rows);
+  if (context_prepared)
+    transformer.prepare_sequence(layout, indices, *inputs.position_ids);
   return out;
 }
 
