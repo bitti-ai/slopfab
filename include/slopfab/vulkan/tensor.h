@@ -33,6 +33,7 @@ class PreparedNVFP4WeightView;
 class StreamedNVFP4WeightCache;
 
 enum class TensorPipelineSet : uint32_t {
+  kKrea = 1u << 12,
   kSolVae = 1u << 11,
   kMusic = 1u << 10,
   kCore = 1u << 0, // storage, conversion, GEMM, normalization and positions
@@ -46,7 +47,7 @@ enum class TensorPipelineSet : uint32_t {
   kSageAttention = 1u << 8,
   kTextAttention = 1u << 9,
   kLegacy = 0x3efu, // all historical defaults, excluding reference encoding
-  kAll = 0xfffu,
+  kAll = 0x1fffu,
 };
 
 constexpr TensorPipelineSet operator|(TensorPipelineSet a, TensorPipelineSet b) {
@@ -334,8 +335,10 @@ public:
   void audio_aa_downsample(DeviceTensor& input, DeviceTensor& filter, DeviceTensor& output,
                            uint32_t batch, uint32_t channels, uint32_t length_in,
                            uint32_t length_out);
-  // Internal music kernels. Four contiguous device buffers, with logical shapes
-  // validated by the music runtime; parameters are 16 uint32 words.
+  // Internal Krea/music kernels. Four contiguous buffers; callers validate
+  // logical shapes. Parameters are 16 uint32 words.
+  void krea_operation(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
+                       DeviceTensor& output, const uint32_t* parameters, uint32_t groups);
   void music_operation(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
                        DeviceTensor& output, const uint32_t* parameters, uint32_t groups);
   // Allocate while holding this batch's exclusive recorder lease.

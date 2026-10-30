@@ -66,6 +66,9 @@ namespace music_vulkan {
 RunResult run_yue(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 RunResult run_minimax(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 }
+namespace krea_vulkan {
+RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+}
 namespace krea {
 RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 }
@@ -93,10 +96,23 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     unsupported.message = "The selected music backend is not enabled in this build";
     return unsupported;
   }
-  if (plan.model.family == "moss" || plan.model.family == "fibo2" || plan.model.family == "krea2") {
+  if (plan.model.family == "krea2") {
+    reuse.clear();
+#if SLOPFAB_WITH_VULKAN
+    if (options.inference_backend == DeviceBackend::kVulkan)
+      return krea_vulkan::run(request, plan, options);
+#endif
+#if SLOPFAB_WITH_CUDA
+    if (options.inference_backend == DeviceBackend::kCuda)
+      return krea::run(request, plan, options);
+#endif
+    RunResult unsupported;
+    unsupported.message = "The selected Krea 2 backend is not enabled in this build";
+    return unsupported;
+  }
+  if (plan.model.family == "moss" || plan.model.family == "fibo2") {
     reuse.clear();
 #if SLOPFAB_WITH_CUDA
-    if (plan.model.family == "krea2") return krea::run(request, plan, options);
     return plan.model.family == "fibo2" ? fibo::run(request, plan, options) : moss::run(request, plan, options);
 #else
     RunResult unsupported;

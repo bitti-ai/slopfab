@@ -167,6 +167,7 @@ struct TensorContext::Impl {
   ComputePipeline audio_pipeline;
   ComputePipeline keyframe_pipeline;
   ComputePipeline reference_pipeline;
+  ComputePipeline krea_pipeline;
   ComputePipeline music_pipeline;
   ComputePipeline sol_vae_pipeline;
   DeviceTensor allocate_tensor(const TensorLayout&, ScalarType);

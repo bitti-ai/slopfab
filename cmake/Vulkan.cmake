@@ -30,6 +30,11 @@ if(SLOPFAB_ENABLE_VULKAN)
   add_library(slopfab_vulkan STATIC
     src/vulkan/sol_h3_vae.cpp
     src/vulkan/tensor_sol_vae.cpp
+    src/vulkan/tensor_krea.cpp
+    src/krea/vulkan_runtime.cpp
+    src/krea/text_vulkan.cpp
+    src/krea/transformer_vulkan.cpp
+    src/krea/vae_vulkan.cpp
     src/vulkan/tensor_music.cpp
     src/music/vulkan_runtime.cpp
     src/music/yue_vulkan.cpp

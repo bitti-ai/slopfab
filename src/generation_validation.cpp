@@ -40,7 +40,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     return;
   }
   if (p.model.family == "krea2") {
-    require(o.inference_backend == DeviceBackend::kCuda, "Krea 2 requires the CUDA backend");
+    require(o.inference_backend == DeviceBackend::kCuda || o.inference_backend == DeviceBackend::kVulkan, "Krea 2 requires CUDA or Vulkan");
+    require(o.inference_backend != DeviceBackend::kVulkan || o.vulkan_portable_arithmetic,
+            "Krea 2 Vulkan requires portable arithmetic; use --vulkan-arithmetic portable");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Krea 2 requires generation from fresh noise");
     require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "Krea 2 requires Euler sampling");
     require(o.attention_mode == AttentionMode::kFlash2, "Krea 2 supports flash2 attention");

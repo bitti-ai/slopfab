@@ -1,0 +1,91 @@
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+// BF16 transformer tensors and FP32 VAE tensors use explicit storage encoding.
+// Operation indices match src/krea/vulkan_runtime.h.
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer X { uint16_t x[]; };
+layout(binding=1,std430) readonly buffer W { uint16_t w[]; };
+layout(binding=2,std430) readonly buffer B { uint16_t b[]; };
+layout(binding=3,std430) buffer Y { uint16_t y[]; };
+layout(push_constant) uniform Params { uint p[16]; };
+shared float s[256];
+shared float scores[12];
+float xf(uint i) { return uintBitsToFloat(uint(x[i])<<16); }
+float wf(uint i) { return uintBitsToFloat(uint(w[i])<<16); }
+float bf_(uint i) { return uintBitsToFloat(uint(b[i])<<16); }
+float x32(uint i) { return uintBitsToFloat(uint(x[2*i])|(uint(x[2*i+1])<<16)); }
+float w32(uint i) { return uintBitsToFloat(uint(w[2*i])|(uint(w[2*i+1])<<16)); }
+float b32(uint i) { return uintBitsToFloat(uint(b[2*i])|(uint(b[2*i+1])<<16)); }
+uint narrow(float v) { uint u=floatBitsToUint(v); return (u+0x7fffu+((u>>16)&1u))>>16; }
+float bf(float v) { return uintBitsToFloat(narrow(v)<<16); }
+void put(uint i,float v) { y[i]=uint16_t(narrow(v)); }
+void put32(uint i,float v) { uint u=floatBitsToUint(v); y[2*i]=uint16_t(u); y[2*i+1]=uint16_t(u>>16); }
+void main() {
+  uint t=gl_LocalInvocationID.x,g=gl_WorkGroupID.x+gl_WorkGroupID.y*p[15];
+  uint i=g*256+t,op=p[0],n=p[1],cols=p[2];
+  if(op==0 || op==10) {
+    if(g>=n)return;
+    precise float sum=0;
+    for(uint c=t;c<cols;c+=256){float a=op==0?xf(g*cols+c):x32(g*cols+c);sum+=a*a;}
+    s[t]=sum;barrier();
+    for(uint d=128;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+    float inv=op==0?inversesqrt(s[0]/float(cols)+1e-5):sqrt(float(cols))/max(sqrt(s[0]),1e-12);
+    for(uint c=t;c<cols;c+=256){
+      if(op==0)put(g*cols+c,xf(g*cols+c)*inv*(1+w32(c)));
+      else {precise float a=x32(g*cols+c)*inv*w32(c);put32(g*cols+c,p[3]!=0?a/(1+exp(-a)):a);}
+    }
+    return;
+  }
+  if(op==6) {
+    if(g>=n)return;
+    uint head=g%20,row=g/20,batch=row/12;
+    for(uint j=0;j<12;++j){
+      s[t]=t<128?xf(row*2560+head*128+t)*wf((batch*12+j)*2560+head*128+t):0;
+      barrier();
+      for(uint d=64;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+      if(t==0)scores[j]=s[0]*.08838834764831845;barrier();
+    }
+    if(t==0){float mx=scores[0],sum=0;
+      for(uint j=1;j<12;++j)mx=max(mx,scores[j]);
+      for(uint j=0;j<12;++j){scores[j]=exp(scores[j]-mx);sum+=scores[j];}
+      for(uint j=0;j<12;++j)scores[j]/=sum;
+    }barrier();
+    if(t<128){precise float value=0;for(uint j=0;j<12;++j)value+=scores[j]*bf_((batch*12+j)*2560+head*128+t);put(row*2560+head*128+t,value);}
+    return;
+  }
+  if(op==14) {
+    if(g>=n)return;
+    float mx=-uintBitsToFloat(0x7f800000);
+    for(uint c=t;c<cols;c+=256)mx=max(mx,x32(g*cols+c)*uintBitsToFloat(p[3]));
+    s[t]=mx;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]=max(s[t],s[t+d]);barrier();}
+    mx=s[0];barrier();float sum=0;
+    for(uint c=t;c<cols;c+=256)sum+=exp(x32(g*cols+c)*uintBitsToFloat(p[3])-mx);
+    s[t]=sum;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+    for(uint c=t;c<cols;c+=256)put32(g*cols+c,exp(x32(g*cols+c)*uintBitsToFloat(p[3])-mx)/s[0]);
+    return;
+  }
+  if(i>=n)return;
+  if(op==1)put(i,bf(xf(i)*bf(1+wf(p[3]*cols+i%cols)))+wf((p[3]+1)*cols+i%cols));
+  if(op==2)put(i,xf(i)+(p[3]!=0?bf(wf(i)*bf_(p[4]*cols+i%cols)):wf(i)));
+  if(op==3){float a=xf(i);
+    if(p[3]==0)put(i,.5*a*(1+tanh(.7978845608*(a+.044715*a*a*a))));
+    else put(i,a*bf(1/(1+exp(-wf(i)))));
+  }
+  if(op==4){uint halfdim=cols/2,j=i%halfdim,row=i/(halfdim*p[3]),base=(i/halfdim)*cols;
+    uint a=p[4]!=0?2*j:j,bb=p[4]!=0?2*j+1:j+halfdim;
+    precise float va=xf(base+a),vb=xf(base+bb),cs=w32(row*halfdim+j),sn=b32(row*halfdim+j);
+    put(base+a,va*cs-vb*sn);put(base+bb,vb*cs+va*sn);
+  }
+  if(op==5){precise float value=0;for(uint j=0;j<12;++j)value+=xf(((i/2560)*12+j)*2560+i%2560)*wf(j);put(i,value);}
+  if(op==7){uint c=i%cols,row=i/cols,head=c/128; y[i]=x[row*p[3]*128+(head/(p[4]/p[3]))*128+c%128];}
+  if(op==8){uint row=i/cols,c=i%cols;y[(row*12+p[3])*cols+c]=x[(row+34)*cols+c];}
+  if(op==9){
+    uint col=i%cols,r=p[3]+i/cols,kernel=p[6],ci=p[7];
+    int yy=int(r/p[5])+int((col/kernel)%kernel)-int(kernel/2);
+    int xx=int(r%p[5])+int(col%kernel)-int(kernel/2);
+    put32(i,yy>=0&&yy<int(p[4])&&xx>=0&&xx<int(p[5])?x32((uint(yy)*p[5]+uint(xx))*ci+col/(kernel*kernel)):0);
+  }
+  if(op==11){uint r=i/cols,c=i%cols;put32(i,x32(((r/(2*p[3])/2)*p[3]+(r%(2*p[3]))/2)*cols+c));}
+  if(op==12)put32(i,x32(i)+w32(i));
+  if(op==13)put32(i,x32((i/cols)*p[3]+p[4]+i%cols));
+}
