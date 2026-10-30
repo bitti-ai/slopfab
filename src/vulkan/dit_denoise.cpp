@@ -394,12 +394,14 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     throw std::logic_error("Vulkan H3 denoise: run is active");
   impl_->resize_context(false);
   const bool renoise = video.sampler() == sampler::SamplerKind::kRenoise;
+  const bool stochastic = sampler::stochastic_sampler(video.sampler());
   if (video.sampler() != audio.sampler() ||
-      (!renoise && video.sampler() != sampler::SamplerKind::kEuler))
+      (!stochastic && video.sampler() != sampler::SamplerKind::kEuler))
     throw std::invalid_argument(
-        "Vulkan H3 denoise: requires matching Euler or re-noising samplers");
-  if (renoise && impl_->config.motion_cache.active())
-    throw std::invalid_argument("Vulkan H3 denoise: re-noising does not support MotionCache");
+        "Vulkan H3 denoise: requires matching Euler, re-noising or ER-SDE samplers");
+  if (stochastic && impl_->config.motion_cache.active())
+    throw std::invalid_argument(
+        "Vulkan H3 denoise: stochastic sampling does not support MotionCache");
   if (video.num_steps() == 0 || audio.num_steps() == 0 ||
       video.timesteps().size() != video.sigmas().size() - 1 ||
       audio.timesteps().size() != audio.sigmas().size() - 1)
@@ -452,7 +454,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   video_host.reset();
   audio_host.reset();
   std::vector<float> renoise_rows, renoise_velocity, renoise_noise;
-  if (renoise) {
+  if (stochastic) {
     const size_t count = std::max(uint64_t(video_output) * c.transformer.video_dim,
                                   uint64_t(audio_output) * c.transformer.audio_dim);
     renoise_rows.resize(count);
@@ -661,7 +663,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
       preview(static_cast<int>(step), clean);
       batch = impl_->context->begin_batch();
     }
-    if (renoise) {
+    if (stochastic) {
       batch.submit().wait();
       const auto update = [&](DeviceTensor& state, DeviceTensor& velocity,
                               sampler::FlowScheduler& scheduler, sampler::NoiseStream stream,
@@ -676,7 +678,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
         // Apply before the shared noise buffer is reused for audio.
         if (c.inpaint && stream == sampler::NoiseStream::kVideoLatents)
           c.inpaint->apply(renoise_rows.data(), count, scheduler.sigmas()[modality_step + 1],
-                           renoise_noise.data());
+                           renoise ? renoise_noise.data() : nullptr);
         impl_->context->upload(state, renoise_rows.data(), count);
       };
       if (update_step.advance_video)
@@ -704,7 +706,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
         constrain(conditioned ? s.audio_result : s.audio, overlap.audio, overlap_audio,
                   audio.sigmas()[update_step.audio + 1]);
     }
-    if (c.inpaint && !renoise && update_step.advance_video) {
+    if (c.inpaint && !stochastic && update_step.advance_video) {
       impl_->context->download(video_state, edited_video.data(), edited_video.size());
       c.inpaint->apply(edited_video.data(), edited_video.size(),
                        video.sigmas()[update_step.video + 1]);

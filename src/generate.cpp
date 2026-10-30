@@ -903,10 +903,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       }
       result.seconds_prepare = seconds_since(t_prep);
 
-      // Rebuilt from the plan rather than from literals, so the loop integrates
-      // on exactly the grid `describe_plan` printed and `plan.video_timesteps`
-      // conditioned on. Same numbers as before; the point is that there is now
-      // only one place they can be changed.
+      // Rebuild from the plan. ER-SDE may offset the first sigma below one;
+      // pass the scheduler's effective timesteps to conditioning as well.
       sampler::FlowScheduler video_sched(plan.video_sigma_shift);
       sampler::FlowScheduler audio_sched(plan.audio_sigma_shift);
       video_sched.set_sigmas(plan.video_sigmas);
@@ -924,8 +922,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       in.layout = &live;
       in.position_ids = &pos;
       in.indices = &idx;
-      in.video_timesteps = &plan.video_timesteps;
-      in.audio_timesteps = &plan.audio_timesteps;
+      in.video_timesteps = &video_sched.timesteps();
+      in.audio_timesteps = &audio_sched.timesteps();
       in.video_scheduler = &video_sched;
       in.audio_scheduler = &audio_sched;
       in.seed = request.seed;

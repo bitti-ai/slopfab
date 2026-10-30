@@ -75,7 +75,8 @@ GeneratePlan resolve_music_plan(const GenerateRequest& r) {
       c.pin_target_audio || c.max_frames || c.require_euler || c.allow_caches)
     throw std::invalid_argument("music does not use H3 conditioning settings");
   if (r.sampling.audio_steps || r.sampling.audio_sigma_shift || r.sampling.video_sigma_shift ||
-      r.sampling.base_sigmas || r.sampling.sampler)
+      r.sampling.base_sigmas || r.sampling.sampler || r.sampling.scheduler ||
+      r.sampling.beta_alpha || r.sampling.beta_beta)
     throw std::invalid_argument(
         "music uses its own flow solver; H3 sampling settings are unsupported");
   GeneratePlan p;

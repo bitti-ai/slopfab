@@ -551,19 +551,42 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   }
   if (plan.model.family == "fibo2") {
     std::ostringstream out;
-    out << "model       Fibo 2.0 Edit Turbo\ncanvas      " << plan.canvas_width << " x " << plan.canvas_height
-        << "\nmode        image editing\nsteps       " << plan.video_timesteps.size()
-        << " Euler updates (dynamic image-size shift)\nguidance    1\nseed        " << request.seed << "\noutput      " << request.out_path << '\n';
+    out << "model       Fibo 2.0 Edit Turbo\ncanvas      " << plan.canvas_width << " x "
+        << plan.canvas_height << "\nmode        image editing\nsteps       "
+        << plan.video_timesteps.size() << ' '
+        << (plan.sampler == sampler::SamplerKind::kEuler ? "Euler"
+                                                         : sampler::sampler_name(plan.sampler))
+        << " updates (dynamic image-size shift)\nguidance    1\nseed        " << request.seed
+        << "\noutput      " << request.out_path << '\n';
+    out << "schedule    "
+        << (request.sampling.scheduler.value_or(request.schedule == sampler::ScheduleKind::kBeta
+                                                    ? sampler::SigmaSchedule::kBeta
+                                                    : sampler::SigmaSchedule::kUniform) ==
+                    sampler::SigmaSchedule::kBeta
+                ? "beta"
+                : "default")
+        << '\n';
     return out.str();
   }
   if (model_profile(plan.model.family).image_only) {
     char info[1024];
-    std::snprintf(info, sizeof(info),
+    std::snprintf(
+        info, sizeof(info),
         "model       %s\ncanvas      %d x %d\nmode        text-to-image\n"
-        "steps       %zu Euler updates (shift %.3g)\nguidance    %.3g\nseed        %llu\noutput      %s\n",
+        "steps       %zu %s updates (shift %.3g)\nguidance    %.3g\nseed        %llu\noutput      %s\nschedule    %s\n",
         model_profile(plan.model.family).name, plan.canvas_width, plan.canvas_height,
-        plan.video_timesteps.size(), double(plan.video_sigma_shift), double(plan.model.family == "krea2" ? krea_guidance(request) : request.guidance_scale),
-        static_cast<unsigned long long>(request.seed), request.out_path.c_str());
+        plan.video_timesteps.size(),
+        plan.sampler == sampler::SamplerKind::kEuler ? "Euler"
+                                                     : sampler::sampler_name(plan.sampler),
+        double(plan.video_sigma_shift),
+        double(plan.model.family == "krea2" ? krea_guidance(request) : request.guidance_scale),
+        static_cast<unsigned long long>(request.seed), request.out_path.c_str(),
+        request.sampling.scheduler.value_or(request.schedule == sampler::ScheduleKind::kBeta
+                                                ? sampler::SigmaSchedule::kBeta
+                                                : sampler::SigmaSchedule::kUniform) ==
+                sampler::SigmaSchedule::kBeta
+            ? "beta"
+            : "default");
     return info;
   }
   const dit::SequenceLayout& l = plan.layout;

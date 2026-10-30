@@ -154,13 +154,14 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   MotionCache motion(inputs.motion_cache, layout, patch, audio_dim, steps,
                      inputs.video_scheduler->shift(), inputs.pin_target_audio);
   const bool renoise = inputs.video_scheduler->sampler() == sampler::SamplerKind::kRenoise;
-  require(renoise == (inputs.audio_scheduler->sampler() == sampler::SamplerKind::kRenoise),
-          "re-noising must be selected for both modalities");
-  require(!renoise || (!cache.enabled() && !motion.enabled() &&
-                       !transformer.block_cache_config().enabled()),
-          "re-noising does not support approximate caches");
-  std::vector<float> video_noise(renoise ? out.video_rows.size() : 0);
-  std::vector<float> audio_noise(renoise ? out.audio_rows.size() : 0);
+  const bool stochastic = sampler::stochastic_sampler(inputs.video_scheduler->sampler());
+  require(inputs.video_scheduler->sampler() == inputs.audio_scheduler->sampler(),
+          "samplers must match for both modalities");
+  require(!stochastic || (!cache.enabled() && !motion.enabled() &&
+                          !transformer.block_cache_config().enabled()),
+          "stochastic samplers do not support approximate caches");
+  std::vector<float> video_noise(stochastic ? out.video_rows.size() : 0);
+  std::vector<float> audio_noise(stochastic ? out.audio_rows.size() : 0);
   const bool refine = inputs.inpaint && inputs.inpaint->langevin_steps > 0;
   require(!refine || (layout.num_audio_rows == 0 && !cache.enabled() && !motion.enabled() &&
                       !transformer.block_cache_config().enabled() &&
@@ -342,7 +343,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       // In place: FlowScheduler::step permits `out` to alias `sample`.
       cuda::HostSpan span("scheduler_step");
       if (update.advance_video) {
-        if (renoise && update.video + 1 < video_t.size())
+        if (stochastic && update.video + 1 < video_t.size())
           sampler::fill_renoise_normal(inputs.seed, static_cast<int>(update.video),
                                        sampler::NoiseStream::kVideoLatents, video_noise.data(),
                                        video_noise.size());
@@ -359,7 +360,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                               static_cast<int>(update.video + 1));
       }
       if (update.advance_audio && !inputs.pin_target_audio) {
-        if (renoise && update.audio + 1 < audio_t.size())
+        if (stochastic && update.audio + 1 < audio_t.size())
           sampler::fill_renoise_normal(inputs.seed, static_cast<int>(update.audio),
                                        sampler::NoiseStream::kAudioLatents, audio_noise.data(),
                                        audio_noise.size());

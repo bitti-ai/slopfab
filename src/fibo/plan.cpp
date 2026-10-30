@@ -30,16 +30,20 @@ GeneratePlan resolve_fibo_plan(const GenerateRequest& r) {
   if (r.continuation || r.bridge || r.animate || r.video_transition || !r.reference_media.empty() ||
       r.has_refmods() || r.image_edit.invert_mask || !r.loras.empty() || r.cache_threshold != 0 ||
       r.skip_every || r.block_cache_span || r.motion_cache.active() ||
-      r.schedule != sampler::ScheduleKind::kDefault)
+      (r.schedule != sampler::ScheduleKind::kDefault && r.schedule != sampler::ScheduleKind::kBeta))
     throw std::invalid_argument(
         "Fibo editing does not support H3 video conditioning, outpaint, LoRAs or caches");
   if (r.image_edit.image && !r.reference_image_paths.empty())
     throw std::invalid_argument("Fibo masked editing requires exactly one source image");
+  auto settings = sampling_schedule_defaults(r.schedule);
+  overlay_sampling_settings(settings, r.sampling);
+  validate_sampling_settings(settings);
   if (r.sampling.audio_steps || r.sampling.audio_sigma_shift || r.sampling.base_sigmas ||
       r.sampling.video_sigma_shift ||
-      r.sampling.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler)
+      (r.sampling.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler &&
+       r.sampling.sampler != sampler::SamplerKind::kErSde))
     throw std::invalid_argument(
-        "Fibo uses image-size-shifted Euler sampling without H3 schedule overrides");
+        "Fibo uses image-size-shifted Euler or ER-SDE without H3 schedule overrides");
   GeneratePlan p;
   p.model.family = "fibo2";
   if (!r.transformer_path.empty() && std::filesystem::exists(r.transformer_path)) {
@@ -75,13 +79,20 @@ GeneratePlan resolve_fibo_plan(const GenerateRequest& r) {
   const int steps =
       r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(4);
   p.video_sigmas = fibo_sigma_schedule(steps, p.layout.num_video_rows);
+  p.video_sigma_shift =
+      float(std::exp(.5 + (p.layout.num_video_rows - 256.) * (.65 / (4096 - 256))));
+  if (settings.scheduler == sampler::SigmaSchedule::kBeta)
+    p.video_sigmas =
+        sampler::beta_sigma_schedule(steps, p.video_sigma_shift, settings.beta_alpha.value_or(.6f),
+                                     settings.beta_beta.value_or(.6f), 10000);
   if (r.image_edit.image) {
-    int keep = std::max(1, int(std::ceil(steps * r.image_edit.strength)));
-    p.video_sigmas.erase(p.video_sigmas.begin(), p.video_sigmas.begin() + steps - keep);
+    int count = int(p.video_sigmas.size()) - 1;
+    int keep = std::max(1, int(std::ceil(count * r.image_edit.strength)));
+    p.video_sigmas.erase(p.video_sigmas.begin(), p.video_sigmas.begin() + count - keep);
   }
   p.video_timesteps.assign(p.video_sigmas.begin(), p.video_sigmas.end() - 1);
   p.num_inference_steps = int(p.video_timesteps.size());
-  p.sampler = sampler::SamplerKind::kEuler;
+  p.sampler = settings.sampler.value_or(sampler::SamplerKind::kEuler);
   return p;
 }
 

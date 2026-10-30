@@ -26,7 +26,8 @@ SamplingSettings file_settings(const std::string& path) {
 
 bool has_settings(const SamplingSettings& settings) {
   return settings.default_steps || settings.video_sigma_shift || settings.audio_sigma_shift ||
-         settings.base_sigmas || settings.sampler || settings.audio_steps;
+         settings.base_sigmas || settings.sampler || settings.audio_steps || settings.scheduler ||
+         settings.beta_alpha || settings.beta_beta;
 }
 
 template <typename T>
@@ -103,6 +104,10 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     merge_adapter_field(adapters.audio_steps, settings.audio_steps, overrides.audio_steps,
                         "audio_steps");
     merge_adapter_field(adapters.sampler, settings.sampler, overrides.sampler, "sampler");
+    merge_adapter_field(adapters.scheduler, settings.scheduler, overrides.scheduler, "scheduler");
+    merge_adapter_field(adapters.beta_alpha, settings.beta_alpha, overrides.beta_alpha,
+                        "beta_alpha");
+    merge_adapter_field(adapters.beta_beta, settings.beta_beta, overrides.beta_beta, "beta_beta");
     merge_adapter_field(adapters.base_sigmas, settings.base_sigmas, overrides.base_sigmas,
                         "base_sigmas");
     if (has_settings(settings))
@@ -125,6 +130,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   if (plan.model.pdd_steps > 1) {
     if (request.schedule != sampler::ScheduleKind::kDefault || request.animate ||
         effective.audio_steps || effective.base_sigmas ||
+        effective.scheduler == sampler::SigmaSchedule::kBeta ||
         *effective.video_sigma_shift != 12 || *effective.audio_sigma_shift != 3 ||
         effective.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler ||
         request.motion_cache.active() || request.cache_threshold > 0 || request.skip_every > 0 ||
@@ -177,9 +183,19 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
                                  : (request.num_inference_steps == 0 ? *effective.default_steps
                                                                      : request.num_inference_steps);
   sampler::FlowScheduler video(plan.video_sigma_shift), audio(plan.audio_sigma_shift);
+  const bool beta = effective.scheduler == sampler::SigmaSchedule::kBeta;
+  const auto set_beta = [&](sampler::FlowScheduler& scheduler, int points) {
+    scheduler.set_sigmas(sampler::beta_sigma_schedule(points - 1, scheduler.shift(),
+                                                      effective.beta_alpha.value_or(.6f),
+                                                      effective.beta_beta.value_or(.6f)));
+  };
   if (effective.base_sigmas) {
     video.set_base_sigmas(*effective.base_sigmas);
     audio.set_base_sigmas(*effective.base_sigmas);
+  } else if (beta) {
+    set_beta(video, plan.num_inference_steps);
+    set_beta(audio, plan.num_inference_steps);
+    plan.sampling_sources.push_back("beta quantiles (1000-point training grid)");
   } else {
     video.set_timesteps(plan.num_inference_steps);
     audio.set_timesteps(plan.num_inference_steps);
@@ -189,7 +205,10 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     audio.set_sigmas(audio.sigmas());
   }
   if (effective.audio_steps) {
-    audio.set_timesteps(*effective.audio_steps);
+    if (beta)
+      set_beta(audio, *effective.audio_steps);
+    else
+      audio.set_timesteps(*effective.audio_steps);
     audio.set_sigmas(audio.sigmas());
   }
   // Preserve the legacy rejection of float32 grid collapse unless the user

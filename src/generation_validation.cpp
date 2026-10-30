@@ -44,7 +44,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     require(o.inference_backend != DeviceBackend::kVulkan || o.vulkan_portable_arithmetic,
             "Krea 2 Vulkan requires portable arithmetic; use --vulkan-arithmetic portable");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Krea 2 requires generation from fresh noise");
-    require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "Krea 2 requires Euler sampling");
+    require(resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kEuler ||
+                resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kErSde,
+            "Krea 2 requires Euler or ER-SDE sampling");
     require(o.attention_mode == AttentionMode::kFlash2, "Krea 2 supports flash2 attention");
     require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty(), "Krea 2 does not support H3 sampling effects or LCS");
     require(o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() && o.save_latents_path.empty() && !o.on_latents && o.attention_band == 0 && o.veda.predictor_path.empty(), "Krea 2 does not support H3 latent archives, upscaling or attention overrides");
@@ -53,7 +55,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   if (p.model.family == "fibo2") {
     require(o.inference_backend == DeviceBackend::kCuda, "Fibo requires the CUDA backend");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Fibo requires editing from fresh noise");
-    require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "Fibo requires Euler sampling");
+    require(resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kEuler ||
+                resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kErSde,
+            "Fibo requires Euler or ER-SDE sampling");
     require(o.attention_mode == AttentionMode::kFlash2, "Fibo supports flash2 attention");
     require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty(), "Fibo does not support H3 sampling effects or LCS");
     require(o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() && o.save_latents_path.empty() && !o.on_latents && o.attention_band == 0 && o.veda.predictor_path.empty(), "Fibo does not support H3 latent archives, upscaling or attention overrides");
@@ -62,7 +66,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   if (p.model.family == "moss") {
     require(!o.sampling_effect && !o.lcs_data, "sampling effects and LCS currently require H3");
     require(o.inference_backend == DeviceBackend::kCuda, "MOSS currently requires the CUDA backend");
-    require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "MOSS requires Euler sampling");
+    require(resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kEuler ||
+                resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kErSde,
+            "MOSS requires Euler or ER-SDE sampling");
     require(o.attention_mode == AttentionMode::kFlash2, "MOSS currently supports --attention flash2");
     require(o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() &&
                 o.save_latents_path.empty() && !o.on_latents && o.attention_band == 0,
@@ -130,8 +136,8 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           "latent ending anchor requires denoising without imported initial latents or approximate caches");
   require(!r.continuation_lock_overlap || (r.continuation && !caches),
           "locked overlap requires continuation without approximate caches");
-  require(sampler_kind != sampler::SamplerKind::kRenoise || !caches,
-          "re-noising does not support approximate caches");
+  require(!sampler::stochastic_sampler(sampler_kind) || !caches,
+          "stochastic samplers do not support approximate caches");
   r.image_edit.validate();
   require(
       !r.image_edit.image ||
@@ -207,8 +213,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           "selected attention mode is unsupported by the inference backend");
   require(o.inference_backend != DeviceBackend::kVulkan || o.source != LatentSource::kDenoise ||
               ((sampler_kind == sampler::SamplerKind::kEuler ||
-                sampler_kind == sampler::SamplerKind::kRenoise) &&
+                sampler_kind == sampler::SamplerKind::kRenoise ||
+                sampler_kind == sampler::SamplerKind::kErSde) &&
                !step_cache && r.block_cache_span == 0),
-          "Vulkan generation supports Euler or re-noising without step or block caches");
+          "Vulkan generation supports Euler, re-noising or ER-SDE without step or block caches");
 }
 } // namespace slopfab

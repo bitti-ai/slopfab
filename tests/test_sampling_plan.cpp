@@ -205,6 +205,58 @@ SLOPFAB_TEST(sampling_plan_dmad_settings_match_compatibility_alias) {
   CHECK(resolve_plan(request).audio_sigma_shift == 3); // Settings are generic data.
 }
 
+SLOPFAB_TEST(sampling_plan_beta_and_er_sde_routing) {
+  using namespace slopfab;
+  GenerateRequest r;
+  r.num_inference_steps = 9;
+  r.schedule = sampler::ScheduleKind::kBeta;
+  r.sampling.sampler = sampler::SamplerKind::kErSde;
+  auto p = resolve_plan(r);
+  CHECK(p.video_sigmas == sampler::beta_sigma_schedule(8, 12));
+  CHECK(p.audio_sigmas == sampler::beta_sigma_schedule(8, 3));
+  CHECK(p.sampler == sampler::SamplerKind::kErSde);
+  RunOptions o;
+  o.attention_mode = AttentionMode::kFlash2;
+  for (auto backend : {DeviceBackend::kCuda, DeviceBackend::kVulkan}) {
+    o.inference_backend = backend;
+    validate_generation_options(r, p, o);
+  }
+  r.sampling.audio_steps = 5;
+  p = resolve_plan(r);
+  CHECK(p.audio_sigmas == sampler::beta_sigma_schedule(4, 3));
+  CHECK(p.video_sigmas == sampler::beta_sigma_schedule(8, 12));
+  r.block_cache_span = 1;
+  CHECK(rejects([&] {
+    validate_generation_options(r, p, o);
+  }));
+  r = GenerateRequest{};
+  r.schedule = sampler::ScheduleKind::kBeta;
+  r.sampling.base_sigmas = std::vector<float>{1, .5f, 0};
+  CHECK(rejects([&] {
+    resolve_plan(r);
+  }));
+  for (const char* family : {"krea2", "moss", "fibo2"}) {
+    r = GenerateRequest{};
+    r.model_family = family;
+    // Fibo planning accepts a path before execution opens the image.
+    if (r.model_family == "fibo2")
+      r.reference_image_paths = {"missing.png"};
+    r.schedule = sampler::ScheduleKind::kBeta;
+    r.sampling.sampler = sampler::SamplerKind::kErSde;
+    r.num_inference_steps = 8;
+    p = resolve_plan(r);
+    CHECK(p.video_sigmas.size() == 9 && p.video_sigmas.back() == 0);
+    CHECK(p.sampler == sampler::SamplerKind::kErSde);
+    o.inference_backend = DeviceBackend::kCuda;
+    validate_generation_options(r, p, o);
+    if (r.model_family == "krea2") {
+      o.inference_backend = DeviceBackend::kVulkan;
+      o.vulkan_portable_arithmetic = true;
+      validate_generation_options(r, p, o);
+    }
+  }
+}
+
 SLOPFAB_TEST(sampling_plan_sampler_metadata_precedence_and_conflicts) {
   using namespace slopfab;
   SamplingFixture model("slopfab_sampler_model.safetensors", R"({"version":1,"sampler":"ab2"})");

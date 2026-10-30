@@ -1,6 +1,7 @@
 #include "slopfab/sampler/scheduler.h"
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace slopfab::sampler {
 bool stochastic_sampler(SamplerKind kind) noexcept {
@@ -8,7 +9,8 @@ bool stochastic_sampler(SamplerKind kind) noexcept {
 }
 
 void FlowScheduler::adjust_first_sigma() {
-  if (sigmas_.empty()) return;
+  if (sigmas_.empty())
+    return;
   sigmas_[0] = original_first_sigma_;
   if (sampler_ == SamplerKind::kErSde && sigmas_[0] == 1) {
     // Rectified flow has alpha=1-sigma, so sigma=1 has infinite noise/data ratio.
@@ -17,12 +19,15 @@ void FlowScheduler::adjust_first_sigma() {
     float first = float(shift_ * t / (1 + (shift_ - 1.) * t));
     first = std::min(first, std::nextafter(1.f, 0.f));
     sigmas_[0] = std::max(first, std::nextafter(sigmas_[1], 1.f));
+    if (sigmas_[0] >= 1)
+      throw std::invalid_argument(
+          "ER-SDE needs room below sigma 1; reduce the shift or step count");
   }
   timesteps_[0] = 1 - sigmas_[0];
 }
 
-void FlowScheduler::er_sde_step(int step, const float* sample, const float* velocity,
-                                size_t count, float* out, const float* noise) {
+void FlowScheduler::er_sde_step(int step, const float* sample, const float* velocity, size_t count,
+                                float* out, const float* noise) {
   // ER-SDE-Solver-3 (Cui et al., arXiv:2309.06169), expressed for rectified
   // flow: alpha=1-sigma, lambda=sigma/alpha, x0=x+sigma*velocity (H3 sign).
   // Use log(phi) for stable ratios even very near the all-noise endpoint.
@@ -53,7 +58,8 @@ void FlowScheduler::er_sde_step(int step, const float* sample, const float* velo
       first = alpha * (dt + integral * h);
       second = alpha * (dt * dt / 2 + moment * h);
     }
-    noise_scale = alpha * std::sqrt(std::max(0., target * target - lambda * lambda * ratio * ratio));
+    noise_scale =
+        alpha * std::sqrt(std::max(0., target * target - lambda * lambda * ratio * ratio));
   }
   if (!er_history_) {
     previous_denoised_.resize(count);
@@ -68,7 +74,8 @@ void FlowScheduler::er_sde_step(int step, const float* sample, const float* velo
       if (er_history_ >= 2)
         value += second * (derivative - previous_derivative_[j]) / ((lambda - older_lambda_) / 2);
     }
-    if (next > 0) value += noise_scale * noise[j];
+    if (next > 0)
+      value += noise_scale * noise[j];
     out[j] = float(value);
     previous_denoised_[j] = denoised;
     previous_derivative_[j] = float(derivative);

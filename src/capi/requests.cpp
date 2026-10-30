@@ -581,12 +581,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(slopfab_request* req
                                                             int32_t schedule) {
   if (!request ||
       (schedule != SLOPFAB_SCHEDULE_DEFAULT && schedule != SLOPFAB_SCHEDULE_TAOMATE_3STEP &&
-       schedule != SLOPFAB_SCHEDULE_DMAD_4STEP))
+       schedule != SLOPFAB_SCHEDULE_DMAD_4STEP && schedule != SLOPFAB_SCHEDULE_BETA))
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "unknown denoising schedule or null request");
   return guarded([&] {
     request->request.schedule =
         schedule == SLOPFAB_SCHEDULE_DEFAULT      ? slopfab::sampler::ScheduleKind::kDefault
         : schedule == SLOPFAB_SCHEDULE_DMAD_4STEP ? slopfab::sampler::ScheduleKind::kDmad4Step
+        : schedule == SLOPFAB_SCHEDULE_BETA       ? slopfab::sampler::ScheduleKind::kBeta
                                                   : slopfab::sampler::ScheduleKind::kTaoMate3Step;
     return SLOPFAB_OK;
   });

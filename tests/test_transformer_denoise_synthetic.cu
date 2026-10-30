@@ -236,7 +236,8 @@ SLOPFAB_TEST_CATEGORY(denoise_independent_audio_steps, "synthetic") {
   // Explicit oracle for two video and three audio updates. Also swap them to
   // exercise fewer audio updates, and test every CUDA integrator.
   for (bool swap : {false, true}) {
-    for (auto kind : {SamplerKind::kEuler, SamplerKind::kAb2, SamplerKind::kRenoise}) {
+    for (auto kind :
+         {SamplerKind::kEuler, SamplerKind::kAb2, SamplerKind::kRenoise, SamplerKind::kErSde}) {
       FlowScheduler video(12), audio(3);
       video.set_timesteps(swap ? 4 : 3);
       audio.set_timesteps(swap ? 3 : 4);
@@ -271,7 +272,7 @@ SLOPFAB_TEST_CATEGORY(denoise_independent_audio_steps, "synthetic") {
         const auto advance = [&](FlowScheduler& scheduler, int index, std::vector<float>& state,
                                  float velocity, NoiseStream stream) {
           std::vector<float> velocities(state.size(), velocity), noise(state.size());
-          if (kind == SamplerKind::kRenoise && size_t(index + 1) < scheduler.num_steps())
+          if (stochastic_sampler(kind) && size_t(index + 1) < scheduler.num_steps())
             fill_renoise_normal(in.seed, index, stream, noise.data(), noise.size());
           scheduler.step(index, state.data(), velocities.data(), state.size(), state.data(),
                          noise.data());

@@ -2,6 +2,7 @@
 #include "slopfab/generate.h"
 #include "slopfab/krea.h"
 #include "slopfab/sampler/noise.h"
+#include "slopfab/sampler/image_step.h"
 #include "slopfab/safetensors_write.h"
 #include "slopfab/tensor_convert.h"
 #include <algorithm>
@@ -102,23 +103,29 @@ RunResult run(const GenerateRequest& request, const GeneratePlan& plan, const Ru
         uncond = fuse_text(transformer, negative);
       negative = Tensor();
       const int steps = int(plan.video_timesteps.size());
+      sampler::FlowScheduler scheduler(plan.video_sigma_shift);
+      scheduler.set_sigmas(plan.video_sigmas);
+      scheduler.set_sampler(resolve_sampling_sampler(plan, options.sampler));
+      const bool er_sde = scheduler.sampler() == sampler::SamplerKind::kErSde;
       notify(RunStage::kDenoising, -1, steps);
       for (int step = 0; step < steps; ++step) {
         const auto check = [&] {
           notify(RunStage::kDenoising, step - 1, steps);
         };
         auto prediction = to_host(predict(transformer, from_host(latent, n, 64), text, h, w,
-                                          plan.video_sigmas[step], streaming, check));
+                                          scheduler.sigmas()[step], streaming, check));
         if (guidance > 0) {
           auto u = to_host(predict(transformer, from_host(latent, n, 64), uncond, h, w,
-                                   plan.video_sigmas[step], streaming, check));
+                                   scheduler.sigmas()[step], streaming, check));
           // Upstream CFG is cond + guidance * (cond - uncond).
           for (size_t i = 0; i < prediction.size(); ++i)
             prediction[i] = bf(prediction[i] + bf(guidance * bf(prediction[i] - u[i])));
         }
         float dt = plan.video_sigmas[step + 1] - plan.video_sigmas[step];
+        if (er_sde)
+          sampler::er_sde_image_step(scheduler, request.seed, step, latent, prediction);
         for (size_t i = 0; i < latent.size(); ++i) {
-          latent[i] = bf(latent[i] + bf(dt * prediction[i]));
+          latent[i] = er_sde ? bf(latent[i]) : bf(latent[i] + bf(dt * prediction[i]));
           if (!std::isfinite(latent[i]))
             throw std::runtime_error("non-finite Krea 2 latent");
         }

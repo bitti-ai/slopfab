@@ -75,10 +75,14 @@ GeneratePlan resolve_moss_plan(const GenerateRequest& r) {
   if (r.has_references() || r.continuation || r.bridge || r.image_edit.image || r.animate ||
       r.video_transition || r.preserve_driving_audio || !r.loras.empty() ||
       r.cache_threshold != 0 || r.skip_every != 0 || r.block_cache_span != 0 ||
-      r.motion_cache.active() || r.schedule != sampler::ScheduleKind::kDefault)
+      r.motion_cache.active() ||
+      (r.schedule != sampler::ScheduleKind::kDefault && r.schedule != sampler::ScheduleKind::kBeta))
     throw std::invalid_argument(
         "MOSS supports text-to-image without H3 references, adapters or caches");
   validate_sampling_settings(r.sampling);
+  auto settings = sampling_schedule_defaults(r.schedule);
+  overlay_sampling_settings(settings, r.sampling);
+  validate_sampling_settings(settings);
   const auto& c = r.conditioning;
   if (c.require_prompt_embedding || c.fixed_prompt_tokens || c.image_short_edge ||
       c.media_short_edge || c.media_max_pixels || c.references_at_target_canvas ||
@@ -122,12 +126,16 @@ GeneratePlan resolve_moss_plan(const GenerateRequest& r) {
   p.num_inference_steps =
       r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(50);
   p.video_sigmas = moss_sigma_schedule(p.num_inference_steps, p.video_sigma_shift);
+  if (settings.scheduler == sampler::SigmaSchedule::kBeta)
+    p.video_sigmas = sampler::beta_sigma_schedule(p.num_inference_steps, p.video_sigma_shift,
+                                                  settings.beta_alpha.value_or(.6f),
+                                                  settings.beta_beta.value_or(.6f));
   p.video_timesteps.assign(p.video_sigmas.begin(), p.video_sigmas.end() - 1);
   for (auto& t : p.video_timesteps)
     t *= 1000.f;
   p.sampler = r.sampling.sampler.value_or(sampler::SamplerKind::kEuler);
-  if (p.sampler != sampler::SamplerKind::kEuler)
-    throw std::invalid_argument("MOSS currently supports Euler sampling");
+  if (p.sampler != sampler::SamplerKind::kEuler && p.sampler != sampler::SamplerKind::kErSde)
+    throw std::invalid_argument("MOSS supports Euler or ER-SDE sampling");
   return p;
 }
 } // namespace slopfab

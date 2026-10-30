@@ -24,10 +24,10 @@ enum class SigmaSchedule { kUniform, kBeta };
 
 // Beta quantiles select rounded indices in the model's ascending training grid.
 // steps counts evaluations; duplicate training indices are removed, then zero appended.
-std::vector<float> beta_sigma_schedule(int steps, float shift, float alpha = .6f,
-                                       float beta = .6f, int training_steps = 1000);
+std::vector<float> beta_sigma_schedule(int steps, float shift, float alpha = .6f, float beta = .6f,
+                                       int training_steps = 1000);
 
-// Which integrator advances the trajectory. Both cost exactly one model
+// Which integrator advances the trajectory. All cost exactly one model
 // evaluation per step; the difference is what they do with the velocity they
 // were given.
 enum class SamplerKind {
@@ -96,7 +96,9 @@ public:
   }
 
   // Selects the integrator. Clears any velocity history, so it is only
-  // meaningful between trajectories. Default kEuler.
+  // meaningful between trajectories. Default kEuler. ER-SDE offsets sigma=1
+  // slightly below one and updates timesteps to avoid an infinite noise/data
+  // ratio. Switching back restores the original first sigma.
   void set_sampler(SamplerKind kind);
 
   SamplerKind sampler() const {
@@ -108,17 +110,17 @@ public:
   // `set_timesteps` and `set_sampler` both do this implicitly.
   void reset();
 
-  // One step (eta = 0). `step_index` selects the sigma pair; `sample` is x_t
+  // One step. `step_index` selects the sigma pair; `sample` is x_t
   // and `velocity` the transformer output. Both spans must be the same length.
   // Writes x_{t+1} into `out`, which may alias `sample`.
   //
-  // Not const, and order-sensitive: kAb2 keeps v_{n-1} here, so a caller that
+  // Not const, and order-sensitive: AB2 and ER-SDE keep history, so a caller that
   // skips or repeats an index would silently extrapolate from the wrong
   // velocity. `step_index` must therefore be either 0 — which restarts the
   // trajectory, which is what makes one scheduler reusable across runs — or
   // exactly one past the previous call's. Anything else throws. `count` may
   // change between trajectories but not within one.
-  // kRenoise requires fresh row-layout noise, except at the terminal sigma.
+  // kRenoise and kErSde require fresh row-layout noise except at terminal sigma.
   void step(int step_index, const float* sample, const float* velocity, size_t count, float* out,
             const float* noise = nullptr);
 
@@ -130,8 +132,8 @@ public:
 private:
   void clear_history();
   void adjust_first_sigma();
-  void er_sde_step(int step, const float* sample, const float* velocity, size_t count,
-                   float* out, const float* noise);
+  void er_sde_step(int step, const float* sample, const float* velocity, size_t count, float* out,
+                   const float* noise);
 
   float shift_;
   std::vector<float> sigmas_;

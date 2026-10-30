@@ -1,6 +1,7 @@
 #include "runtime.cuh"
 #include "slopfab/generate.h"
 #include "slopfab/sampler/noise.h"
+#include "slopfab/sampler/image_step.h"
 #include "slopfab/safetensors_write.h"
 #include "slopfab/tensor_convert.h"
 #include <algorithm>
@@ -129,15 +130,22 @@ RunResult run(const GenerateRequest& request, const GeneratePlan& plan, const Ru
       Runtime transformer(request.transformer_path);
       auto gist = perceiver(transformer, context[0], streaming);
       const int steps = int(plan.video_timesteps.size());
+      sampler::FlowScheduler scheduler(plan.video_sigma_shift);
+      scheduler.set_sigmas(plan.video_sigmas);
+      scheduler.set_sampler(resolve_sampling_sampler(plan, options.sampler));
+      const bool er_sde = scheduler.sampler() == sampler::SamplerKind::kErSde;
       notify(RunStage::kDenoising, -1, steps);
       for (int step = 0; step < steps; ++step) {
         auto prediction = to_host(predict(transformer, from_host(latent, n, 128), h, w, refs,
-                                          context, gist, plan.video_sigmas[step], streaming, [&] {
+                                          context, gist, scheduler.sigmas()[step], streaming, [&] {
                                             notify(RunStage::kDenoising, step - 1, steps);
                                           }));
         float dt = plan.video_sigmas[step + 1] - plan.video_sigmas[step];
+        if (er_sde)
+          sampler::er_sde_image_step(scheduler, request.seed, step, latent, prediction);
         for (size_t i = 0; i < latent.size(); ++i) {
-          latent[i] += dt * prediction[i];
+          if (!er_sde)
+            latent[i] += dt * prediction[i];
           if (!std::isfinite(latent[i]))
             throw std::runtime_error("non-finite Fibo latent");
         }

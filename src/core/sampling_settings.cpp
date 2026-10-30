@@ -44,14 +44,20 @@ SamplingSettings parse_sampling_settings(std::string_view text) {
       else if (name == "er_sde")
         settings.sampler = sampler::SamplerKind::kErSde;
       else
-        throw std::invalid_argument("sampling settings: sampler must be euler, ab2, renoise or er_sde");
+        throw std::invalid_argument(
+            "sampling settings: sampler must be euler, ab2, renoise or er_sde");
     } else if (key == "scheduler") {
       const auto& name = value.as_string();
-      if (name == "default") settings.scheduler = sampler::SigmaSchedule::kUniform;
-      else if (name == "beta") settings.scheduler = sampler::SigmaSchedule::kBeta;
-      else throw std::invalid_argument("sampling settings: scheduler must be default or beta");
-    } else if (key == "beta_alpha") settings.beta_alpha = scalar(value);
-    else if (key == "beta_beta") settings.beta_beta = scalar(value);
+      if (name == "default")
+        settings.scheduler = sampler::SigmaSchedule::kUniform;
+      else if (name == "beta")
+        settings.scheduler = sampler::SigmaSchedule::kBeta;
+      else
+        throw std::invalid_argument("sampling settings: scheduler must be default or beta");
+    } else if (key == "beta_alpha")
+      settings.beta_alpha = scalar(value);
+    else if (key == "beta_beta")
+      settings.beta_beta = scalar(value);
     else if (key == "video_sigma_shift")
       settings.video_sigma_shift = scalar(value);
     else if (key == "audio_sigma_shift")
@@ -97,9 +103,12 @@ void overlay_sampling_settings(SamplingSettings& destination, const SamplingSett
   validate_sampling_settings(overrides);
   if (overrides.sampler)
     destination.sampler = overrides.sampler;
-  if (overrides.scheduler) destination.scheduler = overrides.scheduler;
-  if (overrides.beta_alpha) destination.beta_alpha = overrides.beta_alpha;
-  if (overrides.beta_beta) destination.beta_beta = overrides.beta_beta;
+  if (overrides.scheduler)
+    destination.scheduler = overrides.scheduler;
+  if (overrides.beta_alpha)
+    destination.beta_alpha = overrides.beta_alpha;
+  if (overrides.beta_beta)
+    destination.beta_beta = overrides.beta_beta;
   if (overrides.default_steps)
     destination.default_steps = overrides.default_steps;
   if (overrides.audio_steps)

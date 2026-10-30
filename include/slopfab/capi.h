@@ -663,7 +663,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_guidance(
     const int32_t* skip_layers, int32_t count);
 
 /* H3: sigma grid points including terminal zero (`steps - 1` updates), at
- * least 2. MOSS: requested Euler updates, at least 1; snapping the training
+ * least 2. Image models: requested updates, at least 1; snapping the training
  * grid can remove duplicate steps. An unset count inherits model defaults. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* request, int32_t steps);
 
@@ -812,6 +812,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_save_refmod_bundle(const char* const* pat
 #define SLOPFAB_SCHEDULE_DEFAULT 0
 #define SLOPFAB_SCHEDULE_TAOMATE_3STEP 1
 #define SLOPFAB_SCHEDULE_DMAD_4STEP 2 /* Four evaluations with fresh re-noising, shifts 12/2. */
+#define SLOPFAB_SCHEDULE_BETA 3 /* Beta quantiles; alpha=beta=0.6 unless sampling JSON overrides. */
 /* TaoMate uses three evaluations and overrides the ordinary step count.
  * Requires an enabled TaoMate adapter and no step/block caches; defaults to Euler.
  * DMAD (since 1.16) is a settings alias for four re-noising evaluations at

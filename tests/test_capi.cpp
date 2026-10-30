@@ -1243,6 +1243,27 @@ SLOPFAB_TEST(capi_dmad_sampling_settings_without_named_schedule) {
   slopfab_free_string(description);
 }
 
+SLOPFAB_TEST(capi_beta_er_sde_settings) {
+  Request request;
+  CHECK(slopfab_request_set_steps(request.handle, 9) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_BETA) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_sampling_settings(
+            request.handle,
+            R"({"version":1,"sampler":"er_sde","beta_alpha":0.6,"beta_beta":0.6})") == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 8);
+  char* description = nullptr;
+  CHECK(slopfab_describe_plan(request.handle, &description) == SLOPFAB_OK);
+  CHECK(description && std::string(description).find("er_sde") != std::string::npos);
+  CHECK(description && std::string(description).find("beta quantiles") != std::string::npos);
+  slopfab_free_string(description);
+  CHECK(slopfab_request_set_sampling_settings(request.handle, R"({"version":1,"beta_alpha":-1})") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK &&
+        plan.num_model_evaluations == 8);
+}
+
 SLOPFAB_TEST(capi_session_ownership_and_conditioning_setter) {
   Request request;
   slopfab_session* session = nullptr;

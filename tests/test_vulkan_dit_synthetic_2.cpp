@@ -1184,9 +1184,10 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
   CHECK(denoise_persistent != 0 && denoise_scratch != 0 &&
         denoiser.peak_device_bytes() == denoise_persistent + denoise_scratch);
   // Unequal, non-divisible counts: only the active modality may change.
-  // Run both directions and both supported integrators on the actual graph.
+  // Run both directions and all supported integrators on the actual graph.
   for (bool swap : {false, true}) {
-    for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise}) {
+    for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise,
+                      sampler::SamplerKind::kErSde}) {
       sampler::FlowScheduler video(12), audio(3);
       video.set_timesteps(swap ? 4 : 3);
       audio.set_timesteps(swap ? 3 : 4);

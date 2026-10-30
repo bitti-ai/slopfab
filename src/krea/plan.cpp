@@ -24,10 +24,13 @@ GeneratePlan resolve_krea_plan(const GenerateRequest& r) {
       r.video_transition || r.preserve_driving_audio || r.keystone.source || r.end_anchor_latents ||
       !r.end_anchor_path.empty() || !r.loras.empty() || r.cache_threshold != 0 || r.skip_every ||
       r.block_cache_span || r.motion_cache.active() ||
-      r.schedule != sampler::ScheduleKind::kDefault)
+      (r.schedule != sampler::ScheduleKind::kDefault && r.schedule != sampler::ScheduleKind::kBeta))
     throw std::invalid_argument(
         "Krea 2 supports text-to-image without references, H3 conditioning, LoRAs or caches");
   validate_sampling_settings(r.sampling);
+  auto settings = sampling_schedule_defaults(r.schedule);
+  overlay_sampling_settings(settings, r.sampling);
+  validate_sampling_settings(settings);
   const auto& c = r.conditioning;
   if (c.require_prompt_embedding || c.fixed_prompt_tokens || c.image_short_edge ||
       c.media_short_edge || c.media_max_pixels || c.references_at_target_canvas ||
@@ -35,8 +38,9 @@ GeneratePlan resolve_krea_plan(const GenerateRequest& r) {
       c.pin_target_audio || c.max_frames || c.require_euler || c.allow_caches)
     throw std::invalid_argument("Krea 2 does not use H3 conditioning settings");
   if (r.sampling.audio_steps || r.sampling.audio_sigma_shift || r.sampling.base_sigmas ||
-      r.sampling.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler)
-    throw std::invalid_argument("Krea 2 requires Euler sampling without audio or custom grids");
+      (r.sampling.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler &&
+       r.sampling.sampler != sampler::SamplerKind::kErSde))
+    throw std::invalid_argument("Krea 2 requires Euler or ER-SDE without audio or custom grids");
   if (!std::isfinite(krea_guidance(r)) || krea_guidance(r) < 0)
     throw std::invalid_argument("Krea 2 guidance must be finite and nonnegative");
   if (r.uncond_skip_layers != std::vector<int>{22} && !r.uncond_skip_layers.empty())
@@ -69,8 +73,13 @@ GeneratePlan resolve_krea_plan(const GenerateRequest& r) {
   p.num_inference_steps =
       r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(8);
   p.video_sigmas = krea_sigma_schedule(p.num_inference_steps, p.video_sigma_shift);
+  if (settings.scheduler == sampler::SigmaSchedule::kBeta)
+    p.video_sigmas = sampler::beta_sigma_schedule(p.num_inference_steps, p.video_sigma_shift,
+                                                  settings.beta_alpha.value_or(.6f),
+                                                  settings.beta_beta.value_or(.6f), 10000);
   p.video_timesteps.assign(p.video_sigmas.begin(), p.video_sigmas.end() - 1);
-  p.sampler = sampler::SamplerKind::kEuler;
+  p.num_inference_steps = int(p.video_timesteps.size());
+  p.sampler = settings.sampler.value_or(sampler::SamplerKind::kEuler);
   return p;
 }
 }

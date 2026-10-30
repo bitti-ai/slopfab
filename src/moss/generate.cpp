@@ -1,6 +1,7 @@
 #include "runtime.cuh"
 #include "slopfab/generate.h"
 #include "slopfab/sampler/noise.h"
+#include "slopfab/sampler/image_step.h"
 #include "slopfab/safetensors_write.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/text/tokenizer.h"
@@ -100,23 +101,32 @@ RunResult run(const GenerateRequest& request, const GeneratePlan& plan, const Ru
       start = Clock::now();
       Runtime transformer(request.transformer_path);
       const int steps = int(plan.video_timesteps.size());
+      sampler::FlowScheduler scheduler(plan.video_sigma_shift);
+      scheduler.set_sigmas(plan.video_sigmas);
+      scheduler.set_sampler(resolve_sampling_sampler(plan, options.sampler));
+      const bool er_sde = scheduler.sampler() == sampler::SamplerKind::kErSde;
       for (int step = 0; step < steps; ++step) {
         notify(RunStage::kDenoising, step, steps);
         auto input = from_host(latent, rows, 128);
-        auto prediction = to_host(
-            image_prediction(transformer, input, positive, h, w, plan.video_timesteps[step], {}));
+        auto prediction = to_host(image_prediction(
+            transformer, input, positive, h, w,
+            er_sde ? scheduler.sigmas()[step] * 1000.f : plan.video_timesteps[step], {}));
         if (request.guidance_scale != 1.f) {
           // Default SLG interval is [0.01,1); the first step does not skip.
           const auto skip =
               double(step) / steps >= 0.01 ? request.uncond_skip_layers : std::vector<int>{};
-          const auto uncond = to_host(image_prediction(transformer, input, negative, h, w,
-                                                       plan.video_timesteps[step], skip));
+          const auto uncond = to_host(image_prediction(
+              transformer, input, negative, h, w,
+              er_sde ? scheduler.sigmas()[step] * 1000.f : plan.video_timesteps[step], skip));
           for (size_t i = 0; i < latent.size(); ++i)
             prediction[i] = uncond[i] + request.guidance_scale * (prediction[i] - uncond[i]);
         }
         const float dt = plan.video_sigmas[step + 1] - plan.video_sigmas[step];
+        if (er_sde)
+          sampler::er_sde_image_step(scheduler, request.seed, step, latent, prediction);
         for (size_t i = 0; i < latent.size(); ++i) {
-          latent[i] += dt * prediction[i];
+          if (!er_sde)
+            latent[i] += dt * prediction[i];
           if (!std::isfinite(latent[i]))
             throw std::runtime_error("non-finite MOSS latent");
         }

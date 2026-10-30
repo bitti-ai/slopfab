@@ -30,6 +30,9 @@ if(SLOPFAB_BUILD_TESTS)
     add_test(NAME audio_steps_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_steps_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(audio_steps_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+    add_test(NAME sampler_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sampler_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(sampler_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME continuation_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_continuation_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(continuation_cli PROPERTIES LABELS synthetic TIMEOUT 60)

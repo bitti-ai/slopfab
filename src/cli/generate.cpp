@@ -266,8 +266,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         sampler_kind = slopfab::sampler::SamplerKind::kAb2;
       } else if (v == "renoise") {
         sampler_kind = slopfab::sampler::SamplerKind::kRenoise;
+      } else if (v == "er_sde") {
+        sampler_kind = slopfab::sampler::SamplerKind::kErSde;
       } else {
-        std::fprintf(stderr, "slopfab: --sampler wants euler, ab2 or renoise, got '%s'\n",
+        std::fprintf(stderr, "slopfab: --sampler wants euler, ab2, renoise or er_sde, got '%s'\n",
                      v.c_str());
         return 2;
       }
@@ -564,7 +566,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       std::ostringstream contents;
       contents << in.rdbuf();
       req.sampling = slopfab::parse_sampling_settings(contents.str());
-    } else if (arg == "--schedule") {
+    } else if (arg == "--schedule" || arg == "--scheduler") {
       const std::string value = next("--schedule");
       if (value == "default")
         req.schedule = slopfab::sampler::ScheduleKind::kDefault;
@@ -572,8 +574,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         req.schedule = slopfab::sampler::ScheduleKind::kTaoMate3Step;
       else if (value == "dmad-4step")
         req.schedule = slopfab::sampler::ScheduleKind::kDmad4Step;
+      else if (value == "beta")
+        req.schedule = slopfab::sampler::ScheduleKind::kBeta;
       else
-        throw std::runtime_error("--schedule wants default, taomate-3step or dmad-4step");
+        throw std::runtime_error("--schedule wants default, beta, taomate-3step or dmad-4step");
     } else if (arg == "--animate") {
       req.animate = true;
     } else if (arg == "--preserve-driving-audio") {
