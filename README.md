@@ -1,39 +1,19 @@
 # slopfab
 
-Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), and image generation with [Krea 2](https://github.com/krea-ai/krea-2), using CUDA or Vulkan. [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) and [Fibo 2.0 editing](https://huggingface.co/briaai/Fibo-2.0-edit-turbo) use CUDA. No Python is required at runtime.
+Native C++ video, image and music generation on CUDA and Vulkan. No Python is required at runtime.
 
 ## Features
 
-- **Text-to-video with audio**, configurable resolution, frame count, sampling steps, seeds and batch generation.
-- **Image, video and audio references** with compatible Ref2VA models, including reusable [refmods and mixed bundles](docs/refmods.md).
-- **Raw-media RefMod export** via `encode-refmod` or C API `slopfab_export_refmod` (ABI 1.18), using only the required VAEs.
-- **Standalone text embeddings** via [`encode-text`](docs/refmods.md#standalone-text-embeddings), reusable alongside media bundles.
-- **CUDA and Vulkan inference** with native text and reference conditioning, plus selectable attention backends.
-- **LoRA adapters**, adapter stacking and the [TaoMate three-step schedule](docs/loras.md).
-- **Model and LoRA sampling settings**, with [metadata defaults and JSON overrides](docs/sampling_settings.md).
-- **Independent audio steps** (experimental) through `--audio-steps` or the C API, while retaining a LoRA's video grid. See [sampling settings](docs/sampling_settings.md#independent-audio-steps-experimental).
-- **Configurable conditioning and isolated session caches**, with [model/LoRA recipes and library APIs](docs/conditioning_settings.md).
-- **Video continuation** through [saved video and audio latents](docs/continuation.md).
-- **Persistent Keystone/Capstone anchors** reuse an original clip during continuation, with delayed model context and restored output latents. See [Keystone](docs/continuation.md#keystone-and-delayed-capstone-experimental-c-api-145).
-- **Ending anchors** guide a clip or continuation toward an image with `--end-anchor`. See [ending anchors](docs/continuation.md#ending-image-anchor-c-api-139).
-- **Latent ending anchors** preserve an independently generated ending segment while generating its lead-in or a gap from a previous clip. See [retained endings](docs/continuation.md#retained-latent-ending-anchor-c-api-140).
-- **Latent bridging** between retained clips, with persistent reference conditioning and editable margins on both sides. See [bridging](docs/continuation.md#bridging-retained-clips-c-api-126-experimental).
-- **Quantized checkpoints** and [automatic CUDA transformer offloading](docs/denoising_memory.md) to manage GPU memory.
-- **A C API** for asynchronous video and still-image generation, progress callbacks, cancellation and model reuse.
-- **Native H3 latent color controls and writable sampling callbacks** on CUDA and Vulkan, with reusable VAE calibration, tone controls, masks, sharpness and color anchoring. See [LCS and sampling effects](docs/lcs.md).
-- **Masked image editing** on CUDA and Vulkan, with arbitrary U8 lasso/brush masks through the C API, rectangular edits, soft-edge blending and exact preservation of unselected pixels. See [inpainting](docs/inpainting.md).
-- **MP4 output through FFmpeg**, raw Y4M/WAV output, checkpoint inspection and tensor comparison tools.
-- **Real-ESRGAN 4x upscaling** on CUDA and Vulkan, for standalone images and generated frames. See [upscaling](docs/upscaling.md).
-- **H3 latent upscaling** on CUDA and Vulkan, enlarging video latents before VAE decoding. See [latent upscaling](docs/latent_upscaling.md).
-- **SeedVR2 3B video restoration on CUDA**, with streamed segments, tiled VAE processing and direct [Comfy-Org safetensors](https://huggingface.co/Comfy-Org/SeedVR2) loading. See [SeedVR2](docs/seedvr2.md).
-
-## Misc
-
-- **FastH3 V2 on CUDA and Vulkan**, with learned VSA-H3 sparse attention and automatic eight-step scheduling. See [FastH3 V2](docs/fasth3_v2.md).
-- **FastH3 OmniRef on CUDA and Vulkan**, with fused PDD32 prediction heads, eight-step sampling and sparse attention across reference videos. See [OmniRef](docs/omniref.md).
-- **VEDA on CUDA and Vulkan**, using separate learned sparse-attention predictors with ordinary H3 checkpoints. See [VEDA](docs/veda.md).
-- **Optional MotionCache on CUDA and Vulkan**, reusing motion-aware video/audio residuals to reduce transformer calls. See [MotionCache](docs/motioncache.md).
-- **Viggle-Animate checkpoint and adapter loading**, with [fixed-conditioning and driving-audio options](docs/viggle_animate.md).
+- **Video with audio:** MiniMax H3 generation with configurable resolution, duration, seeds and batches.
+- **Reference conditioning:** images, video and audio with Ref2VA; reusable [RefMods, mixed bundles and text embeddings](docs/refmods.md).
+- **LoRA adapters:** stacking, TaoMate (3 evaluations), DMAD (4), and **Hyperflow (8)** with two-time conditioning and an automatically selected schedule. Hyperflow requires a prepared companion; see [LoRA setup](docs/loras.md).
+- **Sampling controls:** Euler, AB2, re-noising and **ER-SDE**, beta scheduling, model/LoRA defaults, JSON overrides and experimental independent audio steps. See [sampling settings and compatibility](docs/sampling_settings.md).
+- **Editing and continuity:** [masked editing and outpainting](docs/inpainting.md), [saved-latent continuation, bridging and ending anchors](docs/continuation.md), including persistent Keystone/Capstone context.
+- **Color and tone:** [latent color controls and writable sampling callbacks](docs/lcs.md), with masks, sharpness and reusable VAE calibration.
+- **Memory and speed:** quantized checkpoints, [CUDA offloading](docs/denoising_memory.md), [FastH3 V2](docs/fasth3_v2.md), [OmniRef](docs/omniref.md), [VEDA](docs/veda.md) and optional [MotionCache](docs/motioncache.md). [Viggle-Animate loading](docs/viggle_animate.md) has separate workflow limits.
+- **Decoding and upscaling:** [Sol H3 VAE](docs/sol_h3_vae.md), [H3 latent upscaling](docs/latent_upscaling.md) and [Real-ESRGAN](docs/upscaling.md) on CUDA/Vulkan; [SeedVR2 restoration](docs/seedvr2.md) on CUDA.
+- **Application integration:** asynchronous C API, cancellation, progress, [generation previews](docs/generation_previews.md), [isolated session caches](docs/conditioning_settings.md) and model reuse.
+- **Media and tools:** FFmpeg MP4 output, raw Y4M/WAV, checkpoint inspection, tensor comparison and standalone media/text encoding.
 
 ## Build
 
@@ -51,107 +31,70 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "cuda=$($env:CUDA_PATH_
 cmake --build build --config Release
 ```
 
-To build the current checkout's Windows and Linux libraries together, run:
+Build and test Windows/Linux libraries together with `.\build.cmd` (Linux uses WSL).
+Use `-Target windows|linux`, `-Distro Ubuntu` or `-Jobs 4` to narrow the build;
+`.\build.cmd -Help` lists all options. Libraries, headers and checksums go to
+`dist/windows/` and `dist/linux/`. GPU runtimes remain external.
 
-```powershell
-.\build.cmd
-```
+The default CUDA targets are RTX 30-series and RTX 50-series. Windows selects
+cuBLAS from an installed CUDA 13 or CUDA 12 toolkit; Linux links its build toolkit.
+Vulkan requires a compatible Vulkan 1.2 device and driver.
 
-This builds Release CUDA/Vulkan libraries, runs the C API and embedded-tokenizer
-tests for each platform, and writes:
+Common CMake options (all default to `ON`):
 
-- `dist/windows/slopfab.dll`, `slopfab_c.lib` and `capi.h`.
-- `dist/linux/libslopfab.so`, its versioned copies and `capi.h`.
-- `SHA256SUMS` and `build-info.txt` in both folders.
-
-The Linux build runs in the default WSL distribution, which needs the
-[Linux build prerequisites](docs/linux.md#build) and a Linux CUDA toolkit.
-Windows uses `build/`; Linux uses `$HOME/slopfab-build-linux` on its native
-filesystem. Existing build directories are reused, including settings such as
-FFmpeg; CUDA, Vulkan, the C API, tests and the full tokenizer are enabled
-explicitly. No source, models or dependencies are downloaded. A failed build or
-test stops the script with a nonzero exit code before publishing that platform.
-
-Use `-Target windows` or `-Target linux` to build just one platform, `-Distro Ubuntu`
-to select WSL, or `-Jobs 4` to change the default two compilation jobs.
-`-WindowsBuildDir`, `-LinuxBuildDir` and `-LinuxCudaCompiler` override the build
-directories and Linux compiler. Linux overrides are absolute Linux paths.
-Run `.\build.cmd -Help` for all options. Libraries use external GPU runtimes;
-use the packaging commands below when you also need a CLI distribution.
-
-The default CUDA build targets NVIDIA RTX 30-series and RTX 50-series GPUs. On Windows, it selects cuBLAS from an installed CUDA 13 or CUDA 12 toolkit at runtime; Linux links the toolkit selected when building. Vulkan inference requires a compatible Vulkan 1.2 device and driver.
-
-Use `build/` for all configurations. Reconfigure it with CMake options as needed:
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `SLOPFAB_ENABLE_CUDA` | `ON` | CUDA inference |
-| `SLOPFAB_ENABLE_VULKAN` | `ON` | Vulkan inference and output conversion |
-| `SLOPFAB_WITH_FFMPEG` | `ON` | MP4 output and FFmpeg media input |
-| `SLOPFAB_BUILD_C_API` | `ON` when either GPU backend is enabled | Build `slopfab.dll` or `libslopfab.so` |
-| `SLOPFAB_EMBED_TOKENIZER` | `ON` | Embed the tokenizer in the CLI and C API |
-| `SLOPFAB_TOKENIZER_FILE` | `ref/text_encoder/tokenizer.json` | Tokenizer JSON to embed |
-| `SLOPFAB_BUILD_TESTS` | `ON` | Build tests |
-| `SLOPFAB_BUILD_DEV_TOOLS` | `OFF` | Build additional profiling and diagnostic tools |
-
-Run tests or create a Windows package:
+| Option | Purpose |
+| --- | --- |
+| `SLOPFAB_ENABLE_CUDA` / `SLOPFAB_ENABLE_VULKAN` | Enable either or both inference backends |
+| `SLOPFAB_WITH_FFMPEG` | MP4 output and FFmpeg media input |
+| `SLOPFAB_BUILD_C_API` | Build the shared library when a GPU backend is enabled |
+| `SLOPFAB_EMBED_TOKENIZER` | Embed the tokenizer; override its path with `SLOPFAB_TOKENIZER_FILE` |
+| `SLOPFAB_BUILD_TESTS` | Build tests |
 
 ```powershell
 ctest --test-dir build -C Release --output-on-failure
 .\package.cmd
 ```
 
-Packaging uses the same build directory and writes an archive under `dist/`. It includes the CLI, DLL, C header, import library and FFmpeg runtime. Model weights and CUDA libraries are not included.
-
-On Linux, `bash package.sh --backend vulkan` or `bash package.sh --backend both`
-builds, tests and packages the CLI, shared library, C header, documentation and
-licenses. Linux packages use external GPU and media runtimes.
+Windows packaging uses `build/` and includes the CLI, DLL, C header, import
+library and FFmpeg runtime under `dist/`. Linux uses
+`bash package.sh --backend vulkan` or `--backend both`, with external GPU/media
+runtimes. Packages exclude model weights and CUDA libraries.
 
 ## Models
 
-For YuE2 and MiniMax Music3 audio generation on CUDA or Vulkan, see [music setup and usage](docs/music-models.md).
+| Family | Output | Backends | Setup |
+| --- | --- | --- | --- |
+| MiniMax H3 | Video with audio; still images | CUDA, Vulkan | [References](docs/reference_media.md), [LoRAs](docs/loras.md) |
+| Krea 2 | Images | CUDA, Vulkan | [Krea](docs/krea2.md) |
+| MOSS Image SFT | Images | CUDA | [MOSS](docs/moss.md) |
+| Fibo 2.0 Edit Turbo | Image editing | CUDA | [Fibo](docs/fibo2.md) |
+| YuE2 / MiniMax Music3 | Music | CUDA, Vulkan | [Music models](docs/music-models.md) |
 
-For the H3 W4A8 ConvRot transformer, see [packed INT4 setup](docs/w4a8.md).
-For H3 W6A8 checkpoints, including the Singularity/PRISM merge, see [packed INT6 setup](docs/w6a8.md).
+Select `--model h3|moss|fibo2|krea2|yue2|minimax_music3`, or let an explicit
+transformer checkpoint determine the family. H3 is the default.
 
-For Krea 2 Turbo, see [Krea setup and usage](docs/krea2.md).
+Place compatible checkpoints in `weights/text_encoder/`, `weights/transformer/`
+and `weights/vae/`; adapters conventionally go in `weights/loras/`. The CLI
+finds local conditioner, transformer and VAE files, or accepts explicit
+`--text-encoder`, `--transformer`, `--vae` and `--audio-vae` paths.
+Quantization is detected from each file, including [H3 W4A8](docs/w4a8.md),
+[W6A8](docs/w6a8.md) and Comfy INT8 ConvRot video VAEs.
 
-For Fibo 2.0 Edit Turbo, see [Fibo setup and DLL usage](docs/fibo2.md).
-
-For MOSS Image SFT, see [MOSS setup and usage](docs/moss.md). For example:
-
-```sh
-slopfab generate --model moss --prompt "A red apple on a wooden table" --resolution 512x512 --seed 42 --out apple.ppm
-```
-
-Model family is inferred from an explicit transformer checkpoint, or selected
-with `--model h3|moss|fibo2|krea2|yue2|minimax_music3`. Discovery selects matching conditioner and VAE families.
-The default family remains H3.
-
-H3 generation uses a Qwen3-VL text encoder, an H3 transformer, a video VAE and an audio VAE. Place compatible checkpoints under:
-
-```text
-weights/
-  text_encoder/
-  transformer/
-  vae/
-```
-
-The CLI discovers local checkpoints in these folders. Supply model files yourself; slopfab does not download missing weights. To choose files explicitly, use `--text-encoder`, `--transformer`, `--vae` and `--audio-vae`. Checkpoint quantization is detected from the file.
-
-The video VAE supports Comfy INT8 ConvRot checkpoints, including `minimax_h3_video_vae_int8_convrot.safetensors`, for decoding and reference-image encoding during image or video generation. CUDA keeps quantized decoder weights compressed and expands one matrix at a time; Vulkan and exact CUDA decoding expand them to FP16 when loading. The encoder's FP32 biases and normalization parameters are converted to FP16 on both backends. No manual quantization or shift setting is needed.
-
-Text-to-video uses FL2VA weights. Reference conditioning requires compatible Ref2VA weights; video and audio references also require VAE encoder weights. See [reference media support](docs/reference_media.md) for formats and requirements.
+H3 text-to-video uses FL2VA weights; reference inputs require Ref2VA and the
+appropriate VAE encoders. Sol H3 VAE is a decoder override (`--video-decoder`),
+so retain the original VAE for reference encoding. On Vulkan, select the FP32
+H3 audio VAE explicitly if discovery chooses an NF4 checkpoint.
 
 ## Usage
 
 The Windows executable is `build/Release/slopfab.exe`; the Linux executable is
 `slopfab` inside its chosen build directory. The examples below assume `slopfab` is on your `PATH`.
 
-Generate a video:
+Generate a video, or a Krea image with ER-SDE and beta scheduling:
 
 ```sh
 slopfab generate --prompt "A cat playing a piano in warm lamplight" --frames 22 --resolution 512x512 --seed 11 --out video.mp4
+slopfab generate --model krea2 --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple.ppm
 ```
 
 Read a longer prompt from a UTF-8 file, or inspect a request without loading model weights:
@@ -167,7 +110,10 @@ Common generation options:
 | --- | --- |
 | `--inference-backend cuda\|vulkan` | Select the inference backend |
 | `--vulkan-arithmetic portable\|exact` | Vulkan arithmetic policy; Linux defaults to portable |
-| `--steps N` | Set the sigma schedule length; performs `N - 1` evaluations |
+| `--steps N` | H3 grid points (`N - 1` evaluations); Krea/MOSS/Fibo evaluation counts |
+| `--sampler KIND` / `--schedule beta` | Select the solver and optional beta grid |
+| `--sampling-settings FILE` | Load sampling JSON overrides |
+| `--audio-steps N` | Experimental independent H3 audio grid length |
 | `--count N` | Generate multiple variations |
 | `--motion-cache` | Enable approximate motion-aware denoising reuse |
 | `--reference-image FILE` | Add an image reference; repeat for multiple images |
@@ -175,6 +121,9 @@ Common generation options:
 | `--lora FILE --lora-strength VALUE` | Apply a LoRA adapter |
 | `--save-latents FILE` / `--continue-from FILE` | Save or extend a generation |
 | `--raw` | Write Y4M video and WAV audio |
+
+Fixed/distilled recipes determine their own grids. For Hyperflow, prepare its
+[companion](docs/loras.md#hyperflow-h3-eight-evaluations), pass `--lora FILE` and omit `--steps`.
 
 Without `--out`, videos are written to timestamped files under `output/`. Use `slopfab generate --help` for the complete option list.
 
@@ -192,7 +141,7 @@ slopfab devices
 
 The API supports request validation, asynchronous generation, progress callbacks, cancellation, reusable model caches, still-image generation and latent continuation. Results are returned as decoded video pixels and audio samples; hosts can also supply decoded reference frames and PCM audio directly.
 
-Optional [TAEH3 generation previews](docs/generation_previews.md) expose small, silent RGB video previews during H3 denoising on CUDA and Vulkan (C API 1.46).
+Optional [TAEH3 previews](docs/generation_previews.md) expose small, silent RGB previews during H3 video and still-image denoising on CUDA and Vulkan.
 
 ## Licensing
 
