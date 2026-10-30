@@ -150,6 +150,7 @@ struct RowTimesteps {
   std::vector<float> unique;    // ascending, normally 2 entries for t2va
   std::vector<int32_t> indices; // [S], into `unique`
   std::vector<int32_t> adaln;   // [S], = indices[s]*3 + max(tag[s], 0)
+  std::vector<float> endpoints; // Hyperflow: endpoint paired with each unique time
 };
 
 // Extend only the model-call sequence by one video slice. Existing reference,

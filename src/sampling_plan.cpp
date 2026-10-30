@@ -7,6 +7,7 @@
 
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/pdd.h"
+#include "slopfab/dit/hyperflow.h"
 #include "slopfab/pipeline.h"
 
 namespace slopfab {
@@ -85,12 +86,21 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   // alias, and both have higher precedence than adapter or model defaults.
   auto overrides = sampling_schedule_defaults(request.schedule);
   overlay_sampling_settings(overrides, request.sampling);
+  std::optional<dit::HyperflowMetadata> hyperflow;
   SamplingSettings adapters;
   for (const auto& lora : request.loras) {
     if (lora.path.empty() || !std::isfinite(lora.strength))
       throw std::invalid_argument("LoRA path must be nonempty and strength finite");
     if (lora.strength == 0.0f)
       continue;
+    if (std::filesystem::exists(lora.path)) {
+      SafeTensors adapter;
+      adapter.open(lora.path);
+      if (auto hf = dit::hyperflow_metadata(adapter.metadata())) {
+        if (hyperflow) throw std::invalid_argument("Hyperflow: only one active adapter is supported");
+        hyperflow = hf;
+      }
+    }
     const auto settings = file_settings(lora.path);
     merge_adapter_field(adapters.default_steps, settings.default_steps,
                         request.num_inference_steps != 0
@@ -123,6 +133,19 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   if (has_settings(overrides))
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
+  plan.hyperflow = hyperflow.has_value();
+  if (hyperflow) {
+    const auto& required = hyperflow->sampling;
+    if (effective.base_sigmas != required.base_sigmas ||
+        effective.video_sigma_shift != required.video_sigma_shift ||
+        effective.audio_sigma_shift != required.audio_sigma_shift || effective.audio_steps ||
+        effective.sampler != sampler::SamplerKind::kEuler ||
+        effective.scheduler == sampler::SigmaSchedule::kBeta ||
+        (request.num_inference_steps && request.num_inference_steps != 9) ||
+        request.animate || request.continuation || request.image_edit.image ||
+        plan.fasth3_v2 || plan.model.pdd_steps > 1)
+      throw std::invalid_argument("Hyperflow requires its trained eight intervals, shifts and Euler sampler; alternate schedules, Animate, continuation and image editing are unsupported");
+  }
 
   if (request.continuation_source_noise > 0 &&
       (plan.model.pdd_steps > 1 || effective.base_sigmas.has_value()))
@@ -258,6 +281,8 @@ void validate_sampling_sampler(const GeneratePlan& plan,
   const auto kind = resolve_sampling_sampler(plan, requested);
   if (plan.model.pdd_steps > 1 && kind != sampler::SamplerKind::kEuler)
     throw std::invalid_argument("OmniRef PDD requires the Euler sampler");
+  if (plan.hyperflow && kind != sampler::SamplerKind::kEuler)
+    throw std::invalid_argument("Hyperflow requires the Euler sampler");
   if (plan.fasth3_v2 && kind != sampler::SamplerKind::kEuler)
     throw std::invalid_argument("FastH3 V2 requires the Euler sampler");
   if (plan.fixed_sampling_grid && kind == sampler::SamplerKind::kAb2)

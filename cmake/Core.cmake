@@ -33,6 +33,7 @@ add_library(slopfab_core STATIC
   src/core/sha256.cpp
   src/dit/adaln.cpp
   src/dit/h3_lora.cpp
+  src/dit/hyperflow.cpp
   src/core/conditioning_settings.cpp
   src/conditioning_plan.cpp
   src/generation_validation.cpp

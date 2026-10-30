@@ -23,7 +23,7 @@ bool ends(const std::string& s, const std::string& suffix) {
 }
 
 std::string normalize(std::string name) {
-  for (const char* p : {"base_model.model.", "model.diffusion_model.", "diffusion_model."}) {
+  for (const char* p : {"base_model.model.", "model.diffusion_model.", "diffusion_model.", "transformer."}) {
     const std::string prefix(p);
     if (name.compare(0, prefix.size(), prefix) == 0)
       name.erase(0, prefix.size());
@@ -54,11 +54,13 @@ const std::vector<LoraFactors>* LoraAdapters::find(const std::string& name) cons
 }
 
 void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& base) {
+  std::shared_ptr<const dit::Hyperflow> hyperflow;
   decltype(factors_) next;
   decltype(adaln_bias_) next_bias;
   for (const LoraSpec& spec : specs) {
     if (spec.path.empty() || !std::isfinite(spec.strength))
       throw std::runtime_error("LoRA: path must be nonempty and strength finite");
+    if (spec.strength == 0) continue;
     SafeTensors adapter;
     adapter.open(spec.path);
     AdaLNBasis adaln_basis;
@@ -66,6 +68,14 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
     int rebased = 0;
     float metadata_alpha = 0;
     bool has_metadata_alpha = false;
+    const auto hf = dit::hyperflow_metadata(adapter.metadata());
+    if (hf) {
+      if (hyperflow)
+        throw std::runtime_error("Hyperflow: only one active two-time adapter is supported");
+      hyperflow = dit::Hyperflow::load(adapter, base, spec.strength);
+      metadata_alpha = hf->alpha;
+      has_metadata_alpha = true;
+    }
     if (const auto it = adapter.metadata().find("lora_adapter_metadata");
         it != adapter.metadata().end()) {
       const auto config = json::parse(it->second);
@@ -90,11 +100,28 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       bool swap_ffn = false;
     };
 
+    int hyperflow_time_tensors = 0;
     std::map<std::string, Pair> pairs;
     for (const auto& item : adapter.tensors()) {
       if (item.first == detail::kLoraGridTensor)
         continue;
       const std::string key = normalize(item.first);
+      if (hf && (key.compare(0, 14, "time_embedder.") == 0 ||
+                 key.compare(0, 23, "endpoint_time_embedder.") == 0)) {
+        bool valid = false;
+        for (const char* module : {"time_embedder.linear_1", "time_embedder.linear_2",
+                                  "endpoint_time_embedder.linear_1", "endpoint_time_embedder.linear_2"})
+          for (const char* suffix : {".lora_A.weight", ".lora_B.weight"})
+            if (key == std::string(module) + suffix) valid = true;
+        if (!valid || item.second.dtype != DType::kF32 || item.second.shape.size() != 2 ||
+            item.second.shape[0] <= 0 || item.second.shape[1] <= 0 ||
+            (key.find(".lora_A.") != std::string::npos ? item.second.shape[0] : item.second.shape[1]) != hf->rank)
+          throw std::runtime_error("Hyperflow: invalid time-embedder tensor " + key);
+        ++hyperflow_time_tensors;
+        // The byte-verified companion evaluates these factors in FP32,
+        // including the nonlinear blend before each full AdaLN projection.
+        continue;
+      }
       bool matched = false;
       for (const auto& suffix :
            std::vector<std::pair<std::string, int>>{{".lora_A.weight", 0},
@@ -126,6 +153,8 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       if (!matched)
         throw std::runtime_error("LoRA: unsupported tensor " + item.first);
     }
+    if (hf && hyperflow_time_tensors != 8)
+      throw std::runtime_error("Hyperflow: expected all eight time-embedder factors");
     if (pairs.empty())
       throw std::runtime_error("LoRA: adapter contains no projections: " + spec.path);
     for (const auto& item : pairs) {
@@ -139,6 +168,7 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
         throw std::runtime_error("LoRA: invalid matrix shapes for " + name);
       LoraFactors f;
       f.rank = static_cast<int>(p.a->shape[0]);
+      if (hf && f.rank != hf->rank) throw std::runtime_error("Hyperflow: adapter rank mismatch");
       f.in = static_cast<int>(p.a->shape[1]);
       f.out = static_cast<int>(p.b->shape[0]);
       const bool rebase = detail::h3::validate_target(base, name, f);
@@ -210,18 +240,24 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
     list.clear();
     list.push_back(std::move(combined));
   }
+  if (hyperflow)
+    for (const auto& [name, factors] : next)
+      if (adaln_target(name))
+        throw std::runtime_error("Hyperflow cannot be stacked with AdaLN projection adapters");
+  hyperflow_ = std::move(hyperflow);
   factors_ = std::move(next);
   adaln_bias_ = std::move(next_bias);
 }
 
 bool LoraAdapters::has_adaln(const std::string& name) const {
-  return adaln_target(name) && find(name);
+  return adaln_target(name) && (hyperflow_ || find(name));
 }
 
 std::vector<float> LoraAdapters::merged_adaln_weight(const SafeTensors& base,
                                                      const std::string& name) const {
   if (!adaln_target(name))
     throw std::runtime_error("LoRA: unsupported AdaLN merge " + name);
+  if (hyperflow_ && adaln_target(name)) return hyperflow_->weight(name);
   const auto& weight = base.at(name + ".weight");
   auto result = values(weight);
   if (const auto* updates = find(name))
@@ -246,6 +282,7 @@ std::vector<float> LoraAdapters::merged_adaln_bias(const SafeTensors& base,
                                                    const std::string& name) const {
   if (!adaln_target(name))
     throw std::runtime_error("LoRA: unsupported AdaLN bias merge " + name);
+  if (hyperflow_) return std::vector<float>(base.at(name + ".bias").numel(), 0);
   auto result = values(base.at(name + ".bias"));
   if (auto it = adaln_bias_.find(name); it != adaln_bias_.end()) {
     if (result.size() != it->second.size())

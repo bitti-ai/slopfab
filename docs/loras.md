@@ -190,6 +190,56 @@ C callers pass the JSON to `slopfab_request_set_sampling_settings()`.
 `RunOptions::sampler` is an optional override; unset inherits the resolved
 settings, with Euler as the fallback when no settings choose a sampler.
 
+## Hyperflow H3, eight evaluations
+
+[Hyperflow](https://github.com/Video-Rebirth/hyperflow) loads through `--lora`.
+Its metadata selects the trained nine-point sigma grid, video/audio shifts
+12/3, and eight Euler evaluations automatically. Omit `--steps` and
+`--sampling-settings`.
+
+Hyperflow adapts **two** time embedders and blends their outputs before SiLU
+and the full AdaLN projections. Pruned checkpoints have removed these weights;
+an ordinary timestep companion grid cannot recover this calculation. Prepare
+a separate modulation companion once (Python with torch, numpy and safetensors):
+
+```powershell
+python tools/prepare_hyperflow.py --adapter weights/loras/minimax_h3_hyperflow_8step_v1.0.safetensors --variant fl2va
+```
+
+This reads about 26 GB of original model tensor ranges from the official model
+at the revision recorded in the adapter, and writes a roughly 333 MiB
+`minimax_h3_hyperflow_8step_v1.0.hyperflow-fl2va.safetensors` beside the adapter.
+It never changes the adapter or base checkpoint. For offline preparation,
+pass `--source /path/to/original/diffusers/transformer`, containing the original
+shards and index. Inference requires only the quantized base, adapter and
+prepared companion, with no Python or network access.
+
+```powershell
+build/Release/slopfab.exe generate --prompt "A polar bear plays the violin in the snow." --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/minimax_h3_hyperflow_8step_v1.0.safetensors --seed 42 --out output/hyperflow.mp4
+```
+
+Add `--inference-backend vulkan` for Vulkan. FL2VA keyframe inputs use the same
+companion. Ref2VA requires preparation with `--variant ref2va` (and its original
+`transformer_ref` directory when using `--source`), then a pruned Ref2VA base.
+Video conditioning rows use `(t,r)=(0.999,0.999)` and audio references use
+`(1,1)`; generated rows use the current and next modality-specific times.
+Pairs remain distinct even when their starting times coincide.
+
+Companions contain the full modulation results for every trained pair, including
+the two FP32 time-embedder LoRAs and the original BF16 AdaLN projection rounding.
+Runtime selects these results through one-hot codes; it does not fit them to
+the pruned rank-eight basis. The companion adds about 333 MiB of device weights.
+Base attention and MLP weights retain their quantization, so this does not
+establish output parity with the upstream unquantized pipeline.
+
+The companion is checked against the adapter's SHA-256, revision, variant and
+strength. To change `--lora-strength`, prepare again with the same `--strength`;
+zero disables the adapter without requiring its companion. Only one active
+Hyperflow adapter is supported. Attention/MLP style adapters may be stacked;
+AdaLN projection adapters cannot. Alternate grids, shifts, samplers, independent
+audio steps, approximate caches, Animate, continuation and image editing are
+rejected. Missing or mismatched companions fail before model upload.
+
 ## C and C++ APIs
 
 C ABI 1.7 adds:

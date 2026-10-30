@@ -132,6 +132,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_attention_descriptor.cpp
     tests/test_prompt_embedding.cpp
     tests/test_lora.cpp
+    tests/test_hyperflow.cpp
     tests/test_sampler.cpp
     tests/test_sampling_settings.cpp
     tests/test_audio_steps.cpp

@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "slopfab/json.h"
+#include "slopfab/dit/hyperflow.h"
 
 namespace slopfab {
 SamplingSettings parse_sampling_settings(std::string_view text) {
@@ -123,6 +124,7 @@ void overlay_sampling_settings(SamplingSettings& destination, const SamplingSett
 
 SamplingSettings
 sampling_settings_from_metadata(const std::map<std::string, std::string>& metadata) {
+  if (auto hf = dit::hyperflow_metadata(metadata)) return hf->sampling;
   const auto entry = metadata.find("slopfab.sampling");
   return entry == metadata.end() ? SamplingSettings{} : parse_sampling_settings(entry->second);
 }

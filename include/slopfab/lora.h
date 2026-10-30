@@ -1,6 +1,8 @@
 #pragma once
 
 #include <map>
+#include <memory>
+#include "slopfab/dit/hyperflow.h"
 #include <string>
 #include <vector>
 
@@ -37,6 +39,8 @@ public:
   // Multiple adapters for one target are concatenated into one factor pair.
   const std::vector<LoraFactors>* find(const std::string& projection) const;
 
+  std::shared_ptr<const dit::Hyperflow> hyperflow() const { return hyperflow_; }
+
   size_t projection_count() const {
     return factors_.size();
   }
@@ -52,6 +56,7 @@ public:
                                        const std::string& projection) const;
 
 private:
+  std::shared_ptr<const dit::Hyperflow> hyperflow_;
   std::map<std::string, std::vector<LoraFactors>> factors_;
   std::map<std::string, std::vector<float>> adaln_bias_;
 };

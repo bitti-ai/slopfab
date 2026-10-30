@@ -222,6 +222,7 @@ struct GeneratePlan {
   ResolvedConditioning conditioning;
   bool fasth3_v2 = false;
   // Fixed grids use Euler without approximate step/block/MotionCache reuse.
+  bool hyperflow = false;
   bool fixed_sampling_grid = false;
   sampler::SamplerKind sampler = sampler::SamplerKind::kEuler;
   std::vector<std::string> sampling_sources;
