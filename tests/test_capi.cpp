@@ -581,7 +581,7 @@ SLOPFAB_TEST(capi_keystone_snapshot_lifecycle) {
   std::filesystem::remove(source.path);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
-  CHECK(plan.aligned_frames == 56 && plan.latent_frames == 17);
+  CHECK(plan.aligned_frames == 56 && plan.latent_frames == 12);
   char* desc = nullptr;
   CHECK(slopfab_describe_plan(request, &desc) == SLOPFAB_OK);
   CHECK(desc && std::strstr(desc, "capstone locks after 4"));
@@ -593,7 +593,7 @@ SLOPFAB_TEST(capi_keystone_snapshot_lifecycle) {
   source.write(56);
   CHECK(slopfab_request_set_continuation_file(request, path.c_str(), 22) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
-  CHECK(plan.aligned_frames == 73 && plan.latent_frames == 17);
+  CHECK(plan.aligned_frames == 73 && plan.latent_frames == 12);
   CHECK(slopfab_request_set_synthetic_latents(request, 1) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
   CHECK(slopfab_request_set_synthetic_latents(request, 0) == SLOPFAB_OK);

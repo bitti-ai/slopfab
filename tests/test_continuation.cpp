@@ -1,6 +1,7 @@
 #include "harness.h"
 #include "latent_fixture.h"
 #include "slopfab/continuation.h"
+#include "slopfab/dit/packing.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/reference_conditioning.h"
 #include "slopfab/safetensors_write.h"
@@ -8,6 +9,44 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+
+SLOPFAB_TEST(capstone_context_extends_only_video_geometry) {
+  using namespace slopfab::dit;
+  auto packed = build_ref2va_packed_sequence(
+      {1, 1, 1}, {{ReferenceKind::kVideo, 1, 4, 4, 2}}, 12, 4, 4, 7);
+  const auto original = packed;
+  const int rows = packed.layout.rows_per_frame(), total = packed.layout.total_rows();
+  auto times = build_row_timesteps(packed.layout, packed.indices, .4f, .6f, .999f, 1.f);
+  const auto original_times = times;
+  append_video_context(packed.layout, packed.indices, packed.position_ids);
+  append_clean_video_timesteps(times, rows);
+  CHECK(packed.layout.total_rows() == total + rows);
+  CHECK(packed.layout.num_latent_frames == 13);
+  const auto expanded = build_ref2va_packed_sequence(
+      {1, 1, 1}, {{ReferenceKind::kVideo, 1, 4, 4, 2}}, 13, 4, 4, 7);
+  CHECK(packed.position_ids == expanded.position_ids);
+  CHECK(packed.indices.video == expanded.indices.video);
+  CHECK(packed.indices.audio == original.indices.audio);
+  CHECK(std::equal(original.position_ids.begin(), original.position_ids.end(), packed.position_ids.begin()));
+  CHECK(std::equal(original_times.indices.begin(), original_times.indices.end(), times.indices.begin()));
+  CHECK(times.unique == original_times.unique); // clean audio already supplies timestep 1
+  for (int i = 0; i < rows; ++i) {
+    CHECK(packed.indices.video[original.indices.video.size() + i] == total + i);
+    CHECK(packed.indices.tags[total + i] == kTagVideo);
+    CHECK(times.unique[times.indices[total + i]] == 1.f);
+    CHECK(times.adaln[total + i] == times.indices[total + i] * 3 + kTagVideo);
+    CHECK(packed.position_ids[size_t(total + i) * 3] >
+          original.position_ids[size_t(total - rows + i) * 3]);
+    for (int d : {1, 2})
+      CHECK(packed.position_ids[size_t(total + i) * 3 + d] ==
+            original.position_ids[size_t(total - rows + i) * 3 + d]);
+  }
+  auto without_clean = build_row_timesteps(original.layout, original.indices, .4f, .6f, .999f, .9f);
+  const auto unique_count = without_clean.unique.size();
+  append_clean_video_timesteps(without_clean, rows);
+  CHECK(without_clean.unique.size() == unique_count + 1);
+  CHECK(without_clean.unique.back() == 1.f);
+}
 
 namespace {
 template <class F> bool rejects(F fn) {
@@ -30,15 +69,14 @@ SLOPFAB_TEST(keystone_persistent_anchors_and_trimmed_chain) {
   Keystone k{original, true, 2};
   const size_t frame = 192;
   for (int shot = 0; shot < 30; ++shot) {
-    const auto p = plan_continuation(*previous, 22, 17, 17);
+    const auto p = plan_continuation(*previous, 22, 17);
     CHECK(p.output_frames == previous->frames + 17);
-    CHECK(p.window_frames == 56);
+    CHECK(p.window_frames == 39);
     auto constraint = make_keystone_constraint(*previous, p, k);
     auto& v = constraint.video;
-    CHECK(v.anchors.size() == 1);
-    const auto& cap = v.anchors.front();
-    CHECK(cap.offset == 15 * frame); // Last single-frame slot, not final latent.
-    CHECK(cap.original[0] == original->video_rows[20 * frame]);
+    CHECK(v.anchors.empty());
+    CHECK(constraint.capstone.size() == frame && constraint.capstone_start_step == 2);
+    CHECK(constraint.capstone[0] == original->video_rows[20 * frame]);
     CHECK(std::equal(original->video_rows.begin(), original->video_rows.begin() + frame,
                      v.original.begin()));
     CHECK(v.original[frame] == previous->video_rows[previous->video_rows.size() - 6 * frame]);
@@ -49,12 +87,13 @@ SLOPFAB_TEST(keystone_persistent_anchors_and_trimmed_chain) {
     std::fill(video.begin(), video.end(), -7.f);
     v.apply(video.data(), video.size(), .5f, 1);
     CHECK(video[0] == .5f * original->video_rows[0] + .125f);
-    CHECK(video[cap.offset] == -7.f);
+    CHECK(video.back() == -7.f);
     v.apply(video.data(), video.size(), .5f, 2);
-    CHECK(video[cap.offset] == .5f * cap.original[0] + .125f);
-    CHECK(video[cap.offset - 1] == -7.f && video[cap.offset + frame] == -7.f);
+    CHECK(video.back() == -7.f);
     v.apply(video.data(), video.size(), 0, 3);
-    CHECK(video[cap.offset] == cap.original[0]);
+    CHECK(video.back() == -7.f); // Rear context never replaces a sampled slice.
+    constraint.restore_video(video);
+    CHECK(video[0] == previous->video_rows[previous->video_rows.size() - 7 * frame]);
     auto joined = join_continuation(*previous, p, video, audio);
     CHECK(std::equal(previous->video_rows.begin(), previous->video_rows.end(), joined.video_rows.begin()));
     CHECK(std::all_of(joined.video_rows.begin() + previous->video_rows.size(), joined.video_rows.end(),
@@ -74,8 +113,8 @@ SLOPFAB_TEST(keystone_persistent_anchors_and_trimmed_chain) {
   CHECK(previous->frames == 73 + 30 * 17);
   k.capstone = false;
   const auto p = plan_continuation(*previous, 22, 17);
-  CHECK(make_keystone_constraint(*previous, p, k).video.anchors.empty());
-  CHECK(rejects([&] { make_keystone_constraint(*previous, plan_continuation(*previous, 5, 17), k); }));
+  CHECK(make_keystone_constraint(*previous, p, k).capstone.empty());
+  CHECK(make_keystone_constraint(*previous, plan_continuation(*previous, 5, 17), k).video_restore_prefix.size() == frame);
 }
 
 SLOPFAB_TEST(keystone_planning_validation) {
@@ -88,8 +127,8 @@ SLOPFAB_TEST(keystone_planning_validation) {
   req.num_frames = 17;
   req.num_inference_steps = 9; // Eight advancing video steps.
   const auto plan = resolve_plan(req);
-  CHECK(plan.aligned_frames == 56 && plan.sampling_frames == 56);
-  CHECK(plan.continuation.tail_padding_frames == 17);
+  CHECK(plan.aligned_frames == 56 && plan.sampling_frames == 39);
+  CHECK(plan.continuation.tail_padding_frames == 0);
   req.sampling.audio_steps = 3;
   CHECK(resolve_plan(req).video_timesteps.size() == 8);
   req.sampling.audio_steps.reset();
@@ -103,11 +142,11 @@ SLOPFAB_TEST(keystone_planning_validation) {
   req.keystone.capstone_lock_after_steps = -1;
   CHECK(rejects([&] { resolve_plan(req); }));
   req.keystone.capstone_lock_after_steps = 0;
-  CHECK(resolve_plan(req).continuation.tail_padding_frames == 17);
+  CHECK(resolve_plan(req).continuation.tail_padding_frames == 0);
   req.keystone.capstone = false;
   CHECK(resolve_plan(req).sampling_frames == 39);
   req.continuation_overlap_frames = 5;
-  CHECK(rejects([&] { resolve_plan(req); }));
+  CHECK(resolve_plan(req).sampling_frames == 22);
   req.continuation_overlap_frames = 22;
   for (int mode = 0; mode < 6; ++mode) {
     auto bad = req;

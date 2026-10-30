@@ -191,6 +191,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
     lock->video.suffix_values_per_channel = 4;
     lock->video.original = {2, 2, 2, 2, 7, 7, 7, 7};
     lock->video.anchors.push_back({8, 1, {19, 19, 19, 19}, {}});
+    lock->capstone.assign(4 * 4, 23.f);
+    lock->capstone_start_step = 1;
+    lock->video_restore_prefix.assign(4, 31.f);
     lock->audio.channels = 2;
     lock->audio.target_values_per_channel = size_t(bt.audio_output_rows);
     lock->audio.suffix_values_per_channel = 2;
@@ -210,6 +213,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
       const auto boundary = [&](uint32_t step, const std::vector<float>& vr,
                                 const std::vector<float>& ar) {
         ++updates;
+        CHECK(vr.size() == size_t(bt.video_output_rows) * 4);
+        CHECK(ar.size() == size_t(bt.audio_output_rows) * 2);
         const float vsigma = v.sigmas()[vn[step]], asigma = a.sigmas()[an[step]];
         for (size_t i = 8; i < 12; ++i)
           CHECK(vr[i] == (vn[step] >= 1 ? (1 - vsigma) * 19.f + vsigma * .25f : .25f));
@@ -229,6 +234,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
                            ia.size());
       const auto bridged = bridge_model.run(v, a, {}, boundary);
       CHECK(updates == 4 && bridged.steps_completed == 4);
+      CHECK(bridged.video_rows.size() == size_t(bt.video_output_rows) * 4);
+      for (size_t i = 0; i < 4; ++i)
+        CHECK(bridged.video_rows[i] == 31.f);
       CHECK(bridged.video_rows[4] != .25f);
       CHECK(bridged.audio_rows[2] != -.5f && bridged.audio_rows[8] != -.5f);
       CHECK(lock->video.noise.empty() && lock->audio.noise.empty());

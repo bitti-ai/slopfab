@@ -121,9 +121,12 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
   ContinuationConstraint constraint;
   constraint.video.target_values_per_channel = initial_v.size();
   constraint.video.original.assign(96, 2.f);
-  // A capstone-like interior slice stays free for one VIDEO update. Audio-only
+  // An interior lock stays free for one VIDEO update. Audio-only
   // evaluations must not activate it early; all integrators use captured noise.
   constraint.video.anchors.push_back({192, 1, std::vector<float>(96, 19.f), {}});
+  constraint.capstone.assign(4 * 96, 23.f);
+  constraint.capstone_start_step = 1;
+  constraint.video_restore_prefix.assign(96, 31.f);
   constraint.audio.channels = 2;
   constraint.audio.target_values_per_channel = initial_a.size() / 2;
   constraint.audio.original.assign(64, 3.f);
@@ -151,15 +154,16 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
         Transformer model;
         auto in = make_denoise_inputs(layout, indices, video, audio);
         in.continuation = &constraint;
+        in.position_ids = &packed.position_ids;
         in.init_video_rows = &initial_v;
         in.init_audio_rows = &initial_a;
         in.condition_video_rows = &anchors_v;
         in.condition_audio_rows = &anchors_a;
         const size_t vi[] = {0, 0, 1, 1}, ai[] = {0, 1, 1, 2};
         const size_t vn[] = {0, 1, 1, 2}, an[] = {1, 1, 2, 3};
-        const auto check = [&](const float* v, const float* a, float vs, float as) {
+        const auto check = [&](const float* v, const float* a, float vs, float as, float front = 2.f) {
           for (size_t i = 0; i < 96; ++i)
-            CHECK(v[i] == (1 - vs) * 2.f + vs * .25f);
+            CHECK(v[i] == (1 - vs) * front + vs * .25f);
           for (size_t c = 0; c < 2; ++c)
             for (size_t i = 0; i < 32; ++i)
               CHECK(a[c * constraint.audio.target_values_per_channel + i] ==
@@ -174,9 +178,17 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
           }
         };
         int calls = 0, boundaries = 0;
-        in.velocity = [&](int step, const RowTimesteps&, const float* v, const float* a, float* vv,
+        in.velocity = [&](int step, const RowTimesteps& times, const float* v, const float* a, float* vv,
                           float* av) {
           ++calls;
+          const bool appended = vi[step] >= 1;
+          CHECK(times.indices.size() == size_t(layout.total_rows() + (appended ? 4 : 0)));
+          if (appended) {
+            CHECK(times.unique[times.indices.back()] == 1.f);
+            CHECK(std::equal(constraint.capstone.begin(), constraint.capstone.end(),
+                             v + anchors_v.size() + initial_v.size()));
+            std::fill_n(vv + anchors_v.size() + initial_v.size(), constraint.capstone.size(), 123.f);
+          }
           CHECK(std::equal(anchors_v.begin(), anchors_v.end(), v));
           CHECK(std::equal(anchors_a.begin(), anchors_a.end(), a));
           check(v + anchors_v.size(), a + anchors_a.size(), video.sigmas()[vi[step]],
@@ -188,6 +200,7 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
         };
         in.boundary = [&](int step, const std::vector<float>& v, const std::vector<float>& a) {
           ++boundaries;
+          CHECK(v.size() == initial_v.size() && a.size() == initial_a.size());
           check(v.data(), a.data(), video.sigmas()[vn[step]], audio.sigmas()[an[step]]);
           const float cs = video.sigmas()[vn[step]];
           CHECK(v[192] == (vn[step] >= 1 ? (1 - cs) * 19.f + cs * .25f : .25f));
@@ -200,10 +213,13 @@ SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
         });
         CHECK(calls == (cancel ? 1 : 4) && boundaries == calls);
         CHECK(output.steps_computed == calls && output.steps_skipped == 0);
+        CHECK(output.video_rows.size() == initial_v.size());
+        for (size_t j = 0; j < 96; ++j)
+          CHECK(output.video_rows[j] == 31.f);
         CHECK(constraint.video.noise.empty() && constraint.audio.noise.empty()); // reusable config
         CHECK(constraint.video.anchors.front().noise.empty());
         if (!cancel) {
-          check(output.video_rows.data(), output.audio_rows.data(), 0, 0);
+          check(output.video_rows.data(), output.audio_rows.data(), 0, 0, 31.f);
           CHECK(output.video_rows[96] != initial_v[96]); // suffix remains generated
         }
       }

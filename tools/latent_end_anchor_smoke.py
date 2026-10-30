@@ -16,6 +16,17 @@ from continuation_smoke import Output, read_archive
 from latent_bridge_smoke import write_tensor
 
 
+class Step(C.Structure):
+    _fields_ = [
+        ("struct_size", C.c_uint32), ("modality", C.c_int32),
+        ("step", C.c_int32), ("total_steps", C.c_int32), ("evaluation", C.c_int32),
+        ("sigma", C.c_float), ("sigma_next", C.c_float),
+        ("frames", C.c_int32), ("height", C.c_int32), ("width", C.c_int32),
+        ("row_width", C.c_int32), ("count", C.c_uint64),
+        ("latent", C.POINTER(C.c_float)), ("denoised", C.POINTER(C.c_float)),
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("library", type=pathlib.Path)
@@ -69,6 +80,8 @@ def main():
     key_file = bind("request_set_keystone_file", [handle, C.c_char_p, C.c_int, C.c_int])
     clear_key = bind("request_clear_keystone", [handle])
     lock_overlap = bind("request_set_continuation_lock_overlap", [handle, C.c_int])
+    callback_type = C.CFUNCTYPE(C.c_int, C.POINTER(Step), handle)
+    set_callback = bind("request_set_sampling_callback", [handle, callback_type, handle])
     start = bind("generation_start", [handle, handle, handle, C.POINTER(handle)])
     wait = bind("generation_wait", [handle, C.c_int])
     gen_error = bind("generation_error", [handle], C.c_char_p)
@@ -90,12 +103,25 @@ def main():
             check(set_attention(request, b"flash2"))
             check(set_backend(request, backend == "vulkan"))
             check(retain(request, 1))
+            snapshots = {}
+            current_steps = []
+
+            @callback_type
+            def capture(pointer, _):
+                step = pointer.contents
+                current_steps.append((step.modality, step.step, step.frames, step.count,
+                                      C.string_at(step.denoised, step.count * 4)))
+                return 0
+
+            if args.keystone:
+                check(set_callback(request, capture, None))
 
             def release(generation):
                 gen_destroy(generation)
                 generations.remove(generation)
 
             def run(name, frames, expected, seed):
+                current_steps.clear()
                 check(set_frames(request, frames))
                 check(set_seed(request, seed))
                 archive = work / (name + ".safetensors")
@@ -117,6 +143,7 @@ def main():
                 assert result.audio_channels == 2 and result.audio_frames > 0
                 assert all(math.isfinite(result.video[i]) for i in range(result.video_float_count))
                 assert all(math.isfinite(result.audio[i]) for i in range(result.audio_float_count))
+                snapshots[name] = list(current_steps)
                 return generation, read_archive(archive)[1]
 
             def preserved(rows, source, suffix):
@@ -132,13 +159,20 @@ def main():
             if args.keystone:
                 check(begin_gen(request, ending, 22))
                 check(lock_overlap(request, 1))
-                baseline_gen, baseline = run("unanchored", 17, 56, 23)
+                check(key_gen(request, ending, 0, 1))
+                baseline_gen, baseline = run("front-only", 17, 56, 23)
                 release(baseline_gen)
                 check(key_gen(request, ending, 1, 1))
                 release(ending)
                 joined_gen, joined = run("keystone", 17, 56, 23)
                 preserved(joined, end_rows, False)
                 assert joined["video_rows"] != baseline["video_rows"]
+                before, after = snapshots["front-only"], snapshots["keystone"]
+                assert before and after
+                assert [s[:4] for s in before] == [s[:4] for s in after]
+                # Until activation, the model sees exactly the same sequence.
+                assert [s for s in before if s[1] == 0] == [s for s in after if s[1] == 0]
+                assert before != after
                 check(key_file(request, str(work / "ending.safetensors").encode(), 1, 1))
                 (work / "ending.safetensors").unlink()
                 repeat_gen, repeated = run("keystone-file", 17, 56, 23)
@@ -153,7 +187,8 @@ def main():
                 check(clear_key(request))
                 _, plain = run("plain-after-keystone", 17, 90, 37)
                 preserved(plain, extended, False)
-                print("PASS: keystone retained/file parity, owned snapshots, trimmed lengths, "
+                print("PASS: keystone retained/file parity, owned snapshots, call-only context, "
+                      "identical pre-activation predictions, unchanged sampler lengths, "
                       "persistent source and further ordinary continuation", flush=True)
                 return
             check(end_gen(request, ending, 22))

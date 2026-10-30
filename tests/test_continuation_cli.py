@@ -38,13 +38,14 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     keystone = (*base, "--keystone-from", archive)
     desc = run(*keystone)
     assert "capstone locks after 4 video updates" in desc
-    assert "17 hidden tail frames trimmed" in desc
-    assert "56 frames (22 hidden overlap)" in desc
+    assert "one call-only video latent; front restored before output" in desc
+    assert "39 frames (22 hidden overlap)" in desc
     assert "locked video and audio" in desc
     assert "front only" in run(*keystone, "--keystone-front-only")
+    assert "22 frames (5 hidden overlap)" in run(*keystone, "--overlap-frames", "5")
     assert "locks after 0" in run(*keystone, "--capstone-lock-after", "0", "--audio-steps", "5")
     for options in [("--capstone-lock-after", "-1"), ("--capstone-lock-after", "4x"),
-                    ("--capstone-lock-after", "9999"), ("--overlap-frames", "5"),
+                    ("--capstone-lock-after", "9999"),
                     ("--end-anchor", "end.png"), ("--end-anchor-latents", archive),
                     ("--continuation-source-noise", ".7"), ("--skip-every", "2"),
                     ("--synthetic-latents",), ("--init-latents", archive)]:
