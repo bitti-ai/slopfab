@@ -59,6 +59,9 @@ def generate(a):
     a.output.mkdir(parents=True, exist_ok=True)
     settings = a.lcs_settings_file.read_text() if a.lcs_settings_file else a.lcs_settings
     json.loads(settings)  # Fail before expensive generation on malformed settings.
+    manifest = a.output / f'{a.name}-commands.json'
+    if manifest.exists() or any(a.output.glob(f'{a.name}-[0-9][0-9].*')):
+        raise FileExistsError('Experiment name already exists; choose a fresh name/output')
     previous = a.source
     commands = []
     for i in range(a.windows):
@@ -73,7 +76,6 @@ def generate(a):
         if a.lcs:
             command += ['--lcs', a.lcs, '--lcs-settings', settings]
         commands.append(list(map(str, command)))
-        manifest = a.output / f'{a.name}-commands.json'
         manifest.write_text(json.dumps(commands, indent=2))
         if stem.with_suffix('.safetensors').exists() or stem.with_suffix('.mp4').exists():
             raise FileExistsError(f'{stem}: choose a fresh name/output or use --source to continue')
@@ -301,6 +303,8 @@ def main():
     a = parser.parse_args()
     if a.command == 'generate' and (a.windows < 1 or a.steps < 2):
         parser.error('windows must be positive and steps at least two')
+    if a.command == 'generate' and (not a.name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in a.name)):
+        parser.error('name may contain only letters, numbers, underscores and hyphens')
     if a.command == 'analyze' and a.stride < 1:
         parser.error('stride must be positive')
     a.func(a)

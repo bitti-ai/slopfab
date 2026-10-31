@@ -14,6 +14,16 @@ spec.loader.exec_module(drift)
 
 
 class DriftTest(unittest.TestCase):
+    def test_existing_experiment_keeps_its_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root/'existing-commands.json'
+            manifest.write_text('["original command"]')
+            with self.assertRaises(FileExistsError):
+                drift.generate(SimpleNamespace(output=root, name='existing',
+                                               lcs_settings_file=None, lcs_settings='{}'))
+            self.assertEqual(manifest.read_text(), '["original command"]')
+
     def test_fit_recovers_known_shift_without_color_or_prefix_contamination(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

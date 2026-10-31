@@ -133,3 +133,48 @@ not identical. `holdout-comparison.mp4` shows the extra 68 frames, baseline left
 and shoulder right. `paired-shoulder.csv` and `.svg` contain frame comparisons.
 Every matched-source variant preserved the entire source video and audio latent
 prefix exactly (`prefix-checks.json`).
+
+A separate prevention trial starts from the original 73-frame archive and applies
+strength 1, the same knee, and start update 0 to **all five** subsequent windows.
+It is saved as `stabilized-00` through `stabilized-04`; the name identifies the
+trial, not a quality guarantee. `chain-comparison.mp4` shows the uncorrected chain
+on the left and this trial on the right. `paired-chain.csv` / `.svg` cover every
+new frame.
+
+| Ending at frame count | Baseline highlight coverage | Strong shoulder coverage |
+| --- | ---: | ---: |
+| 141 | 3.239% | 2.187% |
+| 209 | 1.135% | 1.687% |
+| 345 | 3.324% | 4.476% |
+| 413 | 5.685% | 3.932% |
+
+These are again the last 22 frames in each window. The strong intervention
+changes the later head motion, so the same crop covers different portions of
+face, hair and background. At 413 frames its crop mean is 0.3001 versus 0.4577
+for baseline, and P99-minus-median is 0.6443 versus 0.4044. The lower highlight
+coverage at that endpoint therefore **does not establish better material quality**.
+The prevention trial is inconsistent and does not support using maximum strength
+throughout sampling as a general fix. The conservative fitted settings remain an
+opt-in experiment; validation on additional subjects, seeds, resolutions and
+pose-aligned skin regions is still needed.
+
+Reproduce that separate trial with a new name:
+
+```powershell
+@{highlight_strength=1; highlight_knee=0.7809110144; start_step=0} |
+  ConvertTo-Json | Set-Content "$run/strong.json"
+python tools/lcs_drift.py generate --transformer $model --embedding "$run/prompt.safetensors" `
+  --output $run --source "$run/baseline-00.safetensors" --name strong-chain `
+  --seed 424243 --windows 5 --lcs "$run/drift.safetensors" `
+  --lcs-settings-file "$run/strong.json"
+```
+
+Validation for the implementation: 23,119 native LCS checks passed, the three
+Python experiment tests and the model-free CLI checks passed, and the existing
+sampler/continuation CLI and C API suites passed. The wider native synthetic suite
+also passed before the highlight-shoulder addition (9,736,217 checks; one FFmpeg
+fixture skipped). The final shoulder addition was covered by the focused native
+LCS suite rather than claiming another full-suite run.
+The final CUDA DLL smoke test with the requested Singularity checkpoint also
+passed native calibration, callback ordering, cancellation, and non-finite-output
+rejection (`output/lcs-drift/dll-test.log`). Vulkan quality was not evaluated.
