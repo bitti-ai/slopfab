@@ -70,6 +70,13 @@ void validate_plan(const LatentClip& source, const ContinuationPlan& p) {
               p.window_audio_latents == expected.window_audio_latents,
           "continuation plan does not match its source timeline");
 }
+
+void validate_keystone_source(const LatentClip& source, const Keystone& k) {
+  validate_keystone(k);
+  require(source.width == k.source->width && source.height == k.source->height &&
+              source.geometry.fingerprint() == k.source->geometry.fingerprint(),
+          "keystone and continuation must have matching canvas and latent geometry");
+}
 } // namespace
 
 dit::SequenceLayout LatentClip::layout() const {
@@ -331,10 +338,7 @@ void validate_keystone(const Keystone& k) {
 
 ContinuationConstraint make_keystone_constraint(const LatentClip& source,
                                                 const ContinuationPlan& p, const Keystone& k) {
-  validate_keystone(k);
-  require(source.width == k.source->width && source.height == k.source->height &&
-              source.geometry.fingerprint() == k.source->geometry.fingerprint(),
-          "keystone and continuation must have matching canvas and latent geometry");
+  validate_keystone_source(source, k);
   require(p.tail_padding_frames == 0,
           "keystone uses call-only context, not output tail padding");
   auto out = make_continuation_constraint(source, p);
@@ -357,8 +361,11 @@ void ContinuationConstraint::restore_video(std::vector<float>& rows) const {
 
 void append_continuation_guide(const LatentClip& source, const ContinuationPlan& p, uint64_t seed,
                                std::vector<dit::ReferenceGeometry>& geometry,
-                               std::vector<float>& video, std::vector<float>& audio) {
+                               std::vector<float>& video, std::vector<float>& audio,
+                               const Keystone& keystone) {
   validate_plan(source, p);
+  if (keystone.source)
+    validate_keystone_source(source, keystone);
   const auto l = source.layout();
   const size_t n = size_t(p.held_video_latents) * l.rows_per_frame() * 96;
   require(n <= source.video_rows.size() && p.overlap_audio_latents <= l.num_audio_latents,
@@ -372,8 +379,15 @@ void append_continuation_guide(const LatentClip& source, const ContinuationPlan&
   std::vector<float> packed(n);
   dit::patchify_video(noise.data(), guide_layout, packed.data());
   const size_t start = source.video_rows.size() - size_t(p.overlap_video_latents) * l.rows_per_frame() * 96;
-  for (size_t i = 0; i < n; ++i)
-    video.push_back(0.999f * source.video_rows[start + i] + (1.0f - 0.999f) * packed[i]);
+  const size_t frame = size_t(l.rows_per_frame()) * 96;
+  for (size_t i = 0; i < n; ++i) {
+    // The clean guide and the locked target share positional coordinates.
+    // Keep their front substitution consistent; otherwise the advancing clip
+    // contradicts the Keystone, especially while the target is mostly noise.
+    const float clean = keystone.source && i < frame
+                            ? keystone.source->video_rows[i] : source.video_rows[start + i];
+    video.push_back(0.999f * clean + (1.0f - 0.999f) * packed[i]);
+  }
   for (int c = 0; c < 2; ++c) {
     const auto end = source.audio_rows.begin() + size_t(c + 1) * l.num_audio_latents * 32;
     const auto begin = end - size_t(p.overlap_audio_latents) * 32;

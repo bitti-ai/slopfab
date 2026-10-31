@@ -91,9 +91,12 @@ void initialize_continuation_middle(const LatentClip& source, int prefix_latents
 // at least 5 frames. Audio boundaries are rounded on the cumulative timeline.
 ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int extension,
                                    int tail_padding_frames = 0, int regenerate_frames = 0);
+// A Keystone replaces the first guide slice as well as the locked target slice,
+// so both streams agree at the shared temporal position, even at high noise.
 void append_continuation_guide(const LatentClip& source, const ContinuationPlan& plan,
                                uint64_t seed, std::vector<dit::ReferenceGeometry>& geometry,
-                               std::vector<float>& video, std::vector<float>& audio);
+                               std::vector<float>& video, std::vector<float>& audio,
+                               const Keystone& keystone = {});
 LatentClip join_continuation(const LatentClip& source, const ContinuationPlan& plan,
                              const std::vector<float>& video, const std::vector<float>& audio);
 

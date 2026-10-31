@@ -117,6 +117,56 @@ SLOPFAB_TEST(keystone_persistent_anchors_and_trimmed_chain) {
   CHECK(make_keystone_constraint(*previous, plan_continuation(*previous, 5, 17), k).video_restore_prefix.size() == frame);
 }
 
+SLOPFAB_TEST(keystone_guide_matches_locked_front_without_replacing_motion_or_audio) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(73);
+  const auto original = LatentClip::load(fixture.path.string());
+  auto previous = *original;
+  for (auto& x : previous.video_rows) x += 1000;
+  for (auto& x : previous.audio_rows) x -= 1000;
+  const auto before = previous;
+  const size_t frame = size_t(previous.layout().rows_per_frame()) * 96;
+  for (int overlap : {5, 22, 39}) {
+    const auto p = plan_continuation(previous, overlap, 17, 0, overlap == 39 ? 17 : 0);
+    // An independent control: ordinary continuation of a source with the front
+    // slice already grafted must produce exactly the same augmented guide.
+    auto grafted = previous;
+    const size_t start = previous.video_rows.size() - size_t(p.overlap_video_latents) * frame;
+    std::copy_n(original->video_rows.begin(), frame, grafted.video_rows.begin() + start);
+    for (bool capstone : {false, true}) {
+      const Keystone k{original, capstone, 4};
+      const auto constraint = make_keystone_constraint(previous, p, k);
+      std::vector<dit::ReferenceGeometry> geometry, expected_geometry, plain_geometry;
+      // Ordinary reference rows precede the continuation guide in real requests.
+      const std::vector<float> prefix(2 * frame, -123.f);
+      std::vector<float> video = prefix, expected = prefix, plain = prefix;
+      std::vector<float> audio, expected_audio, plain_audio;
+      append_continuation_guide(previous, p, 42, geometry, video, audio, k);
+      append_continuation_guide(grafted, p, 42, expected_geometry, expected, expected_audio);
+      append_continuation_guide(previous, p, 42, plain_geometry, plain, plain_audio);
+      CHECK(video == expected);
+      CHECK(video != plain);
+      CHECK(std::equal(prefix.begin(), prefix.end(), video.begin()));
+      CHECK(std::equal(video.begin() + prefix.size() + frame, video.end(),
+                       plain.begin() + prefix.size() + frame));
+      CHECK(audio == plain_audio && audio == expected_audio && audio == constraint.audio.original);
+      CHECK(video.size() == prefix.size() + constraint.video.original.size());
+      CHECK(geometry.size() == 1 && geometry[0].target_aligned);
+      CHECK(geometry[0].num_latent_frames == p.held_video_latents);
+      const auto packed = dit::build_ref2va_packed_sequence(
+          {1}, geometry, dit::video_latent_num_frames(p.window_frames),
+          previous.layout().latent_height, previous.layout().latent_width, p.window_audio_latents);
+      const size_t guide_row = packed.indices.video.front();
+      const size_t target_row = packed.indices.video[geometry[0].video_rows()];
+      for (int axis = 0; axis < 3; ++axis)
+        CHECK(packed.position_ids[guide_row * 3 + axis] == packed.position_ids[target_row * 3 + axis]);
+    }
+  }
+  CHECK(previous.video_rows == before.video_rows && previous.audio_rows == before.audio_rows);
+  CHECK(original->video_rows == LatentClip::load(fixture.path.string())->video_rows);
+}
+
 SLOPFAB_TEST(continuation_replaces_39_frame_window_with_22_held_and_17_regenerated) {
   using namespace slopfab;
   LatentFixture fixture;

@@ -773,7 +773,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
                                       condition_video_rows, condition_audio_rows);
     } else if (request.continuation) {
       append_continuation_guide(*request.continuation, plan.continuation, request.seed,
-                                reference_geometry, condition_video_rows, condition_audio_rows);
+                                reference_geometry, condition_video_rows, condition_audio_rows,
+                                request.keystone);
     }
     if (request.bridge)
       append_bridge_guides(*request.bridge, plan.bridge, request.seed, reference_geometry,
