@@ -192,6 +192,48 @@ def fit(a):
     print(json.dumps(report, indent=2))
 
 
+def compare(a):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    def rows(path):
+        with path.open(newline='') as f:
+            return [{k: float(v) for k, v in row.items()} for row in csv.DictReader(f)]
+    baseline, candidate = rows(a.baseline), rows(a.candidate)
+    if not baseline or len(baseline) != len(candidate):
+        raise ValueError('Paired comparison needs equal, nonempty frame sequences')
+    paired = []
+    for left, right in zip(baseline, candidate):
+        if left.keys() != right.keys() or left['frame'] != right['frame']:
+            raise ValueError('Mismatched metric columns or frame indices')
+        if left['frame'] < a.start_frame:
+            continue
+        row = {'frame': int(left['frame'])}
+        for key in left:
+            if key != 'frame':
+                row.update({f'baseline_{key}': left[key], f'candidate_{key}': right[key],
+                            f'delta_{key}': right[key]-left[key]})
+        paired.append(row)
+    if not paired:
+        raise ValueError('No frames in selected comparison range')
+    with a.output.with_suffix('.csv').open('w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=paired[0])
+        writer.writeheader()
+        writer.writerows(paired)
+    fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+    for ax, key in zip(axes, ['highlight_fraction', 'highlight_tail', 'mean', 'texture_rms']):
+        for label in ['baseline', 'candidate']:
+            ax.plot([r['frame'] for r in paired], [r[f'{label}_{key}'] for r in paired], label=label)
+        ax.set_ylabel(key.replace('_', ' '))
+        ax.grid(alpha=.2)
+    axes[0].legend()
+    axes[-1].set_xlabel('Decoded frame (24 fps fixture)')
+    fig.suptitle('Paired continuation: appearance proxies, fixed center crop')
+    fig.tight_layout()
+    fig.savefig(a.output.with_suffix('.svg'))
+    plt.close(fig)
+
+
 def calibrate(a):
     dll = C.CDLL(str(a.dll.resolve()))
     dll.slopfab_request_create.restype = C.c_void_p
@@ -241,6 +283,12 @@ def main():
     p.add_argument('--ffmpeg', default=shutil.which('ffmpeg') or 'ffmpeg')
     p.add_argument('--ffprobe', default=shutil.which('ffprobe') or 'ffprobe')
     p.set_defaults(func=analyze)
+    p = subs.add_parser('compare', help='Paired frame CSV and SVG curves; requires matplotlib')
+    p.add_argument('--baseline', type=Path, required=True)
+    p.add_argument('--candidate', type=Path, required=True)
+    p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--start-frame', type=int, default=0)
+    p.set_defaults(func=compare)
     p = subs.add_parser('fit')
     for key in ('calibration', 'early', 'late', 'output'):
         p.add_argument('--'+key, type=Path, required=True)

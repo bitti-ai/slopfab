@@ -40,6 +40,8 @@ python tools/lcs_drift.py generate --transformer $model --embedding "$run/prompt
   --lcs-settings-file "$run/drift.settings.json"
 python tools/lcs_drift.py analyze "$run/holdout-baseline-00.mp4" --output "$run/holdout-baseline-metrics"
 python tools/lcs_drift.py analyze "$run/holdout-corrected-00.mp4" --output "$run/holdout-corrected-metrics"
+python tools/lcs_drift.py compare --baseline "$run/holdout-baseline-metrics.csv" `
+  --candidate "$run/holdout-corrected-metrics.csv" --start-frame 345 --output "$run/paired"
 ```
 
 Defaults: 384x384, 24 fps, 73 initial frames, four 68-frame extensions (345
@@ -53,6 +55,9 @@ Qwen3-VL-32B conditioning, not a synthetic smoke-test embedding.
 If the native build emits Y4M/WAV because FFmpeg support is disabled, the harness
 muxes an MP4 with external FFmpeg. For numeric comparisons, prefer the Y4M files
 when available; lossy MP4 compression changes the texture metric slightly.
+The optional `compare` command requires Matplotlib and writes paired per-frame
+values/deltas plus SVG curves; use the new-section start frame to exclude the
+retained source from aggregate interpretation.
 
 `analyze` writes a CSV row for every frame, a contact sheet, and first/last
 22-frame summaries. It measures the center half of the image in each dimension:
@@ -84,9 +89,47 @@ $env:SLOPFAB_TEST_FILTER = 'lcs'
 build/Release/slopfab_tests.exe
 Remove-Item Env:SLOPFAB_TEST_FILTER
 python tests/test_lcs_drift.py
+python tests/test_lcs_cli.py build/Release/slopfab.exe
 ```
 
 Native tests check normalization, one-sided thresholds, correction caps, masks,
 step/audio exclusion, serialization and color/residual preservation. Python tests
 recover a known shift with a deliberately misleading color change and boundary
 slice, and check that the metrics distinguish exposure from texture.
+
+## Measured run, 2026-10-31
+
+Artifacts are under `output/lcs-drift/` (ignored by Git). The transformer is the
+exact Singularity INT8 path above. Generation used CUDA on an RTX 5090. The
+original is `baseline-00`; `continuation-00` through `continuation-03` extend it
+to 345 frames. The matched-source comparison extends `continuation-03` with seed
+424247, producing 413 frames. All numbers below use uncompressed Y4M, the fixed
+center crop, and averages of 22 decoded frames. The correction was fitted before
+generating this extra continuation, but its strengths were explored on that
+continuation, so this is a development experiment rather than an unbiased test
+of a finished method.
+
+| Section / intervention | Pixels above 0.8 | Mean luminance | P99 minus median |
+| --- | ---: | ---: | ---: |
+| Original first 22 frames | 0.799% | 0.4641 | 0.2980 |
+| Baseline 345-frame clip, last 22 | 3.324% | 0.4596 | 0.3604 |
+| Extra continuation, no correction | 5.685% | 0.4577 | 0.4044 |
+| Residual direction, strength 0.5 / cap 1 / start 16 | 5.674% | 0.4585 | 0.4032 |
+| Residual direction, strength 1 / cap 10 / start 8 | 5.553% | 0.4591 | 0.3985 |
+| Highlight shoulder, strength 0.5 / start 16 | 5.488% | 0.4568 | 0.3988 |
+
+The fitted knee was 0.780911 in LCS lightness. The raw residual shift norm was
+5.863734; its reference was -5.481375 with tolerance 3.949553. The first
+mean-shift approach had little visual effect. The shoulder reduced the highlight
+coverage proxy by about 3.5% relative to the paired baseline, with about 0.2%
+lower mean luminance. This is a modest change, not evidence that plastic skin or
+lost texture has been fixed. The texture proxy actually rises in the extra
+continuation; freckles, facial edges, and pose changes make it unsuitable as a
+standalone detail-quality score.
+
+The contact sheets show broader cheek highlights in later frames, including
+frames where the head returns toward its initial angle. Pose and blinking are
+not identical. `holdout-comparison.mp4` shows the extra 68 frames, baseline left
+and shoulder right. `paired-shoulder.csv` and `.svg` contain frame comparisons.
+Every matched-source variant preserved the entire source video and audio latent
+prefix exactly (`prefix-checks.json`).
