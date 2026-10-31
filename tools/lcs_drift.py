@@ -127,7 +127,10 @@ def analyze(a):
     probe = json.loads(subprocess.check_output([a.ffprobe, '-v', 'error', '-select_streams', 'v:0',
         '-show_entries', 'stream=width,height', '-of', 'json', str(a.video)]))['streams'][0]
     w, h = probe['width'], probe['height']
-    command = [a.ffmpeg, '-v', 'error', '-i', str(a.video), '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']
+    command = [a.ffmpeg, '-v', 'error', '-i', str(a.video)]
+    if a.max_frames:
+        command += ['-frames:v', str(a.max_frames)]
+    command += ['-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']
     rows, samples = [], []
     with subprocess.Popen(command, stdout=subprocess.PIPE) as process:
         while True:
@@ -160,7 +163,8 @@ def analyze(a):
         draw.text((x+4, y+194), f'frame {index}', fill='white')
     sheet.save(a.output.with_suffix('.jpg'))
     summary = {part: {k: float(np.mean([r[k] for r in subset])) for k in rows[0] if k != 'frame'}
-               for part, subset in [('first_22', rows[:22]), ('last_22', rows[-22:])]}
+               for part, subset in [('first_22', rows[:22]), ('last_22', rows[-22:]),
+                                    ('last_120', rows[-120:])]}
     summary['frames'] = len(rows)
     a.output.with_suffix('.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
@@ -348,6 +352,7 @@ def main():
     p.add_argument('video', type=Path)
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--stride', type=int, default=24)
+    p.add_argument('--max-frames', type=int, default=0, help='Analyze only this many decoded frames; 0 means all')
     p.add_argument('--ffmpeg', default=shutil.which('ffmpeg') or 'ffmpeg')
     p.add_argument('--ffprobe', default=shutil.which('ffprobe') or 'ffprobe')
     p.set_defaults(func=analyze)
@@ -377,6 +382,8 @@ def main():
         parser.error('name may contain only letters, numbers, underscores and hyphens')
     if a.command == 'analyze' and a.stride < 1:
         parser.error('stride must be positive')
+    if a.command == 'analyze' and a.max_frames < 0:
+        parser.error('max-frames must be nonnegative')
     a.func(a)
 
 

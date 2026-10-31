@@ -393,7 +393,8 @@ typedef void(SLOPFAB_CALL* slopfab_progress_fn)(const slopfab_progress* progress
 
 /* Since 1.31. Writable sampling predictions, H3 CUDA and Vulkan. Called on
  * the worker thread before each advancing modality's outer sampler update,
- * after native LCS. Video precedes audio when both advance. Excludes inner
+ * after in-sampling native LCS. Output Tone/color/edge passes run later and
+ * are not included in these buffers. Video precedes audio when both advance. Excludes inner
  * Langevin evaluations, fixed reference rows and pinned audio.
  * F32 CPU buffers in normalized model space: denoised = latent + sigma*velocity.
  * Video packing: [latent_frames, latent_height/2, latent_width/2, 24, 2, 2].
@@ -445,7 +446,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_lcs_calibrate(const slopfab_request* requ
 /* Load and snapshot calibration plus JSON settings. Null/empty path clears
  * native LCS and its mask, preserving the application callback. Null/empty JSON
  * selects neutral defaults. See docs/lcs.md for keys and ranges. Invalid calls
- * preserve prior settings. Files are read now, and may be removed afterwards. */
+ * preserve prior settings. Files are read now, and may be removed afterwards.
+ * color_stability/edge_stability act once on new output latents after joining;
+ * they require fitted reference tensors and a spatial mask (or no mask). */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs(slopfab_request* request,
                                                        const char* calibration_path,
                                                        const char* settings_json);

@@ -208,6 +208,32 @@ SLOPFAB_TEST(lcs_output_stability_preserves_prefix_lightness_residual_and_masks)
   CHECK(rejects([] { slopfab::parse_lcs_settings("{\"edge_stability\":-1}"); }));
 }
 
+SLOPFAB_TEST(lcs_output_color_reference_uses_global_temporal_phase) {
+  auto d = std::make_shared<slopfab::LcsData>(fixture());
+  d->basis.assign(288, 0); d->mean.assign(96, 0);
+  for (int i = 0; i < 3; ++i)
+    d->basis[i * 3 + i] = 1;
+  d->anchors = {1,0,0, 0,0,1, 0,1,0, 1,0,1, 0,1,1, 1,1,0, 0,0,0, 1,1,1};
+  d->color_reference.assign(30, 0);
+  for (int phase = 0; phase < 5; ++phase)
+    for (int q = 0; q < 3; ++q)
+      d->color_reference[phase * 6 + q] = .04f * phase / std::sqrt(18.f);
+  slopfab::SamplingStep step;
+  step.frames = 12; step.height = step.width = 2; step.row_width = 96; step.count = 12 * 96;
+  std::vector<float> values(step.count, 0);
+  for (int f = 0; f < 12; ++f) {
+    values[f * 96] = .5f + .02f * (f % 5);
+    values[f * 96 + 1] = values[f * 96 + 2] = .5f;
+  }
+  const auto original = values;
+  step.denoised = values.data();
+  slopfab::LcsSettings settings; settings.color_stability = 1;
+  // A nonmultiple-of-five prefix catches resetting the phase at the new window.
+  slopfab::apply_lcs_output_stability(d, settings, {}, step, 7);
+  for (size_t i = 0; i < values.size(); ++i)
+    CHECK_NEAR(values[i], original[i], 1e-6);
+}
+
 SLOPFAB_TEST(lcs_color_tone_mask_and_structure) {
   auto d = std::make_shared<slopfab::LcsData>(fixture());
   d->latent_std.assign(24, 2);

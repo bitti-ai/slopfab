@@ -96,6 +96,9 @@ leave the previous settings intact.
 | `drift_max` | `1` | Maximum drift displacement per prediction in raw VAE units, `[0,10]` |
 | `highlight_strength` | `0` | Compress lightness above `highlight_knee`, `[0,1]` |
 | `highlight_knee` | `0.8` | Highlight shoulder start in calibrated black-to-white units, `[0,2]` |
+| `color_stability` | `0` | Original-clip chroma distribution correction after denoising, `[0,1]` |
+| `edge_stability` | `0` | Limit excess positive local lightness contrast after denoising, `[0,1]` |
+| `color_max_shift` | `0.1` | Maximum normalized chroma displacement before strength/mask/ramp, `[0,1]` |
 | `anchor` | `"none"` | `"none"`, `"self"`, `"smooth"` |
 | `anchor_strength` | `0` | Anchor blend, `[0,1]` |
 | `start_step` | `0` | First video update index, inclusive |
@@ -167,7 +170,7 @@ the example only affects the final eight updates of a 25-point Euler grid.
 See [the reproducible experiment](lcs_drift_experiment.md) for generation,
 calibration, frame metrics, and measured limitations.
 
-Native effects only edit target video predictions. Fixed reference rows and
+In-sampling effects only edit target video predictions. Fixed reference rows and
 audio are excluded. The mask is a copied F32 array in `[0,1]`, supplied with
 `slopfab_request_set_lcs_mask`. It contains either one spatial patch plane
 `(latent_height/2)*(latent_width/2)` repeated over frames, or one value per target
@@ -189,11 +192,52 @@ ending, before the latent archive is saved and the video VAE decodes it. A retai
 beginning is excluded. This avoids independently grading the short ending and the
 main generation, and keeps the ending used for conditioning free of this Tone pass.
 
-Step limits continue to govern color steering, sharpness and color stabilization;
+Step limits continue to govern color steering, sharpness and sampling anchors;
 output Tone is independent of those limits. Region masks still apply, but this
 mode accepts only a spatial mask (or no mask), not a full sampling-volume mask.
 Sampling previews do not include this final Tone pass. Other generation modes
 keep their existing in-sampling Tone behavior.
+
+## Persistent color and edge reference
+
+`color_stability` and `edge_stability` run once on **finished new video latents**,
+after joining and before saving/decoding. These two controls ignore sampling step
+limits and never run inside the sampler. Subsequent continuations consume the
+corrected latents. Saved source frames and audio are unchanged. With regenerated
+overlap, only the held prefix is excluded; regenerated frames are new output.
+Bridges and latent ending-anchor requests currently reject these controls.
+
+Fit an ordinary VAE calibration to the approved original clip using
+`tools/lcs_drift.py fit-stability --calibration color.safetensors
+--reference original.safetensors --output stability.safetensors`. This adds
+`color_reference` `[5,2,3]` and `edge_reference` `[5]` to the calibration and writes
+a `.settings.json` file. Keep this reference fixed throughout the chain. The
+reference is scene-specific; an intentional lighting or scene change may require
+disabling the correction or fitting a new reference.
+
+The fit excludes the first temporal group and records statistics separately for
+H3's five latent phases. Chroma coordinates are the native LCS `e1` and `e2` axes
+divided by the black-to-white axis length. Each new window's 10th, 50th and 90th
+percentiles are mapped toward the original percentiles, with scale restricted to
+0.75–1.3333 and displacement limited by `color_max_shift`. Statistics use the whole
+new window for each phase, not independently changing targets on every frame.
+This corrects chroma only; calibrated lightness and color-orthogonal residuals
+are preserved by the color control, up to floating-point rounding.
+
+The edge control measures a patch's lightness above its four spatial neighbors'
+mean. It reduces only excess above the original phase's 90th percentile, capped
+at 0.1 lightness units before strength. It does not blend the raw-latent residual
+or neighboring colors. This is a coarse latent contrast limiter, not a detector
+that can distinguish every halo from a legitimate bright boundary.
+
+Both edits ramp from 20% to 100% over the first five new latent slices when a
+prefix is retained. Only spatial masks are accepted, and masked-out patches are
+exactly unchanged. Statistics always use the entire frame. Sampling previews and
+sampling callbacks precede this pass, so they do not include it; saved latents,
+final video and the completed-latent hook do. Existing LCS archives remain valid;
+enabling either control without its reference tensor is rejected transactionally.
+
+See [the 30-second experiment](lcs_drift_30s.md) for measurements and reproduction.
 
 ## Implement a custom sampling effect
 
