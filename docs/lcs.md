@@ -1,12 +1,15 @@
 # Native LCS and sampling callbacks
 
 C API 1.31 adds native H3 Latent Color Subspace effects and a writable sampling
-callback on CUDA and Vulkan. Both operate on denoised predictions before the
-sampler updates the latent. They require no Python or ComfyUI runtime.
+callback on CUDA and Vulkan. Most effects operate on denoised predictions before
+the sampler updates the latent. Output Tone and persistent color/edge correction
+instead operate on finished latents as described below. Runtime effects require
+no Python or ComfyUI runtime.
 
 The built-in effects are color steering (Type I, Type II and sigma interpolation),
 contrast, brightness, saturation, temperature, optional masks, experimental
-sharpness control, and self/smoothing color anchors. Applications can combine
+sharpness control, self/smoothing color anchors, and persistent output color/edge
+references. Applications can combine
 these with their own callback or use the callback alone.
 
 This is an H3 implementation of the subspace approach described by

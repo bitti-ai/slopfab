@@ -62,6 +62,8 @@ python tools/lcs_drift.py analyze "$run/corrected-09.y4m" --max-frames 720 `
   --output "$run/corrected-metrics" --stride 48
 python tools/lcs_drift.py compare --baseline "$run/baseline-metrics.csv" `
   --candidate "$run/corrected-metrics.csv" --start-frame 73 --output "$run/paired"
+python tools/lcs_drift.py compare-colors --baseline "$run/baseline-10.y4m" `
+  --candidate "$run/corrected-09.y4m" --max-frames 720 --output "$run/common-colors"
 ffmpeg -v error -n -i "$run/baseline-10.y4m" -i "$run/corrected-09.y4m" `
   -filter_complex '[0:v][1:v]hstack=inputs=2[v]' -map '[v]' -frames:v 720 `
   -c:v libx264 -crf 16 -pix_fmt yuv420p "$run/comparison-30s.mp4"
@@ -87,6 +89,9 @@ boundaries, highlights and texture as well as halos. It does not measure halo
 width directly. Contact sheets and the full video must accompany the numbers.
 Summaries include the last 120 frames (five seconds at the fixture's 24 fps), as
 well as the first/last 22 frames, to expose sensitivity to the endpoint pose.
+`compare-colors` additionally evaluates both videos on the **intersection** of
+their midtone masks at each frame. This controls the differing selected-pixel
+populations. It does not align head motion or establish semantic correspondence.
 
 ## Implementation checks
 
@@ -102,3 +107,54 @@ audio matched the uncorrected same-seed extension exactly, and the largest chang
 outside the LCS color subspace was 4.51e-7 in raw VAE units. This verifies that the
 new pass is operating on the intended latent coordinates; it is not a claim of
 perceptual invariance.
+
+## Recorded results, 2026-10-31
+
+Artifacts are in `output/lcs-drift-30s/`. The baseline reuses the unchanged
+413-frame archive from the earlier experiment, then `baseline-00` through
+`baseline-04` extend it to 753 frames. The corrected chain starts from the same
+original 73 frames: `corrected-first-00`, then `corrected-00` through
+`corrected-08`, also ending at 753 frames. Window seeds match baseline. The fitted
+settings above were fixed before running the chain; no later output was used in
+the fit. Logs and command manifests preserve every generation command.
+
+`comparison-30s.mp4` contains exactly 720 frames at 24 fps (30.000 seconds),
+baseline left and corrected right. `paired-30s.csv` / `.svg` show every new frame.
+`common-color-30s.csv` / `.json` contain the common-mask color check.
+
+The last five seconds (frames 600–719) average as follows:
+
+| Measurement | Baseline | Corrected | Change |
+| --- | ---: | ---: | ---: |
+| Chroma distance, shared midtone pixels | 7.971 | 5.637 | **29.3% lower** |
+| Chroma distance, independent midtone masks | 8.064 | 6.044 | 25.1% lower |
+| Bright-edge fraction, positive local contrast >0.08 | 1.192% | 0.884% | **25.9% lower** |
+| Positive local contrast, 99th percentile | 0.0848 | 0.0764 | 10.0% lower |
+| Broad highlight fraction, luminance >0.8 | 7.064% | 7.606% | 7.7% higher |
+| Crop mean luminance | 0.3061 | 0.3469 | 13.3% higher |
+| Laplacian RMS texture proxy | 0.0340 | 0.0325 | 4.5% lower |
+| Independent midtone mask coverage | 66.2% | 77.4% | Different populations |
+
+The shared mask covers 60.2% of the center crop for both videos. It confirms that
+the measured color improvement is not solely due to selecting different pixels.
+The final 22-frame shared-mask color distances are 8.746 versus 5.897, consistent
+with the five-second result. At the earlier 17-second checkpoint, independent
+color distance was 3.441 versus 2.868 and bright-edge fraction 2.478% versus
+2.032%, with similar crop luminance and coverage.
+
+This is a useful improvement on the tested color/edge proxies, **not a complete
+material-quality fix**. Skin still shifts from the starting color and becomes
+shinier; broad highlight coverage did not improve. The changed source latents
+also change later motion, exposure and the population in a fixed crop. The
+edge proxy includes legitimate texture/boundaries, so its reduction does not
+prove that only halos were removed. The unchanged color-orthogonal latent
+residual does not guarantee unchanged decoded texture. The controls remain
+opt-in and should be checked on additional scenes, checkpoints and resolutions.
+
+All ten corrected hand-offs preserved the preceding video and audio latent
+prefixes exactly (`prefix-checks.json`). Validation passed: 45,328 focused native
+LCS checks; 9,758,717 full native synthetic checks with one unavailable FFmpeg
+fixture skipped; five Python experiment tests; and the LCS CLI, continuation CLI,
+sampler CLI and C API suites. A same-video common-mask comparison returned exact
+agreement. CUDA was evaluated; Vulkan uses the shared CPU correction but its
+generation quality was not tested here.

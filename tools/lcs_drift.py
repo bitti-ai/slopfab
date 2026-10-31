@@ -91,14 +91,8 @@ def generate(a):
         previous = stem.with_suffix('.safetensors')
 
 
-def metrics(rgb):
-    y = rgb @ np.array([.2126, .7152, .0722])
-    # Fixed center ROI is deliberately explicit: inspect contact sheets for motion.
-    h, w = y.shape
-    y = y[h//4:3*h//4, w//4:3*w//4]
-    lap = 4*y[1:-1, 1:-1]-y[:-2, 1:-1]-y[2:, 1:-1]-y[1:-1, :-2]-y[1:-1, 2:]
-    q50, q90, q99 = np.quantile(y, [.5, .9, .99])
-    crop = rgb[h//4:3*h//4, w//4:3*w//4]
+def color_fields(crop):
+    y = crop @ np.array([.2126, .7152, .0722])
     # Broad nonneutral midtone selection, without a skin-hue requirement. Report
     # coverage so hair/background or changing pose cannot silently look like success.
     selected = (y > .15) & (y < .8) & (crop.max(-1)-crop.min(-1) > .04)
@@ -108,6 +102,17 @@ def metrics(rgb):
     xyz /= np.array([.95047, 1., 1.08883])
     f = np.where(xyz > (6/29)**3, np.cbrt(xyz), xyz/(3*(6/29)**2)+4/29)
     lab_a, lab_b = 500*(f[...,0]-f[...,1]), 200*(f[...,1]-f[...,2])
+    return selected, lab_a, lab_b
+
+
+def metrics(rgb):
+    y = rgb @ np.array([.2126, .7152, .0722])
+    # Fixed center ROI is deliberately explicit: inspect contact sheets for motion.
+    h, w = y.shape
+    y = y[h//4:3*h//4, w//4:3*w//4]
+    lap = 4*y[1:-1, 1:-1]-y[:-2, 1:-1]-y[2:, 1:-1]-y[1:-1, :-2]-y[1:-1, 2:]
+    q50, q90, q99 = np.quantile(y, [.5, .9, .99])
+    selected, lab_a, lab_b = color_fields(rgb[h//4:3*h//4, w//4:3*w//4])
     # Positive local contrast at a five-pixel radius: includes bright halos and
     # legitimate boundaries, so this is explicitly an edge-growth proxy.
     pad = np.pad(y, 5, mode='reflect')
@@ -306,6 +311,57 @@ def compare(a):
     plt.close(fig)
 
 
+def compare_colors(a):
+    """Same-frame, common-pixel color check; does not claim motion registration."""
+    def dimensions(path):
+        info = json.loads(subprocess.check_output([a.ffprobe,'-v','error','-select_streams','v:0',
+            '-show_entries','stream=width,height','-of','json',str(path)]))['streams'][0]
+        return info['width'],info['height']
+    w,h = dimensions(a.baseline)
+    if dimensions(a.candidate) != (w,h):
+        raise ValueError('Paired videos must have identical dimensions')
+    def command(path):
+        return [a.ffmpeg,'-v','error','-i',str(path),'-frames:v',str(a.max_frames),
+                '-f','rawvideo','-pix_fmt','rgb24','-']
+    rows = []
+    with subprocess.Popen(command(a.baseline),stdout=subprocess.PIPE) as left, \
+         subprocess.Popen(command(a.candidate),stdout=subprocess.PIPE) as right:
+        while True:
+            frames = [p.stdout.read(w*h*3) for p in (left,right)]
+            if not any(frames):
+                break
+            if any(len(raw) != w*h*3 for raw in frames):
+                raise ValueError('Paired videos have different lengths or a truncated frame')
+            fields = []
+            for raw in frames:
+                rgb = np.frombuffer(raw,np.uint8).reshape(h,w,3).astype(np.float32)/255
+                fields.append(color_fields(rgb[h//4:3*h//4,w//4:3*w//4]))
+            common = fields[0][0] & fields[1][0]
+            if not common.any():
+                raise ValueError('No shared midtone pixels; cannot compare these frames')
+            row = dict(frame=len(rows),common_coverage=float(common.mean()))
+            for label, (_, aa, bb) in zip(('baseline','candidate'),fields):
+                row[label+'_a'] = float(np.median(aa[common]))
+                row[label+'_b'] = float(np.median(bb[common]))
+            rows.append(row)
+        if left.wait() or right.wait():
+            raise RuntimeError('FFmpeg failed')
+    if not rows:
+        raise ValueError('No decoded frames')
+    reference = np.mean([[r['baseline_a'],r['baseline_b']] for r in rows[:22]],axis=0)
+    for row in rows:
+        for label in ('baseline','candidate'):
+            row[label+'_chroma_delta'] = float(np.linalg.norm(
+                np.array([row[label+'_a'],row[label+'_b']])-reference))
+    with a.output.with_suffix('.csv').open('w',newline='') as f:
+        writer = csv.DictWriter(f,fieldnames=rows[0]); writer.writeheader(); writer.writerows(rows)
+    summary = {part: {k: float(np.mean([r[k] for r in subset])) for k in rows[0] if k != 'frame'}
+               for part,subset in [('last_22',rows[-22:]),('last_120',rows[-120:])]}
+    summary['frames'] = len(rows)
+    a.output.with_suffix('.json').write_text(json.dumps(summary,indent=2))
+    print(json.dumps(summary,indent=2))
+
+
 def calibrate(a):
     dll = C.CDLL(str(a.dll.resolve()))
     dll.slopfab_request_create.restype = C.c_void_p
@@ -362,6 +418,13 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--start-frame', type=int, default=0)
     p.set_defaults(func=compare)
+    p = subs.add_parser('compare-colors', help='Evaluate both videos on the intersection of their midtone masks')
+    for key in ('baseline','candidate','output'):
+        p.add_argument('--'+key,type=Path,required=True)
+    p.add_argument('--max-frames',type=int,default=720)
+    p.add_argument('--ffmpeg',default=shutil.which('ffmpeg') or 'ffmpeg')
+    p.add_argument('--ffprobe',default=shutil.which('ffprobe') or 'ffprobe')
+    p.set_defaults(func=compare_colors)
     p = subs.add_parser('fit')
     for key in ('calibration', 'early', 'late', 'output'):
         p.add_argument('--'+key, type=Path, required=True)
@@ -384,6 +447,8 @@ def main():
         parser.error('stride must be positive')
     if a.command == 'analyze' and a.max_frames < 0:
         parser.error('max-frames must be nonnegative')
+    if a.command == 'compare-colors' and a.max_frames < 1:
+        parser.error('max-frames must be positive')
     a.func(a)
 
 
