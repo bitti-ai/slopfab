@@ -267,6 +267,17 @@ void LcsData::validate() const {
             "drift direction must be unit and color-orthogonal");
     require(drift_reference[1] >= 0, "negative drift tolerance");
   }
+  if (!color_reference.empty()) {
+    finite(color_reference, 30);
+    for (int i = 0; i < 30; i += 3)
+      require(color_reference[i] <= color_reference[i + 1] &&
+                  color_reference[i + 1] <= color_reference[i + 2], "unordered reference quantiles");
+  }
+  if (!edge_reference.empty()) {
+    finite(edge_reference, 5);
+    for (float value : edge_reference)
+      require(value >= 0, "negative edge reference");
+  }
 }
 
 void LcsData::save(const std::string& path) const {
@@ -281,6 +292,10 @@ void LcsData::save(const std::string& path) const {
     t.push_back({"drift_direction", {D}, drift_direction});
     t.push_back({"drift_reference", {2}, drift_reference});
   }
+  if (!color_reference.empty())
+    t.push_back({"color_reference", {5, 2, 3}, color_reference});
+  if (!edge_reference.empty())
+    t.push_back({"edge_reference", {5}, edge_reference});
   write_safetensors_atomic(path, t, {{"slopfab_lcs", "1"}, {"vae_sha256", vae_sha256}});
 }
 
@@ -310,6 +325,10 @@ std::shared_ptr<const LcsData> LcsData::load(const std::string& path) {
     d->drift_direction = read("drift_direction", {D});
     d->drift_reference = read("drift_reference", {2});
   }
+  if (st.find("color_reference"))
+    d->color_reference = read("color_reference", {5, 2, 3});
+  if (st.find("edge_reference"))
+    d->edge_reference = read("edge_reference", {5});
   const auto hash = st.metadata().find("vae_sha256");
   require(hash != st.metadata().end() && hash->second.size() == 64, "missing VAE fingerprint");
   d->vae_sha256 = hash->second;
@@ -414,6 +433,7 @@ void fit_lcs_sharpness(LcsData& d, const std::vector<float>& differences) {
 bool LcsSettings::active() const {
   return strength != 0 || contrast != 1 || brightness != 0 || saturation != 1 || temperature != 0 ||
          sharpness != 0 || drift_strength != 0 || highlight_strength != 0 ||
+         color_stability != 0 || edge_stability != 0 ||
          (anchor != 0 && anchor_strength != 0);
 }
 
@@ -428,7 +448,8 @@ void LcsSettings::validate() const {
   require(range(strength, 0, 2) && range(contrast, 0, 4) && range(brightness, -1, 1) &&
               range(saturation, 0, 4) && range(temperature, -1, 1) && range(sharpness, -5, 5) &&
               range(anchor_strength, 0, 1) && range(drift_strength, 0, 1) && range(drift_max, 0, 10) &&
-              range(highlight_strength, 0, 1) && range(highlight_knee, 0, 2),
+              range(highlight_strength, 0, 1) && range(highlight_knee, 0, 2) &&
+              range(color_stability, 0, 1) && range(edge_stability, 0, 1) && range(color_max_shift, 0, 1),
           "invalid effect strength or tone range");
 }
 
@@ -482,6 +503,12 @@ LcsSettings parse_lcs_settings(const std::string& text) try {
       s.highlight_strength = number();
     else if (k == "highlight_knee")
       s.highlight_knee = number();
+    else if (k == "color_stability")
+      s.color_stability = number();
+    else if (k == "edge_stability")
+      s.edge_stability = number();
+    else if (k == "color_max_shift")
+      s.color_max_shift = number();
     else if (k == "anchor_strength")
       s.anchor_strength = number();
     else if (k == "start_step")
@@ -501,11 +528,106 @@ LcsSettings parse_lcs_settings(const std::string& text) try {
 }
 
 LcsSettings lcs_sampling_settings(LcsSettings s) {
+  s.color_stability = s.edge_stability = 0;
   if (s.tone_after_denoise) {
     s.contrast = s.saturation = 1;
     s.brightness = s.temperature = 0;
   }
   return s;
+}
+
+void apply_lcs_output_stability(std::shared_ptr<const LcsData> data, LcsSettings s,
+                               const std::vector<float>& mask, SamplingStep video,
+                               int preserved_frames) {
+  s.validate();
+  if (s.color_stability == 0 && s.edge_stability == 0)
+    return;
+  require(bool(data), "missing stability calibration");
+  data->validate();
+  require(s.color_stability == 0 || !data->color_reference.empty(), "calibration has no color reference");
+  require(s.edge_stability == 0 || !data->edge_reference.empty(), "calibration has no edge reference");
+  require(video.modality == 0 && video.denoised && video.row_width == D && video.frames > 0 &&
+              video.height > 0 && video.width > 0 && video.height % 2 == 0 && video.width % 2 == 0 &&
+              preserved_frames >= 0 && preserved_frames <= video.frames, "invalid stability geometry");
+  const size_t w = size_t(video.width / 2), h = size_t(video.height / 2), plane = w * h;
+  require(video.count == size_t(video.frames) * plane * D, "invalid stability count");
+  require(mask.empty() || mask.size() == plane, "output stability needs a spatial mask");
+  for (float value : mask)
+    require(std::isfinite(value) && value >= 0 && value <= 1, "invalid stability mask");
+  const auto& d = *data;
+  const ColorSpace space(d);
+  const float scale = norm(space.axis);
+  std::vector<V> coordinates(size_t(video.frames - preserved_frames) * plane);
+  std::array<std::array<std::vector<float>, 2>, 5> samples;
+  for (int f = preserved_frames; f < video.frames; ++f)
+    for (size_t p = 0; p < plane; ++p) {
+      const size_t offset = (size_t(f) * plane + p) * D;
+      float raw[D];
+      for (int i = 0; i < D; ++i)
+        raw[i] = video.denoised[offset + i] * d.latent_std[i / 4] + d.latent_mean[i / 4];
+      const V projected = sub(project(d, raw), space.black);
+      const V c{dot(projected, space.axis) / (scale * scale),
+                dot(projected, space.e1) / scale, dot(projected, space.e2) / scale};
+      coordinates[size_t(f - preserved_frames) * plane + p] = c;
+      // A spatial mask gates edits only; statistics always describe the full canvas.
+      for (int k = 0; k < 2; ++k)
+        samples[f % 5][k].push_back(c[k + 1]);
+    }
+  std::array<std::array<V, 2>, 5> quantiles{};
+  for (int phase = 0; phase < 5; ++phase)
+    for (int k = 0; k < 2; ++k) {
+      auto& values = samples[phase][k];
+      if (values.empty())
+        continue;
+      std::sort(values.begin(), values.end());
+      for (int q = 0; q < 3; ++q) {
+        const double index = (.1 + .4 * q) * double(values.size() - 1);
+        const size_t lo = size_t(index), hi = std::min(lo + 1, values.size() - 1);
+        quantiles[phase][k][q] = values[lo] + float(index - lo) * (values[hi] - values[lo]);
+      }
+    }
+  for (int f = preserved_frames; f < video.frames; ++f)
+    for (size_t p = 0; p < plane; ++p) {
+      // Blend the first five new slices to avoid a new grading seam at the join.
+      const float ramp = preserved_frames ? std::min(1.f, float(f - preserved_frames + 1) / 5) : 1.f;
+      const float weight = ramp * (mask.empty() ? 1 : mask[p]);
+      if (weight == 0)
+        continue;
+      const size_t row = size_t(f - preserved_frames) * plane + p;
+      const V c = coordinates[row];
+      V delta{};
+      if (s.color_stability != 0)
+        for (int k = 0; k < 2; ++k) {
+          const V current = quantiles[f % 5][k];
+          const float* target = d.color_reference.data() + (f % 5 * 2 + k) * 3;
+          const int side = c[k + 1] < current[1] ? 0 : 2;
+          const float span = current[side] - current[1];
+          const float slope = std::abs(span) < 1e-6f ? 1.f :
+              std::clamp((target[side] - target[1]) / span, .75f, 1.3333333f);
+          const float mapped = target[1] + (c[k + 1] - current[1]) * slope;
+          delta[k + 1] = s.color_stability * std::clamp(mapped - c[k + 1], -s.color_max_shift, s.color_max_shift);
+        }
+      if (s.edge_stability != 0) {
+        const size_t x = p % w, y = p / w;
+        float sum = 0, count = 0;
+        if (x > 0) { sum += coordinates[row - 1][0]; ++count; }
+        if (x + 1 < w) { sum += coordinates[row + 1][0]; ++count; }
+        if (y > 0) { sum += coordinates[row - w][0]; ++count; }
+        if (y + 1 < h) { sum += coordinates[row + w][0]; ++count; }
+        if (count > 0)
+          delta[0] = -s.edge_stability * std::min(.1f, std::max(0.f, c[0] - sum / count - d.edge_reference[f % 5]));
+      }
+      const V change = mul(add(mul(space.axis, delta[0]),
+                                  add(mul(space.e1, scale * delta[1]), mul(space.e2, scale * delta[2]))), weight);
+      const size_t offset = (size_t(f) * plane + p) * D;
+      for (int i = 0; i < D; ++i) {
+        float value = 0;
+        for (int k = 0; k < 3; ++k)
+          value += d.basis[i * 3 + k] * change[k];
+        if (value != 0)
+          video.denoised[offset + i] += value / d.latent_std[i / 4];
+      }
+    }
 }
 
 void apply_lcs_output_tone(std::shared_ptr<const LcsData> data, LcsSettings s,

@@ -24,6 +24,8 @@ def archive(path, extra=False):
     if extra:
         tensors['drift_direction'] = ([96], [float(i == 3) for i in range(96)])
         tensors['drift_reference'] = ([2], [0., .1])
+        tensors['color_reference'] = ([5, 2, 3], [-1., 0., 1.]*10)
+        tensors['edge_reference'] = ([5], [.1]*5)
     header = {'__metadata__': {'slopfab_lcs': '1', 'vae_sha256': 'a'*64}}
     payload = b''
     for name, (shape, values) in tensors.items():
@@ -42,9 +44,13 @@ with tempfile.TemporaryDirectory(prefix='slopfab-lcs-cli-') as directory:
     run('--lcs', path)
     run('--lcs', path, '--lcs-settings', '{"highlight_strength":0.5,"highlight_knee":0.78}')
     run('--lcs', path, '--lcs-settings', '{"drift_strength":0.5}', success=False)
+    run('--lcs', path, '--lcs-settings', '{"color_stability":0.5}', success=False)
+    run('--lcs', path, '--lcs-settings', '{"edge_stability":0.5}', success=False)
     archive(path, extra=True)
     run('--lcs', path, '--lcs-settings', '{"drift_strength":0.5}')
+    run('--lcs', path, '--lcs-settings', '{"color_stability":0.5,"edge_stability":0.5}')
     for settings in ('{"highlight_strength":2}', '{"highlight_knee":-1}', '{"drift_max":-1}',
+                     '{"color_stability":2}', '{"edge_stability":-1}', '{"color_max_shift":2}',
                      '{"typo":1}', '[]', '{broken'):
         run('--lcs', path, '--lcs-settings', settings, success=False)
     run('--lcs', path, '--synthetic-latents', success=False)

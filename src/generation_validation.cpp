@@ -87,8 +87,16 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
             "LCS calibration has no sharpness direction");
     require(o.lcs.drift_strength == 0 || !o.lcs_data->drift_direction.empty(),
             "LCS calibration has no drift direction");
+    require(o.lcs.color_stability == 0 || !o.lcs_data->color_reference.empty(),
+            "LCS calibration has no color reference");
+    require(o.lcs.edge_stability == 0 || !o.lcs_data->edge_reference.empty(),
+            "LCS calibration has no edge reference");
   }
   const size_t lcs_plane = size_t(p.layout.latent_height / 2) * size_t(p.layout.latent_width / 2);
+  if (o.lcs.color_stability != 0 || o.lcs.edge_stability != 0) {
+    require(!r.bridge && !r.end_anchor_latents, "output stability does not support bridges or latent ending anchors");
+    require(o.lcs_mask.empty() || o.lcs_mask.size() == lcs_plane, "output stability needs a spatial mask");
+  }
   require(!o.lcs.tone_after_denoise ||
               (r.end_anchor_latents && (o.lcs_mask.empty() || o.lcs_mask.size() == lcs_plane)),
           "output tone requires a latent ending anchor and a spatial mask");

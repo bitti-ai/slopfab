@@ -1316,6 +1316,19 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     apply_lcs_output_tone(options.lcs_data, options.lcs, options.lcs_mask, tone,
                           request.continuation ? request.continuation->layout().num_latent_frames : 0);
   }
+  if (options.lcs.color_stability != 0 || options.lcs.edge_stability != 0) {
+    SamplingStep clean;
+    clean.frames = layout.num_latent_frames;
+    clean.height = layout.latent_height;
+    clean.width = layout.latent_width;
+    clean.row_width = 96;
+    clean.count = completed->video_rows.size();
+    clean.denoised = completed->video_rows.data();
+    const int preserved = request.continuation ?
+        request.continuation->layout().num_latent_frames - plan.continuation.overlap_video_latents +
+            plan.continuation.held_video_latents : 0;
+    apply_lcs_output_stability(options.lcs_data, options.lcs, options.lcs_mask, clean, preserved);
+  }
   if (!options.save_latents_path.empty()) {
     completed->save(options.save_latents_path);
     result.outputs.push_back(options.save_latents_path);

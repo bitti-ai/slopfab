@@ -147,6 +147,67 @@ SLOPFAB_TEST(lcs_highlight_shoulder_preserves_shadows_chroma_and_residual) {
   CHECK(rejects([] { slopfab::parse_lcs_settings("{\"highlight_knee\":-0.1}"); }));
 }
 
+SLOPFAB_TEST(lcs_output_stability_preserves_prefix_lightness_residual_and_masks) {
+  auto d = std::make_shared<slopfab::LcsData>(fixture());
+  d->latent_mean.assign(24, .25f);
+  d->latent_std.assign(24, 2.f);
+  d->color_reference.assign(30, 0);
+  d->edge_reference.assign(5, .1f);
+  auto s = slopfab::parse_lcs_settings("{\"color_stability\":0.75,\"color_max_shift\":0.1}");
+  CHECK(!slopfab::lcs_sampling_settings(s).active());
+  slopfab::SamplingStep step;
+  step.frames = 12; step.height = step.width = 6; step.row_width = 96;
+  step.count = size_t(step.frames) * 9 * 96;
+  std::vector<float> values(step.count, .123f);
+  for (size_t r = 0; r < step.count / 96; ++r) {
+    values[r * 96] = .1f; values[r * 96 + 1] = .3f; values[r * 96 + 2] = .5f;
+  }
+  const auto original = values;
+  step.denoised = values.data();
+  std::vector<float> mask(9, 1); mask[0] = 0;
+  slopfab::apply_lcs_output_stability(d, s, mask, step, 7);
+  CHECK(values != original);
+  for (size_t r = 0; r < step.count / 96; ++r) {
+    const bool held = r < 7 * 9 || r % 9 == 0;
+    float light_delta = 0;
+    for (int i = 0; i < 96; ++i) {
+      if (held || i >= 3)
+        CHECK(values[r * 96 + i] == original[r * 96 + i]);
+      if (i < 3) {
+        light_delta += values[r * 96 + i] - original[r * 96 + i];
+        CHECK(std::abs(values[r * 96 + i] - original[r * 96 + i]) < .1f);
+      }
+    }
+    CHECK_NEAR(light_delta, 0.f, 1e-6);
+  }
+  // A positive luminance spike is bounded, not a blanket blur or a chroma edit.
+  s.color_stability = 0; s.edge_stability = 1;
+  values = original;
+  const size_t spike = (11 * 9 + 4) * 96;
+  for (int i = 0; i < 3; ++i)
+    values[spike + i] += .5f;
+  const auto before_edge = values;
+  slopfab::apply_lcs_output_stability(d, s, {}, step, 7);
+  for (int i = 0; i < 3; ++i)
+    CHECK_NEAR(values[spike + i], before_edge[spike + i] - .05f, 1e-6);
+  for (size_t i = 0; i < values.size(); ++i)
+    if (i < spike || i >= spike + 3)
+      CHECK_NEAR(values[i], before_edge[i], 1e-6);
+  CHECK(rejects([&] { slopfab::apply_lcs_output_stability(d, s, {1, 1}, step, 7); }));
+  CHECK(rejects([&] { slopfab::apply_lcs_output_stability(d, s, {}, step, 13); }));
+  auto bad = std::make_shared<slopfab::LcsData>(fixture());
+  CHECK(rejects([&] { slopfab::apply_lcs_output_stability(bad, s, {}, step); }));
+  const auto path = (std::filesystem::temp_directory_path() / "slopfab-lcs-stability-test.safetensors").string();
+  d->save(path);
+  auto loaded = slopfab::LcsData::load(path);
+  CHECK(loaded->color_reference == d->color_reference && loaded->edge_reference == d->edge_reference);
+  std::filesystem::remove(path);
+  d->color_reference[0] = 1;
+  CHECK(rejects([&] { d->validate(); }));
+  CHECK(rejects([] { slopfab::parse_lcs_settings("{\"color_stability\":1.1}"); }));
+  CHECK(rejects([] { slopfab::parse_lcs_settings("{\"edge_stability\":-1}"); }));
+}
+
 SLOPFAB_TEST(lcs_color_tone_mask_and_structure) {
   auto d = std::make_shared<slopfab::LcsData>(fixture());
   d->latent_std.assign(24, 2);

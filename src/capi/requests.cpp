@@ -75,6 +75,10 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs(slopfab_request* request,
       throw std::invalid_argument("LCS calibration has no sharpness direction");
     if (settings.drift_strength != 0 && data->drift_direction.empty())
       throw std::invalid_argument("LCS calibration has no drift direction");
+    if (settings.color_stability != 0 && data->color_reference.empty())
+      throw std::invalid_argument("LCS calibration has no color reference");
+    if (settings.edge_stability != 0 && data->edge_reference.empty())
+      throw std::invalid_argument("LCS calibration has no edge reference");
     request->options.lcs_data = std::move(data);
     request->options.lcs = settings;
   });

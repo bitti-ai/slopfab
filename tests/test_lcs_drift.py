@@ -61,6 +61,39 @@ class DriftTest(unittest.TestCase):
         self.assertAlmostEqual(drift.metrics(flat)['texture_rms'], 0)
         self.assertGreater(drift.metrics(texture)['texture_rms'], 0)
 
+    def test_metrics_detect_color_shift_and_positive_edge_growth(self):
+        warm = np.zeros((64,64,3)) + [.65,.45,.35]
+        cool = np.zeros((64,64,3)) + [.60,.45,.40]
+        wm, cm = drift.metrics(warm), drift.metrics(cool)
+        self.assertAlmostEqual(wm['skin_coverage'], 1)
+        self.assertAlmostEqual(cm['skin_coverage'], 1)
+        self.assertGreater(wm['skin_b'], cm['skin_b'])
+        edged = warm.copy()
+        edged[28:30] += .25
+        self.assertGreater(drift.metrics(edged)['edge_p99'], wm['edge_p99'])
+
+    def test_stability_fit_keeps_temporal_phases_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calibration = dict(basis=np.eye(96,3), mean=np.zeros(96),
+                               latent_std=np.ones(24),latent_mean=np.zeros(24),
+                               anchor_lcs=np.zeros((8,3)))
+            calibration['anchor_lcs'][7] = [1,0,0]
+            rows = np.zeros((17,3,3,96),np.float32)
+            for frame in range(17):
+                rows[frame,...,1] = frame % 5
+                rows[frame,1,1,0] = (frame % 5 + 1)*.1
+            rows[:5,...,1] = 100  # Boundary group must not contaminate the fit.
+            drift.write(root/'cal.safetensors', {}, calibration)
+            drift.write(root/'ref.safetensors',dict(slopfab_latents='h3-av-v1',width='96',height='96'),
+                        dict(video_rows=rows.reshape(-1,96)))
+            drift.fit_stability(SimpleNamespace(calibration=root/'cal.safetensors',
+                                reference=root/'ref.safetensors',output=root/'out.safetensors'))
+            _, result = drift.read(root/'out.safetensors')
+            for phase in range(5):
+                np.testing.assert_allclose(result['color_reference'][phase,0],phase,atol=1e-6)
+                self.assertAlmostEqual(float(result['edge_reference'][phase]),(phase+1)*.1,places=6)
+
 
 if __name__ == '__main__':
     unittest.main()

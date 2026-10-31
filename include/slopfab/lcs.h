@@ -18,6 +18,9 @@ struct LcsData {
   // from early to late appearance. Color-orthogonal, unit length.
   std::vector<float> drift_direction; // [96]
   std::vector<float> drift_reference; // [2]: early frame-mean projection, tolerance
+  // Persistent clean-clip statistics, grouped by H3's five latent phases.
+  std::vector<float> color_reference; // [5,2,3]: U/V chroma, q10/q50/q90
+  std::vector<float> edge_reference;  // [5]: positive spatial lightness excess q90
   std::string vae_sha256;
   float explained_variance = 0;
   void validate() const;
@@ -35,6 +38,9 @@ struct LcsSettings {
   float drift_max = 1;      // [0,10], maximum raw-space displacement per prediction
   float highlight_strength = 0; // [0,1], compress lightness above the knee
   float highlight_knee = .8f;   // [0,2], calibrated black-to-white coordinates
+  // Applied once after joining, before save/decode. Never edits retained frames.
+  float color_stability = 0, edge_stability = 0; // [0,1]
+  float color_max_shift = .1f;                  // [0,1], normalized LCS chroma
   int start_step = 0, end_step = 2147483647; // inclusive, video updates
   int anchor = 0;                            // none=0, self=1, smooth=2
   float anchor_strength = 0;
@@ -59,6 +65,9 @@ LcsSettings lcs_sampling_settings(LcsSettings settings);
 void apply_lcs_output_tone(std::shared_ptr<const LcsData> data, LcsSettings settings,
                            const std::vector<float>& mask, SamplingStep video,
                            int preserved_frames = 0);
+void apply_lcs_output_stability(std::shared_ptr<const LcsData> data, LcsSettings settings,
+                               const std::vector<float>& mask, SamplingStep video,
+                               int preserved_frames = 0);
 std::string lcs_vae_fingerprint(const std::string& path);
 // Synchronous native calibration; false means cancelled, no output is written.
 bool calibrate_lcs(const std::string& vae_path, DeviceBackend backend, bool portable,

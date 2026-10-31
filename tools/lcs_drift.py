@@ -98,9 +98,29 @@ def metrics(rgb):
     y = y[h//4:3*h//4, w//4:3*w//4]
     lap = 4*y[1:-1, 1:-1]-y[:-2, 1:-1]-y[2:, 1:-1]-y[1:-1, :-2]-y[1:-1, 2:]
     q50, q90, q99 = np.quantile(y, [.5, .9, .99])
+    crop = rgb[h//4:3*h//4, w//4:3*w//4]
+    # Broad nonneutral midtone selection, without a skin-hue requirement. Report
+    # coverage so hair/background or changing pose cannot silently look like success.
+    selected = (y > .15) & (y < .8) & (crop.max(-1)-crop.min(-1) > .04)
+    linear = np.where(crop <= .04045, crop/12.92, ((crop+.055)/1.055)**2.4)
+    xyz = linear @ np.array([[.4124564,.2126729,.0193339],
+                            [.3575761,.7151522,.1191920], [.1804375,.0721750,.9503041]])
+    xyz /= np.array([.95047, 1., 1.08883])
+    f = np.where(xyz > (6/29)**3, np.cbrt(xyz), xyz/(3*(6/29)**2)+4/29)
+    lab_a, lab_b = 500*(f[...,0]-f[...,1]), 200*(f[...,1]-f[...,2])
+    # Positive local contrast at a five-pixel radius: includes bright halos and
+    # legitimate boundaries, so this is explicitly an edge-growth proxy.
+    pad = np.pad(y, 5, mode='reflect')
+    integral = np.pad(pad, ((1,0),(1,0))).cumsum(0).cumsum(1)
+    blurred = (integral[11:,11:]-integral[:-11,11:]-integral[11:,:-11]+integral[:-11,:-11])/121
+    edge = np.maximum(0, y-blurred)
     return dict(mean=float(y.mean()), p50=q50, p90=q90, p99=q99,
                 highlight_fraction=float((y > .8).mean()), highlight_tail=q99-q50,
-                texture_rms=float(np.sqrt(np.mean(lap**2))))
+                texture_rms=float(np.sqrt(np.mean(lap**2))),
+                skin_a=float(np.median(lab_a[selected])) if selected.any() else 0.,
+                skin_b=float(np.median(lab_b[selected])) if selected.any() else 0.,
+                skin_coverage=float(selected.mean()), edge_p99=float(np.quantile(edge,.99)),
+                edge_fraction=float((edge > .08).mean()))
 
 
 def analyze(a):
@@ -125,6 +145,9 @@ def analyze(a):
             raise RuntimeError('FFmpeg failed')
     if not rows:
         raise ValueError('No video frames')
+    reference = np.mean([[r['skin_a'],r['skin_b']] for r in rows[:22]], axis=0)
+    for row in rows:
+        row['skin_chroma_delta'] = float(np.linalg.norm(np.array([row['skin_a'],row['skin_b']])-reference))
     with a.output.with_suffix('.csv').open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=rows[0])
         writer.writeheader()
@@ -194,6 +217,47 @@ def fit(a):
     print(json.dumps(report, indent=2))
 
 
+def fit_stability(a):
+    metadata, c = read(a.calibration)
+    meta, tensors = read(a.reference)
+    if meta.get('slopfab_latents') != 'h3-av-v1':
+        raise ValueError('Expected an H3 latent archive')
+    h, w = int(meta['height'])//32, int(meta['width'])//32
+    rows = tensors['video_rows'].reshape(-1,h,w,96).astype(np.float64)
+    if len(rows) < 12 or min(h,w) < 3 or not np.isfinite(rows).all():
+        raise ValueError('Reference needs >=12 latent slices, >=3x3 patches, and finite values')
+    raw = rows*np.repeat(c['latent_std'],4) + np.repeat(c['latent_mean'],4)
+    colors = (raw-c['mean']) @ c['basis'] - c['anchor_lcs'][6]
+    axis = c['anchor_lcs'][7] - c['anchor_lcs'][6]
+    scale = np.linalg.norm(axis)
+    n = axis/scale
+    arb = np.array([0.,1.,0.]) if abs(n[0]) > .9 else np.array([1.,0.,0.])
+    u = arb - n*(arb@n)
+    u /= np.linalg.norm(u)
+    v = np.cross(n,u)
+    coords = colors @ np.stack([n,u,v],axis=1) / scale
+    color_ref, edge_ref = [], []
+    for phase in range(5):
+        # Exclude the first temporal group; keep phase identity from the archive.
+        selected = coords[np.arange(len(coords)) >= 5][(np.arange(len(coords))[5:] % 5) == phase]
+        color_ref.append(np.quantile(selected[...,1:],[.1,.5,.9],axis=(0,1,2)).T)
+        light = selected[...,0]
+        edge = light[:,1:-1,1:-1] - (light[:,:-2,1:-1]+light[:,2:,1:-1]+
+                    light[:,1:-1,:-2]+light[:,1:-1,2:])/4
+        edge_ref.append(max(0.,float(np.quantile(edge,.9))))
+    c['color_reference'] = np.asarray(color_ref,np.float32)
+    c['edge_reference'] = np.asarray(edge_ref,np.float32)
+    metadata['stability_reference'] = str(a.reference.resolve())
+    metadata['stability_method'] = 'phase-wise chroma quantiles and positive spatial lightness excess'
+    write(a.output,metadata,c)
+    settings = dict(color_stability=.75, edge_stability=.75, color_max_shift=.1)
+    a.output.with_suffix('.settings.json').write_text(json.dumps(settings,indent=2))
+    report = dict(color_reference=c['color_reference'].tolist(),edge_reference=edge_ref,
+                  reference=str(a.reference),settings=settings)
+    a.output.with_suffix('.json').write_text(json.dumps(report,indent=2))
+    print(json.dumps(report,indent=2))
+
+
 def compare(a):
     import matplotlib
     matplotlib.use('Agg')
@@ -222,8 +286,10 @@ def compare(a):
         writer = csv.DictWriter(f, fieldnames=paired[0])
         writer.writeheader()
         writer.writerows(paired)
-    fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
-    for ax, key in zip(axes, ['highlight_fraction', 'highlight_tail', 'mean', 'texture_rms']):
+    keys = ['highlight_fraction', 'highlight_tail', 'mean', 'texture_rms']
+    keys += [k for k in ['skin_chroma_delta','skin_coverage','edge_p99','edge_fraction'] if k in baseline[0]]
+    fig, axes = plt.subplots(len(keys), 1, figsize=(10, 2*len(keys)), sharex=True)
+    for ax, key in zip(axes, keys):
         for label in ['baseline', 'candidate']:
             ax.plot([r['frame'] for r in paired], [r[f'{label}_{key}'] for r in paired], label=label)
         ax.set_ylabel(key.replace('_', ' '))
@@ -295,6 +361,10 @@ def main():
     for key in ('calibration', 'early', 'late', 'output'):
         p.add_argument('--'+key, type=Path, required=True)
     p.set_defaults(func=fit)
+    p = subs.add_parser('fit-stability', help='Fit persistent appearance statistics using only the original clip')
+    for key in ('calibration','reference','output'):
+        p.add_argument('--'+key,type=Path,required=True)
+    p.set_defaults(func=fit_stability)
     p = subs.add_parser('calibrate')
     p.add_argument('--dll', type=Path, default=Path('build/Release/slopfab.dll'))
     p.add_argument('--vae', type=Path, default=Path('weights/vae/minimax_h3_video_vae_fp16.safetensors'))
