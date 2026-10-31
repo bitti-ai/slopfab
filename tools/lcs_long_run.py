@@ -53,6 +53,25 @@ def validate_extension(previous, path, added_frames):
     return int(meta['frames'])
 
 
+def verify_first_correction(source, baseline, corrected):
+    """Same-source/seed output-only LCS probe, before the chains diverge."""
+    meta, old = read(source)
+    _, plain = read(baseline)
+    _, fixed = read(corrected)
+    if not np.array_equal(plain['audio_rows'],fixed['audio_rows']):
+        raise ValueError('Output-only LCS changed same-seed audio')
+    prefix = len(old['video_rows'])
+    if not np.array_equal(plain['video_rows'][:prefix],fixed['video_rows'][:prefix]):
+        raise ValueError('Same-source first pair has different retained prefixes')
+    plane = (int(meta['width'])//32)*(int(meta['height'])//32)
+    delta = (fixed['video_rows'][prefix:] - plain['video_rows'][prefix:]).reshape(-1,plane,96)
+    maxima = np.max(np.abs(delta),axis=(1,2))
+    if not len(maxima) or not np.isfinite(maxima).all() or not (maxima > 0).all():
+        raise ValueError('First-pair probe did not observe a finite correction in every new latent slice')
+    return dict(new_latent_slices=len(maxima),all_new_slices_changed=True,
+                per_slice_max_abs_change=maxima.tolist(),audio_exact=True,retained_prefix_exact=True)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for key in ('transformer','embedding','baseline-source','corrected-source','calibration','settings','output'):
@@ -65,21 +84,36 @@ def main():
     p.add_argument('--steps',type=int,default=25)
     p.add_argument('--new-frames',type=int,default=68)
     p.add_argument('--decode-every',type=int,default=0,help='Decode both saved chains every N pairs, and the final pair')
+    p.add_argument('--keystone-source',type=Path,help='Fixed original-clip anchor for both arms; enables front Keystone and rear Capstone')
+    p.add_argument('--capstone-lock-after',type=int,default=4,help='Video updates before rear Capstone context is appended')
+    p.add_argument('--lock-overlap',action='store_true',help='Explicitly enable locked continuation overlap in both arms')
+    p.add_argument('--verify-first-lcs',action='store_true',help='Require identical starting sources and verify actual output correction across every new slice of the first pair')
     p.add_argument('--exe',type=Path,default=Path('build/Release/slopfab.exe'))
     a = p.parse_args()
     if a.pairs < 1 or a.steps < 2 or a.new_frames < 17 or a.new_frames % 17:
         p.error('positive pairs, steps >=2 and new frames a positive multiple of 17 required')
     if a.decode_every < 0:
         p.error('decode-every must be nonnegative')
+    if a.capstone_lock_after < 0 or (a.keystone_source and a.capstone_lock_after >= a.steps-1):
+        p.error('capstone-lock-after must be nonnegative and precede the final denoising update')
     if a.output.exists() and any(a.output.iterdir()):
         p.error('Use a fresh output directory; completed archives can be resumed as new sources')
     a.output.mkdir(parents=True,exist_ok=True)
     settings = a.settings.read_text(encoding='utf-8-sig')
-    json.loads(settings)
+    parsed_settings = json.loads(settings)
+    if a.verify_first_lcs:
+        if a.baseline_source.resolve() != a.corrected_source.resolve():
+            p.error('verify-first-lcs requires the same starting source for both arms')
+        if set(parsed_settings) - {'color_stability','edge_stability','color_max_shift'}:
+            p.error('verify-first-lcs requires output-only stability settings')
     manifest = {k:str(v.resolve()) if isinstance(v,Path) else v for k,v in vars(a).items()}
     manifest.update(settings_json=json.loads(settings),attention='flash2',backend='cuda',overlap_frames=22,
+                    keystone_enabled=bool(a.keystone_source),capstone_enabled=bool(a.keystone_source),
+                    arms={'baseline':'continuation without LCS','corrected':'same continuation with LCS'},
                     output_policy='cancel at video decode only, after completed latent archive save')
     watched=[a.transformer,a.vae,a.audio_vae,a.embedding,a.calibration,a.settings]
+    if a.keystone_source:
+        watched.append(a.keystone_source)
     signatures={str(path.resolve()):(path.stat().st_size,path.stat().st_mtime_ns) for path in watched}
     manifest['input_file_signatures']=signatures
     save_json(a.output/'manifest.json',manifest)
@@ -103,6 +137,8 @@ def main():
     set_verbose=bind('request_set_verbose',integer,pointer,integer)
     set_save=bind('request_set_save_latents',integer,pointer,string)
     set_source=bind('request_set_continuation_file',integer,pointer,string,integer)
+    set_lock=bind('request_set_continuation_lock_overlap',integer,pointer,integer)
+    set_keystone=bind('request_set_keystone_file',integer,pointer,string,integer,integer)
     set_lcs=bind('request_set_lcs',integer,pointer,string,string)
     callback_type=C.CFUNCTYPE(None,C.POINTER(Progress),pointer)
     start=bind('generation_start',integer,pointer,callback_type,pointer,C.POINTER(pointer))
@@ -139,6 +175,9 @@ def main():
                 check(set_seed(request,a.seed+index)); check(set_attention(request,b'flash2'))
                 check(set_backend(request,0)); check(set_verbose(request,0))
                 check(set_source(request,str(sources[label].resolve()).encode(),22))
+                check(set_lock(request,int(a.lock_overlap)))
+                if a.keystone_source:
+                    check(set_keystone(request,str(a.keystone_source.resolve()).encode(),1,a.capstone_lock_after))
                 check(set_save(request,str(path.resolve()).encode()))
                 if label=='corrected':
                     check(set_lcs(request,str(a.calibration.resolve()).encode(),settings.encode()))
@@ -156,6 +195,7 @@ def main():
                 frames=validate_extension(sources[label],path,a.new_frames)
                 elapsed=time.monotonic()-began
                 records.append(dict(label=label,index=index,seed=a.seed+index,frames=frames,
+                    source_archive=str(sources[label].resolve()),lcs_enabled=label=='corrected',
                     seconds=elapsed,archive=str(path),video_prefix_exact=True,audio_prefix_exact=True,
                     sampled_updates=a.steps-1,decode_deferred=True,status=status))
                 save_json(a.output/'progress.json',records)
@@ -165,6 +205,10 @@ def main():
                 if generation:
                     gen_destroy(generation)
                 destroy(request)
+        if index == 0 and a.verify_first_lcs:
+            verification=verify_first_correction(a.baseline_source,sources['baseline'],sources['corrected'])
+            save_json(a.output/'first-correction-check.json',verification)
+            print(f"First LCS pair: all {verification['new_latent_slices']} new latent slices corrected; audio and prefix exact",flush=True)
         if a.decode_every and ((index+1) % a.decode_every == 0 or index+1 == a.pairs):
             for label in ('baseline','corrected'):
                 archive=sources[label]

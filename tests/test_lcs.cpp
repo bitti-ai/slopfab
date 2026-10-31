@@ -234,6 +234,74 @@ SLOPFAB_TEST(lcs_output_color_reference_uses_global_temporal_phase) {
     CHECK_NEAR(values[i], original[i], 1e-6);
 }
 
+SLOPFAB_TEST(lcs_stability_covers_42_saved_keystone_continuations) {
+  using namespace slopfab;
+  auto data = std::make_shared<LcsData>(fixture());
+  data->color_reference.assign(30, 0);
+  data->edge_reference.assign(5, 0);
+  // Output correction must not stop at a sampling-step limit.
+  auto settings = parse_lcs_settings(R"({"color_stability":0.75,"edge_stability":0.75,"color_max_shift":0.1,"start_step":100,"end_step":101})");
+  CHECK(!lcs_sampling_settings(settings).active());
+  LatentFixture original_file, saved_file;
+  original_file.write(73);
+  const auto original = LatentClip::load(original_file.path.string());
+  auto previous = original;
+  const auto original_video = original->video_rows;
+  Keystone keystone{original, true, 4};
+  const size_t slice = size_t(original->layout().rows_per_frame()) * 96;
+  int corrected_slices = 0;
+  for (int shot = 0; shot < 42; ++shot) {
+    const auto plan = plan_continuation(*previous, 22, 68);
+    auto constraint = make_keystone_constraint(*previous, plan, keystone);
+    CHECK(constraint.capstone.size() == slice && constraint.capstone_start_step == 4);
+    CHECK(std::equal(original_video.begin(), original_video.begin() + slice,
+                     constraint.video.original.begin()));
+    // Remaining locked motion context must come from the saved corrected source.
+    const auto tail = previous->video_rows.end() - size_t(plan.overlap_video_latents) * slice;
+    CHECK(std::equal(tail + slice, tail + size_t(plan.held_video_latents) * slice,
+                     constraint.video.original.begin() + slice));
+    std::vector<float> video(constraint.video.target_values_per_channel, 0);
+    for (size_t r = 0; r < video.size() / 96; ++r) {
+      const float light = r % 2 ? .4f : 0.f;
+      video[r * 96] = .1f + light;
+      video[r * 96 + 1] = .3f + light;
+      video[r * 96 + 2] = .5f + light;
+      video[r * 96 + 7] = float(shot + 1); // Structure outside the color subspace.
+    }
+    constraint.video.capture_noise(video.data(), video.size());
+    constraint.video.apply(video.data(), video.size(), 0, 24);
+    constraint.restore_video(video);
+    std::vector<float> audio(size_t(plan.window_audio_latents) * 64, float(shot));
+    auto joined = join_continuation(*previous, plan, video, audio);
+    const auto before = joined;
+    const auto layout = joined.layout();
+    const int preserved = previous->layout().num_latent_frames - plan.overlap_video_latents + plan.held_video_latents;
+    CHECK(preserved == previous->layout().num_latent_frames);
+    CHECK(layout.num_latent_frames - preserved == 20);
+    SamplingStep step;
+    step.frames = layout.num_latent_frames; step.height = layout.latent_height; step.width = layout.latent_width;
+    step.row_width = 96; step.count = joined.video_rows.size(); step.denoised = joined.video_rows.data();
+    apply_lcs_output_stability(data, settings, {}, step, preserved);
+    CHECK(std::equal(previous->video_rows.begin(), previous->video_rows.end(), joined.video_rows.begin()));
+    CHECK(joined.audio_rows == before.audio_rows);
+    for (int f = preserved; f < layout.num_latent_frames; ++f) {
+      const size_t start = size_t(f) * slice;
+      // Every newly generated slice, including the ramp and the very last slice, is corrected.
+      CHECK(!std::equal(before.video_rows.begin() + start, before.video_rows.begin() + start + slice,
+                        joined.video_rows.begin() + start));
+      for (size_t p = 0; p < slice / 96; ++p)
+        CHECK(joined.video_rows[start + p * 96 + 7] == before.video_rows[start + p * 96 + 7]);
+      ++corrected_slices;
+    }
+    joined.save(saved_file.path.string());
+    previous = LatentClip::load(saved_file.path.string());
+    CHECK(previous->video_rows == joined.video_rows && previous->audio_rows == joined.audio_rows);
+    CHECK(previous->frames == 73 + (shot + 1) * 68);
+  }
+  CHECK(corrected_slices == 840 && previous->frames == 2929);
+  CHECK(original->video_rows == original_video);
+}
+
 SLOPFAB_TEST(lcs_color_tone_mask_and_structure) {
   auto d = std::make_shared<slopfab::LcsData>(fixture());
   d->latent_std.assign(24, 2);
