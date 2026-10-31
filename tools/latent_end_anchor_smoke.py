@@ -110,7 +110,8 @@ def main():
             def capture(pointer, _):
                 step = pointer.contents
                 current_steps.append((step.modality, step.step, step.frames, step.count,
-                                      C.string_at(step.denoised, step.count * 4)))
+                                      C.string_at(step.denoised, step.count * 4),
+                                      step.sigma, C.string_at(step.latent, step.count * 4)))
                 return 0
 
             if args.keystone:
@@ -159,9 +160,20 @@ def main():
             if args.keystone:
                 check(begin_gen(request, ending, 22))
                 check(lock_overlap(request, 1))
+                plain_gen, _ = run("locked-without-keystone", 17, 56, 23)
+                release(plain_gen)
                 check(key_gen(request, ending, 0, 1))
                 baseline_gen, baseline = run("front-only", 17, 56, 23)
                 release(baseline_gen)
+                plain_first = next(s for s in snapshots["locked-without-keystone"] if s[:2] == (0, 0))
+                key_first = next(s for s in snapshots["front-only"] if s[:2] == (0, 0))
+                # At full noise the target lock carries no source signal. Only
+                # the corrected clean guide can make Keystone affect this call.
+                assert plain_first[5] == key_first[5] == 1.0
+                assert plain_first[6] == key_first[6]
+                held_bytes = 7 * 96 * 4  # 22 frames, one packed row per latent at 32x32
+                assert plain_first[4][held_bytes:] != key_first[4][held_bytes:], \
+                    "Keystone must influence new video before the noisy target lock becomes visible"
                 check(key_gen(request, ending, 1, 1))
                 release(ending)
                 joined_gen, joined = run("keystone", 17, 56, 23)
@@ -188,7 +200,8 @@ def main():
                 _, plain = run("plain-after-keystone", 17, 90, 37)
                 preserved(plain, extended, False)
                 print("PASS: keystone retained/file parity, owned snapshots, call-only context, "
-                      "identical pre-activation predictions, unchanged sampler lengths, "
+                      "front-guide influence at full noise, identical pre-capstone predictions, "
+                      "unchanged sampler lengths, "
                       "persistent source and further ordinary continuation", flush=True)
                 return
             check(end_gen(request, ending, 22))

@@ -70,9 +70,12 @@ Generate the original normally, without Keystone. Keep ordinary subject/backgrou
 references attached to every request when using Ref2VA.
 
 - **Keystone:** the original's first packed video latent replaces the first slice
-  of the locked target overlap. The rest of the overlap retains the previous
-  clip's motion context. The previous clip's frame-zero latent is restored before
-  sampler output. Video and audio overlap are automatically locked.
+  of both the locked target overlap and its fixed visual conditioning guide.
+  These share the same temporal position and must agree: the guide exposes the
+  original appearance even while the target is mostly noise. The rest of the
+  overlap retains the previous clip's motion context. The previous clip's
+  frame-zero latent is restored before sampler output. Video and audio overlap
+  are automatically locked.
 - **Capstone:** the original's last single-frame latent is appended as one clean
   video latent during model calls. Its prediction is discarded before the sampler
   update. No generated end slice is replaced and no audio context is appended.
@@ -86,6 +89,13 @@ Locked overlap uses `(1-sigma)*reference + sigma*initial_noise`, with the same
 captured noise at every step. The appended Capstone stays clean, with a clean
 model timestep. Keystone modifies video only; audio context comes from the
 advancing continuation, not from the original anchor clip.
+
+Earlier builds swapped only the locked target slice and left the previous
+clip's slice in the visual guide at that same position. That sent conflicting
+appearance context to the model. The guide now uses the original Keystone
+slice with the usual visual condition noise augmentation, for both backends.
+This correction does not make the entire original clip persistent context:
+only its first slice and, when enabled, its Capstone are reused.
 
 The overlap must be at least 5 frames (default 22) and fit in the continuation.
 The sampler retains its ordinary video and audio sizes, with **no extra tail
@@ -128,11 +138,13 @@ but is not a guarantee of preserved motion. Temporal VAE context can affect
 decoded boundary pixels even when retained source latents are unchanged.
 Visual quality needs evaluation on the intended prompts and weights.
 
-Host tests cover persistent anchors, delayed activation, thirty joined extensions,
-source preservation and stereo trimming. CUDA/Vulkan synthetic sampler tests cover
+Host tests cover matching Keystone guide/target slices, persistent anchors, delayed
+activation, thirty joined extensions, source preservation and stereo trimming.
+CUDA/Vulkan synthetic sampler tests cover
 delayed context with unequal audio/video schedules and restoration before output.
-The real-weight DLL smoke test checks identical pre-activation predictions against
-front-only Keystone, unchanged sampler lengths, and retained/file source parity.
+The real-weight DLL smoke test checks Keystone influence on new-video predictions
+at full target noise, identical pre-Capstone predictions against front-only Keystone,
+unchanged sampler lengths, and retained/file source parity.
 It uses tiny synthetic prompt inputs, not a visual quality benchmark:
 
 ```sh
