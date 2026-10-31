@@ -20,6 +20,8 @@ p.add_argument("--output-dir", type=Path, help="Save raw float32 audio for repea
 p.add_argument("--backend", choices=("cuda", "vulkan"), default="cuda")
 p.add_argument("--duration", type=float, default=.08, help="Audio frame budget in seconds")
 p.add_argument("--steps", type=int, default=1, help="Flow integration steps")
+p.add_argument("--flow-sampler", choices=("default", "midpoint", "dpmpp_2m"), default="default",
+               help="YuE2 flow solver (MiniMax retains Euler)")
 p.add_argument("--planning", choices=("off", "melody", "full"), default="off", help="YuE2 ABC planning")
 p.add_argument("--abc-max-tokens", type=int, default=4096, help="YuE2 ABC planning token budget")
 p.add_argument("--timings-json", type=Path, help="Save per-stage timings for performance comparisons")
@@ -110,7 +112,7 @@ for family in paths if a.family == "both" else [a.family]:
         check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, b"Warm instrumental piano"))
         settings = {"duration": a.duration}
         if family == "yue2":
-            settings.update(planning=a.planning, abc_max_tokens=a.abc_max_tokens)
+            settings.update(planning=a.planning, abc_max_tokens=a.abc_max_tokens, flow_sampler=a.flow_sampler)
         check(bind("slopfab_request_set_music_settings", [handle, C.c_char_p])(request, json.dumps(settings).encode()))
         check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, a.steps))
         check(bind("slopfab_request_set_seed", [handle, C.c_uint64])(request, 42))
@@ -152,7 +154,7 @@ for family in paths if a.family == "both" else [a.family]:
             timing = {"family": family, "backend": a.backend, "repeat": repeat,
                       "duration": a.duration, "steps": a.steps, "audio_frames": output.audio_frames}
             if family == "yue2":
-                timing.update(planning=a.planning, abc_max_tokens=a.abc_max_tokens)
+                timing.update(planning=a.planning, abc_max_tokens=a.abc_max_tokens, flow_sampler=a.flow_sampler)
             timing.update({name: getattr(output, name) for name in
                            ("seconds_conditioning", "seconds_denoise", "seconds_audio_decode", "seconds_total")})
             timings.append(timing)
@@ -177,7 +179,7 @@ for family in paths if a.family == "both" else [a.family]:
         if a.cancel_stages:
             settings = {"duration": .08}
             if family == "yue2":
-                settings["planning"] = "off"
+                settings.update(planning="off", flow_sampler=a.flow_sampler)
             check(bind("slopfab_request_set_music_settings", [handle, C.c_char_p])(request, json.dumps(settings).encode()))
             check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, 1))
             for stage in (2, 4):  # conditioning, denoising

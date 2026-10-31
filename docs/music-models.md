@@ -40,6 +40,51 @@ Vulkan executes every neural stage, including autoregressive generation, flow sy
 
 `--steps` controls flow integration, independently of the autoregressive frame budget. Defaults are 32 midpoint steps for YuE2 and 30 Euler steps per MiniMax window. MiniMax uses windows of up to 200 acoustic frames, advances by 100 frames, carries the preceding latent context and crops decoded overlaps. Long requests therefore involve multiple flow windows.
 
+### Faster YuE2 flow (experimental)
+
+Use six steps with DPM++ 2M on either CUDA or Vulkan:
+
+```sh
+slopfab generate --model yue2 --prompt "Warm piano ballad" --music-settings '{"flow_sampler":"dpmpp_2m"}' --steps 6 --music-duration 30 --seed 42 --out yue-fast.wav
+```
+
+This performs six flow predictions per chunk, versus 64 for the default 32-step
+midpoint solver. Six midpoint steps are also available with just `--steps 6`.
+The default remains 32 midpoint steps; selecting `flow_sampler` alone does not
+change the step count. Use `"flow_sampler":"midpoint"` and `--steps 32` for a
+baseline with the same prompt, lyrics, planning, duration and seed.
+
+The new solver follows [ComfyUI's DPM++ 2M update](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/k_diffusion/sampling.py),
+converting YuE2 velocity to denoised predictions as `x - sigma * velocity`.
+It retains slopfab's uniform flow times from 1 to 0, integrates in FP32, and
+resets prediction history at each chunk. Network operations and decoder inputs
+remain BF16. The existing midpoint implementation is unchanged; it is not a
+bit-for-bit implementation of ComfyUI's `dpm_2` sampler.
+
+The prediction-count reduction is about 10.7x. Wall-clock gains depend on hardware,
+chunk preparation and other stages; ABC planning, semantic token generation and
+waveform decoding still take their usual time. The reported 16x ComfyUI speedup
+and unchanged perceived quality are not guarantees for slopfab. Compare audio
+before choosing this as an application default.
+
+The same setting works through the existing C API, without new C ABI functions:
+
+```c
+slopfab_request_set_music_settings(request, "{\"flow_sampler\":\"dpmpp_2m\"}");
+slopfab_request_set_steps(request, 6);
+```
+
+Include lyrics and other music options in that JSON when needed: the setter
+replaces the complete music settings object. `--dry-run` reports the selected
+solver and predictions per chunk. C API plan evaluation counts reflect the
+solver; runtime denoising progress still counts completed iterations across
+all actual chunks.
+
+CPU regression trajectories are checked against ComfyUI's actual sampler in
+float64/float32. Regenerate them with
+`python tools/yue_sampler_reference.py --source PATH_TO_COMFYUI` (development
+PyTorch required). These numerical checks do not measure perceptual audio quality.
+
 ## Music controls
 
 `--music-settings` accepts a JSON object. Individual `--lyrics`, `--music-duration` and `--music-planning` options are also available. For multiline lyrics or externally supplied ABC, JSON avoids shell newline escaping.
@@ -57,6 +102,7 @@ Vulkan executes every neural stage, including autoregressive generation, flow sy
 | `repetition_penalty` | YuE2 1.2; at least 1 |
 | `semantic_guidance` | Zero selects YuE2 1 for ABC planning, 1.01 with planning off, or MiniMax 1.5; explicit values must be at least 1 |
 | `flow_guidance` | MiniMax only; zero selects 1.7; 1 disables the conditional/unconditional difference |
+| `flow_sampler` | `default`; YuE2 also accepts `midpoint` or `dpmpp_2m`; MiniMax requires `default` and uses Euler |
 
 MiniMax uses top-k sampling and rejects nondefault YuE2-only controls. Unknown JSON keys and invalid ranges are rejected. Seeded generation is reproducible on the same native backend; seeds are not equivalent to PyTorch RNG seeds. User text is tokenized as ordinary text so literal special-token spellings cannot inject protocol controls. YuE2 includes NFC normalization and the checkpoint's whole-token merge behavior.
 
@@ -77,7 +123,7 @@ YuE2 reports `TRANSFORMER_LOAD` before loading its bundle. During `CONDITIONING`
 `-1` before the first token. `total_steps` is the combined token budget and shrinks
 if generation ends early at EOS. During `DENOISING`, the same fields count completed
 flow iterations across all chunks, without resetting between chunks. Each midpoint
-iteration includes two model predictions. Use the callback's `total_steps`, rather
+iteration includes two model predictions; DPM++ 2M includes one. Use the callback's `total_steps`, rather
 than the plan's model-evaluation estimate, for the progress denominator.
 
 MiniMax Music3 follows the same convention. It reports `TRANSFORMER_LOAD` before
@@ -118,6 +164,7 @@ To measure each stage with local checkpoints, the smoke harness accepts longer d
 ```powershell
 python tools/music_generation_smoke.py --library build/Release/slopfab.dll --family minimax_music3 --duration 12 --steps 30 --timings-json build/music-perf/minimax.json
 python tools/music_generation_smoke.py --library build/Release/slopfab.dll --family yue2 --duration 8 --steps 32 --timings-json build/music-perf/yue.json
+python tools/music_generation_smoke.py --library build/Release/slopfab.dll --family yue2 --duration 8 --steps 6 --flow-sampler dpmpp_2m --timings-json build/music-perf/yue-fast.json
 python tools/music_generation_smoke.py --library build/Release/slopfab.dll --cancel-stages
 ```
 
