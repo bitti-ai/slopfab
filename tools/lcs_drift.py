@@ -57,6 +57,8 @@ def run(command, log):
 
 def generate(a):
     a.output.mkdir(parents=True, exist_ok=True)
+    settings = a.lcs_settings_file.read_text() if a.lcs_settings_file else a.lcs_settings
+    json.loads(settings)  # Fail before expensive generation on malformed settings.
     previous = a.source
     commands = []
     for i in range(a.windows):
@@ -69,13 +71,21 @@ def generate(a):
         if previous:
             command += ['--continue-from', previous, '--overlap-frames', '22']
         if a.lcs:
-            command += ['--lcs', a.lcs, '--lcs-settings', a.lcs_settings]
+            command += ['--lcs', a.lcs, '--lcs-settings', settings]
         commands.append(list(map(str, command)))
         manifest = a.output / f'{a.name}-commands.json'
         manifest.write_text(json.dumps(commands, indent=2))
         if stem.with_suffix('.safetensors').exists() or stem.with_suffix('.mp4').exists():
             raise FileExistsError(f'{stem}: choose a fresh name/output or use --source to continue')
         run(command, stem.with_suffix('.log'))
+        # Some native builds have FFmpeg disabled and emit Y4M/WAV instead.
+        if not stem.with_suffix('.mp4').exists() and stem.with_suffix('.y4m').exists():
+            mux = [a.ffmpeg, '-v', 'error', '-n', '-i', stem.with_suffix('.y4m')]
+            if stem.with_suffix('.wav').exists():
+                mux += ['-i', stem.with_suffix('.wav')]
+            mux += ['-c:v', 'libx264', '-crf', '16', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+                    stem.with_suffix('.mp4')]
+            run(mux, stem.with_suffix('.mux.log'))
         previous = stem.with_suffix('.safetensors')
 
 
@@ -133,6 +143,11 @@ def analyze(a):
 
 def fit(a):
     metadata, calibration = read(a.calibration)
+    early_meta, _ = read(a.early)
+    late_meta, _ = read(a.late)
+    for key in ('width', 'height', 'fps', 'video_vae', 'transformer'):
+        if early_meta.get(key) != late_meta.get(key):
+            raise ValueError(f'Calibration clips disagree on {key}')
     def samples(path, tail):
         meta, tensors = read(path)
         if meta.get('slopfab_latents') != 'h3-av-v1':
@@ -141,6 +156,8 @@ def fit(a):
         rows = tensors['video_rows'].reshape(-1, h, w, 96)
         if len(rows) < 7:
             raise ValueError('Calibration clips need at least seven latent slices')
+        if not np.isfinite(rows).all():
+            raise ValueError('Non-finite latent sample')
         # Seven latent slices = 22 decoded frames; discard first boundary slice.
         rows = rows[-6:] if tail else rows[1:7]
         rows = rows.reshape(len(rows), -1, 96).astype(np.float64)
@@ -161,8 +178,15 @@ def fit(a):
     metadata['drift_early'] = str(a.early.resolve())
     metadata['drift_late'] = str(a.late.resolve())
     metadata['drift_method'] = 'color-orthogonal mean shift; whole-frame statistics; experimental'
+    axis = calibration['anchor_lcs'][7] - calibration['anchor_lcs'][6]
+    light = ((early-calibration['mean']) @ basis - calibration['anchor_lcs'][6]) @ axis / (axis @ axis)
+    knee = float(np.quantile(light, .9))
+    if not np.isfinite(knee) or not 0 <= knee <= 2:
+        raise ValueError('Reference highlight knee lies outside supported [0,2] range')
+    settings = dict(highlight_strength=.5, highlight_knee=knee, start_step=16)
+    a.output.with_suffix('.settings.json').write_text(json.dumps(settings, indent=2))
     write(a.output, metadata, calibration)
-    report = dict(raw_shift_norm=float(norm), reference=reference, tolerance=tolerance,
+    report = dict(raw_shift_norm=float(norm), reference=reference, tolerance=tolerance, highlight_knee=knee,
                   early_projection=projections.tolist(), late_projection=(late.mean(1) @ direction).tolist())
     a.output.with_suffix('.json').write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
@@ -207,6 +231,8 @@ def main():
     p.add_argument('--seed', type=int, default=424242)
     p.add_argument('--lcs', type=Path)
     p.add_argument('--lcs-settings', default='{"drift_strength":0.5,"drift_max":1,"start_step":16}')
+    p.add_argument('--lcs-settings-file', type=Path, help='JSON file; avoids shell quoting differences')
+    p.add_argument('--ffmpeg', default=shutil.which('ffmpeg') or 'ffmpeg')
     p.set_defaults(func=generate)
     p = subs.add_parser('analyze')
     p.add_argument('video', type=Path)

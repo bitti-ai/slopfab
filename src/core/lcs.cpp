@@ -413,7 +413,8 @@ void fit_lcs_sharpness(LcsData& d, const std::vector<float>& differences) {
 
 bool LcsSettings::active() const {
   return strength != 0 || contrast != 1 || brightness != 0 || saturation != 1 || temperature != 0 ||
-         sharpness != 0 || drift_strength != 0 || (anchor != 0 && anchor_strength != 0);
+         sharpness != 0 || drift_strength != 0 || highlight_strength != 0 ||
+         (anchor != 0 && anchor_strength != 0);
 }
 
 void LcsSettings::validate() const {
@@ -426,7 +427,8 @@ void LcsSettings::validate() const {
   };
   require(range(strength, 0, 2) && range(contrast, 0, 4) && range(brightness, -1, 1) &&
               range(saturation, 0, 4) && range(temperature, -1, 1) && range(sharpness, -5, 5) &&
-              range(anchor_strength, 0, 1) && range(drift_strength, 0, 1) && range(drift_max, 0, 10),
+              range(anchor_strength, 0, 1) && range(drift_strength, 0, 1) && range(drift_max, 0, 10) &&
+              range(highlight_strength, 0, 1) && range(highlight_knee, 0, 2),
           "invalid effect strength or tone range");
 }
 
@@ -476,6 +478,10 @@ LcsSettings parse_lcs_settings(const std::string& text) try {
       s.drift_strength = number();
     else if (k == "drift_max")
       s.drift_max = number();
+    else if (k == "highlight_strength")
+      s.highlight_strength = number();
+    else if (k == "highlight_knee")
+      s.highlight_knee = number();
     else if (k == "anchor_strength")
       s.anchor_strength = number();
     else if (k == "start_step")
@@ -595,6 +601,10 @@ SamplingEffect make_lcs_effect(std::shared_ptr<const LcsData> data, LcsSettings 
         V chroma = sub(c, add(space.black, mul(space.axis, l)));
         c = add(add(space.black, mul(space.axis, (l - .5f) * s.contrast + .5f + s.brightness)),
                 add(mul(chroma, s.saturation), mul(space.warm, s.temperature)));
+      }
+      if (s.highlight_strength != 0) {
+        const float light = dot(sub(c, space.black), space.axis) / dot(space.axis, space.axis);
+        c = sub(c, mul(space.axis, s.highlight_strength * std::max(0.f, light - s.highlight_knee)));
       }
       if (s.anchor && s.anchor_strength > 0) {
         V anchor = c;

@@ -18,7 +18,9 @@ class DriftTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             basis = np.eye(96, 3, dtype=np.float32)
-            calibration = dict(basis=basis, latent_std=np.full(24, 2.), latent_mean=np.full(24, .25))
+            calibration = dict(basis=basis, latent_std=np.full(24, 2.), latent_mean=np.full(24, .25),
+                               mean=np.zeros(96), anchor_lcs=np.zeros((8, 3)))
+            calibration['anchor_lcs'][7] = 1
             drift.write(root/'cal.safetensors', {'slopfab_lcs': '1'}, calibration)
             early = np.zeros((7, 4, 96), np.float32)
             # Special boundary latent must not enter the reference statistics.

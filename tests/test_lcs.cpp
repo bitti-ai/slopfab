@@ -123,6 +123,30 @@ SLOPFAB_TEST(lcs_drift_bounds_normalization_and_preservation) {
   CHECK(rejects([] { slopfab::parse_lcs_settings("{\"drift_max\":-1}"); }));
 }
 
+SLOPFAB_TEST(lcs_highlight_shoulder_preserves_shadows_chroma_and_residual) {
+  auto d = std::make_shared<slopfab::LcsData>(fixture());
+  auto settings = slopfab::parse_lcs_settings("{\"highlight_strength\":0.5,\"highlight_knee\":0.8}");
+  slopfab::SamplingStep step;
+  step.frames = 1;
+  step.height = 2;
+  step.width = 6;
+  step.row_width = 96;
+  step.count = 288;
+  std::vector<float> values(step.count, .123f);
+  for (int r = 0; r < 3; ++r)
+    for (int i = 0; i < 3; ++i)
+      values[r * 96 + i] = r == 0 ? .4f : 1.2f + (i - 1) * .1f;
+  const auto original = values;
+  step.denoised = values.data();
+  auto effect = slopfab::make_lcs_effect(d, settings, {1, 1, 0});
+  CHECK(effect(step));
+  for (int r = 0; r < 3; ++r)
+    for (int i = 0; i < 96; ++i)
+      CHECK_NEAR(values[r * 96 + i], original[r * 96 + i] - (r == 1 && i < 3 ? .2f : 0.f), 1e-6);
+  CHECK(rejects([] { slopfab::parse_lcs_settings("{\"highlight_strength\":1.1}"); }));
+  CHECK(rejects([] { slopfab::parse_lcs_settings("{\"highlight_knee\":-0.1}"); }));
+}
+
 SLOPFAB_TEST(lcs_color_tone_mask_and_structure) {
   auto d = std::make_shared<slopfab::LcsData>(fixture());
   d->latent_std.assign(24, 2);

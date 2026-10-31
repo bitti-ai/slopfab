@@ -92,6 +92,10 @@ leave the previous settings intact.
 | `saturation` | `1` | Chroma multiplier, `[0,4]` |
 | `temperature` | `0` | Cool-to-warm chroma shift, `[-1,1]` |
 | `sharpness` | `0` | Signed calibrated direction strength, `[-5,5]` |
+| `drift_strength` | `0` | Experimental learned continuation-drift correction, `[0,1]` |
+| `drift_max` | `1` | Maximum drift displacement per prediction in raw VAE units, `[0,10]` |
+| `highlight_strength` | `0` | Compress lightness above `highlight_knee`, `[0,1]` |
+| `highlight_knee` | `0.8` | Highlight shoulder start in calibrated black-to-white units, `[0,2]` |
 | `anchor` | `"none"` | `"none"`, `"self"`, `"smooth"` |
 | `anchor_strength` | `0` | Anchor blend, `[0,1]` |
 | `start_step` | `0` | First video update index, inclusive |
@@ -111,6 +115,57 @@ with the four spatial neighbors in each frame; it never crosses frame edges.
 Each generation gets fresh anchor state. Sharpness adds the calibrated leading
 sharp-minus-blurred direction; its perceptual effect and strength require testing
 on the chosen model and schedule. Use small strengths initially.
+
+## Experimental continuation drift
+
+There are two independent controls. `highlight_strength` applies a shoulder to
+calibrated lightness: `l' = l - strength * max(0, l - knee)`. It preserves chroma
+coordinates, the color-orthogonal residual, and tones below the knee. The
+experiment fits the knee to the starting clip's 90th-percentile latent lightness.
+This targets growing highlights; it cannot reconstruct skin detail already lost.
+It requires only an ordinary color calibration. Masks and sampling step limits
+apply, and it remains an in-sampling effect when `tone_after_denoise` is enabled.
+
+An optional `drift_direction` `[96]` and `drift_reference` `[2]` extend the v1
+calibration archive. Existing color-only archives still load. Enabling
+`drift_strength` requires these extra tensors. The direction is unit length in
+raw VAE coordinates and orthogonal to the three calibrated color axes. Its
+positive sign points from the early appearance toward the later appearance.
+The reference stores the early frame-mean projection and a nonnegative tolerance.
+
+For each predicted latent frame, the effect measures its spatial mean projection
+`p` and subtracts
+`strength * clamp(p - reference - tolerance, 0, drift_max) * direction` from each
+patch, converting the displacement through the VAE standard deviations. It never
+pushes a frame farther along the learned degradation direction. Masks scale the
+edit, while measurement always uses the entire frame. Step limits apply; output
+Tone does not move this effect out of sampling. Audio and fixed reference rows
+are excluded by the existing sampling interface.
+
+This is an empirical appearance correction, not a universal gloss detector. The
+fit can also capture pose, identity, lighting or temporal VAE phase differences.
+It preserves the calibrated color coordinates and the residual orthogonal to the
+learned direction, not necessarily perceived color, detail or motion. Inspect
+matched poses and evaluate a continuation excluded from fitting before reuse.
+Calibration is specific to the VAE and training scene/checkpoint; do not assume
+that one portrait's direction transfers to another subject. This option is off
+by default.
+
+The CLI now accepts the same settings as the C API:
+
+```sh
+slopfab generate --lcs drift.safetensors \
+  --lcs-settings '{"highlight_strength":0.5,"highlight_knee":0.78,"start_step":16}' \
+  --continue-from previous.safetensors --frames 68 --steps 25 --prompt "..."
+```
+
+The experiment's `--lcs-settings-file` avoids inline JSON quoting differences
+between shells. Native CLI `--lcs-settings` accepts JSON text, not a filename.
+
+`start_step` counts video updates from zero. Adapt it when changing schedules;
+the example only affects the final eight updates of a 25-point Euler grid.
+See [the reproducible experiment](lcs_drift_experiment.md) for generation,
+calibration, frame metrics, and measured limitations.
 
 Native effects only edit target video predictions. Fixed reference rows and
 audio are excluded. The mask is a copied F32 array in `[0,1]`, supplied with

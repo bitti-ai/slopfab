@@ -33,6 +33,8 @@ struct LcsSettings {
   float sharpness = 0;
   float drift_strength = 0; // [0,1], one-sided frame-mean correction
   float drift_max = 1;      // [0,10], maximum raw-space displacement per prediction
+  float highlight_strength = 0; // [0,1], compress lightness above the knee
+  float highlight_knee = .8f;   // [0,2], calibrated black-to-white coordinates
   int start_step = 0, end_step = 2147483647; // inclusive, video updates
   int anchor = 0;                            // none=0, self=1, smooth=2
   float anchor_strength = 0;
