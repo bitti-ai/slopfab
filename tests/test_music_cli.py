@@ -15,5 +15,14 @@ for family, rate in (("yue2", "48000"), ("minimax_music3", "44100")):
     assert exact.returncode != 0 and "requires portable arithmetic" in exact.stderr
     explicit = subprocess.run(base + ["--attention", "sage2"], capture_output=True, text=True)
     assert explicit.returncode != 0 and "attention overrides" in explicit.stderr
-print("Music CLI defaults and attention validation passed")
+base = [exe, "generate", "--dry-run", "--model", "yue2", "--vulkan-arithmetic", "portable"]
+for sampler, predictions in (("dpmpp_2m", 6), ("midpoint", 12)):
+    fast = subprocess.run(base + ["--steps", "6", "--music-settings",
+                                  '{"flow_sampler":"' + sampler + '"}'], capture_output=True, text=True)
+    assert fast.returncode == 0, fast.stderr
+    assert f"6 ({sampler}), {predictions} predictions per chunk" in fast.stdout
+bad = subprocess.run(base + ["--model", "minimax_music3", "--music-settings",
+                             '{"flow_sampler":"dpmpp_2m"}'], capture_output=True, text=True)
+assert bad.returncode != 0 and "only supported by YuE2" in bad.stderr
+print("Music CLI defaults, flow samplers and attention validation passed")
 

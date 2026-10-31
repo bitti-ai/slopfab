@@ -231,6 +231,7 @@ struct GeneratePlan {
   int aligned_frames = 0;
   double duration_seconds = 0.0;
   int music_frames = 0; // autoregressive 25 Hz frame ceiling, zero for image/video
+  std::string music_flow_sampler; // resolved music solver: midpoint, dpmpp_2m or euler
 
   // aligned_frames/duration describe delivered output; layout describes only
   // the bounded sampling window. Equal for ordinary generations.
@@ -259,7 +260,7 @@ struct GeneratePlan {
 
   int num_model_evaluations() const {
     if (model.family == "yue2")
-      return num_inference_steps * 2;
+      return num_inference_steps * (music_flow_sampler == "dpmpp_2m" ? 1 : 2);
     if (model.family == "minimax_music3")
       return num_inference_steps * 2 * (music_frames <= 200 ? 1 : (music_frames - 1) / 100);
     if (audio_timesteps.empty())

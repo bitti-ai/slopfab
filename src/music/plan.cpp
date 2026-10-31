@@ -8,6 +8,8 @@
 
 namespace slopfab {
 void validate_music_settings(const MusicSettings& s) {
+  if (s.flow_sampler != "default" && s.flow_sampler != "midpoint" && s.flow_sampler != "dpmpp_2m")
+    throw std::invalid_argument("music flow_sampler must be default, midpoint or dpmpp_2m");
   if (s.planning != "full" && s.planning != "melody" && s.planning != "off")
     throw std::invalid_argument("music planning must be full, melody or off");
   if (!s.abc.empty() && s.planning == "off")
@@ -47,6 +49,8 @@ MusicSettings parse_music_settings(const std::string& source) {
       s.semantic_guidance = float(value.as_number());
     else if (key == "flow_guidance")
       s.flow_guidance = float(value.as_number());
+    else if (key == "flow_sampler")
+      s.flow_sampler = value.as_string();
     else if (key == "top_k" || key == "abc_max_tokens") {
       const double n = value.as_number();
       if (!std::isfinite(n) || n != std::floor(n) || n < 0 || n > 32768)
@@ -82,6 +86,10 @@ GeneratePlan resolve_music_plan(const GenerateRequest& r) {
   GeneratePlan p;
   p.model.family = request_model_family(r);
   const bool minimax = p.model.family == "minimax_music3";
+  if (minimax && r.music.flow_sampler != "default")
+    throw std::invalid_argument("flow_sampler is only supported by YuE2");
+  p.music_flow_sampler = minimax ? "euler" :
+      (r.music.flow_sampler == "default" ? "midpoint" : r.music.flow_sampler);
   if (!minimax && r.music.flow_guidance != 0)
     throw std::invalid_argument("flow_guidance is only supported by MiniMax Music3");
   if (minimax && (r.music.planning != "full" || !r.music.abc.empty() || r.music.temperature != 1 ||

@@ -1,5 +1,6 @@
 #include "runtime.cuh"
 #include "progress.h"
+#include "dpmpp_2m.h"
 #include "slopfab/int8_weight.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/text/tokenizer.h"
@@ -391,26 +392,37 @@ RunResult run_yue(const GenerateRequest& request, const GeneratePlan& plan,
       ar_forward(rt, tokens, cache, int(tokens.size()), heartbeat);
       std::vector<float> state(noise.begin() + size_t(first) * 64,
                                noise.begin() + size_t(first + count) * 64);
-      for (auto& v : state)
-        v = bf(v);
+      const bool dpmpp = plan.music_flow_sampler == "dpmpp_2m";
+      if (!dpmpp)
+        for (auto& v : state)
+          v = bf(v);
+      music::Dpmpp2M solver;
       const float dt = 1.f / plan.num_inference_steps;
       for (int step = 0; step < plan.num_inference_steps; ++step) {
         heartbeat();
         auto v = moss::to_host(velocity(rt, state, 1 - step * dt, cache, heartbeat));
-        auto mid = state;
-        for (size_t i = 0; i < state.size(); ++i)
-          mid[i] = bf(state[i] - bf(v[i] * (dt / 2)));
-        v = moss::to_host(velocity(rt, mid, 1 - (step + .5f) * dt, cache, heartbeat));
-        for (size_t i = 0; i < state.size(); ++i) {
-          state[i] = bf(state[i] - bf(v[i] * dt));
-          if (!std::isfinite(state[i]))
-            throw std::runtime_error("non-finite YuE2 flow state");
+        if (dpmpp) {
+          const float next = step + 1 == plan.num_inference_steps ? 0.f : 1 - (step + 1) * dt;
+          solver.step(state, v, 1 - step * dt, next);
+        } else {
+          auto mid = state;
+          for (size_t i = 0; i < state.size(); ++i)
+            mid[i] = bf(state[i] - bf(v[i] * (dt / 2)));
+          v = moss::to_host(velocity(rt, mid, 1 - (step + .5f) * dt, cache, heartbeat));
+          for (size_t i = 0; i < state.size(); ++i) {
+            state[i] = bf(state[i] - bf(v[i] * dt));
+            if (!std::isfinite(state[i]))
+              throw std::runtime_error("non-finite YuE2 flow state");
+          }
         }
         ++result.steps_computed;
         completed();
         if (options.verbose)
           std::printf("YuE2 flow %d/%d\n", result.steps_computed, total_steps);
       }
+      if (dpmpp)
+        for (auto& v : state)
+          v = bf(v);
       latent.insert(latent.end(), state.begin(), state.end());
     }
     result.seconds_denoise = result.seconds_denoise_loop = elapsed(start);

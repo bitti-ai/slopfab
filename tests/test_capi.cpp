@@ -1331,7 +1331,16 @@ SLOPFAB_TEST(capi_music_plan) {
   CHECK(plan.num_model_evaluations==64);
   CHECK(slopfab_request_set_music_settings(request.handle,R"({"duration":-1})")!=SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);CHECK(plan.duration_seconds==8);
+  CHECK(slopfab_request_set_music_settings(request.handle,R"({"flow_sampler":"dpmpp_2m"})")==SLOPFAB_OK);
+  CHECK(slopfab_request_set_steps(request.handle,6)==SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations==6);
+  CHECK(slopfab_request_set_music_settings(request.handle,R"({"flow_sampler":"invalid"})")!=SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations==6);
   CHECK(slopfab_request_set_model_family(request.handle,"minimax_music3")==SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_steps(request.handle,30)==SLOPFAB_OK);
   CHECK(slopfab_request_set_music_settings(request.handle,R"({"duration":8.04,"flow_guidance":1.7})")==SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle,&plan)==SLOPFAB_OK);
   CHECK(plan.num_audio_latents==692);CHECK(plan.num_model_evaluations==120);

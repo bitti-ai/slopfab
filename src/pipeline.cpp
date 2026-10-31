@@ -547,7 +547,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   if (plan.model.family == "yue2") {
     return "  model               YuE2 music\n  output              stereo 48000 Hz WAV\n  duration ceiling    " +
         std::to_string(plan.duration_seconds) + " seconds\n  flow steps          " +
-        std::to_string(plan.num_inference_steps) + " (midpoint)\n  planning            " + request.music.planning + "\n";
+        std::to_string(plan.num_inference_steps) + " (" + plan.music_flow_sampler +
+        "), " + std::to_string(plan.num_model_evaluations()) +
+        " predictions per chunk\n  planning            " + request.music.planning + "\n";
   }
   if (plan.model.family == "fibo2") {
     std::ostringstream out;

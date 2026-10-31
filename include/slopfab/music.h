@@ -25,6 +25,7 @@ struct MusicSettings {
   float semantic_guidance = 0.f; // zero selects the model's recipe
   float flow_guidance = 0.f;     // MiniMax Music3: zero selects 1.7
   int abc_max_tokens = 4096;
+  std::string flow_sampler = "default"; // YuE2: default/midpoint or dpmpp_2m
 };
 
 MusicSettings parse_music_settings(const std::string& json);
