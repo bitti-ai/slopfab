@@ -111,6 +111,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   slopfab::dit::VedaOptions veda;
   std::string init_latents;
   std::string prompt_embedding;
+  std::string lcs_path, lcs_settings;
   int bench_load = 0;
   bool saw_aspect = false;
   bool saw_resolution = false;
@@ -584,6 +585,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.preserve_driving_audio = true;
     } else if (arg == "--prompt-embedding") {
       prompt_embedding = next("--prompt-embedding");
+    } else if (arg == "--lcs") {
+      lcs_path = next("--lcs");
+    } else if (arg == "--lcs-settings") {
+      lcs_settings = next("--lcs-settings");
     } else if (arg == "--bench-load") {
       bench_load = std::atoi(next("--bench-load"));
     } else {
@@ -759,6 +764,12 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.veda = veda;
   options.init_latents_path = init_latents;
   options.prompt_embedding_path = prompt_embedding;
+  if (!lcs_settings.empty() && lcs_path.empty())
+    throw std::invalid_argument("--lcs-settings requires --lcs calibration");
+  if (!lcs_path.empty()) {
+    options.lcs_data = slopfab::LcsData::load(lcs_path);
+    options.lcs = slopfab::parse_lcs_settings(lcs_settings);
+  }
   discover_generate_checkpoints(req, executable);
   slopfab::GeneratePlan plan = slopfab::resolve_plan(req);
   slopfab::validate_generation_options(req, plan, options);

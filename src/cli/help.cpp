@@ -225,6 +225,8 @@ const CommandHelp kCommands[] = {
      "                               --dump-latents writes. Off by default.\n"
      "  --video-decoder <f>         decoder override (Sol-H3-VAE); --vae encodes references.\n"
      "  --save-latents <f>           save a versioned AV latent archive for continuation.\n"
+     "  --lcs <f>                    native H3 LCS calibration archive.\n"
+     "  --lcs-settings <json>        LCS controls as inline JSON (see docs/lcs.md).\n"
      "  --regenerate-overlap-frames <n> release the last n overlap frames (multiples of 17);\n"
      "                               requires --lock-overlap; join replaces the overlap.\n"
      "  --continue-from <f>          extend a saved archive; --frames is NEW frames,\n"

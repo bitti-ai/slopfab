@@ -73,6 +73,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs(slopfab_request* request,
     auto data = slopfab::LcsData::load(path);
     if (settings.sharpness != 0 && data->sharpness.empty())
       throw std::invalid_argument("LCS calibration has no sharpness direction");
+    if (settings.drift_strength != 0 && data->drift_direction.empty())
+      throw std::invalid_argument("LCS calibration has no drift direction");
     request->options.lcs_data = std::move(data);
     request->options.lcs = settings;
   });

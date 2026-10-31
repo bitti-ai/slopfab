@@ -14,6 +14,10 @@ struct LcsData {
   std::vector<float> anchors;                 // [8,3]: R B G M C Y black white
   std::vector<float> latent_mean, latent_std; // [24], model normalization
   std::vector<float> sharpness; // optional unit direction [96], orthogonal to color and DC
+  // Optional empirical continuation drift, raw VAE coordinates. Positive points
+  // from early to late appearance. Color-orthogonal, unit length.
+  std::vector<float> drift_direction; // [96]
+  std::vector<float> drift_reference; // [2]: early frame-mean projection, tolerance
   std::string vae_sha256;
   float explained_variance = 0;
   void validate() const;
@@ -27,6 +31,8 @@ struct LcsSettings {
   float strength = 0;
   float contrast = 1, brightness = 0, saturation = 1, temperature = 0;
   float sharpness = 0;
+  float drift_strength = 0; // [0,1], one-sided frame-mean correction
+  float drift_max = 1;      // [0,10], maximum raw-space displacement per prediction
   int start_step = 0, end_step = 2147483647; // inclusive, video updates
   int anchor = 0;                            // none=0, self=1, smooth=2
   float anchor_strength = 0;

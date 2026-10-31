@@ -85,6 +85,8 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     require(o.source == LatentSource::kDenoise, "LCS requires denoising");
     require(o.lcs.sharpness == 0 || !o.lcs_data->sharpness.empty(),
             "LCS calibration has no sharpness direction");
+    require(o.lcs.drift_strength == 0 || !o.lcs_data->drift_direction.empty(),
+            "LCS calibration has no drift direction");
   }
   const size_t lcs_plane = size_t(p.layout.latent_height / 2) * size_t(p.layout.latent_width / 2);
   require(!o.lcs.tone_after_denoise ||

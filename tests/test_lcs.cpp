@@ -62,6 +62,67 @@ SLOPFAB_TEST(lcs_calibration_roundtrip_and_validation) {
   }));
 }
 
+SLOPFAB_TEST(lcs_drift_bounds_normalization_and_preservation) {
+  auto d = std::make_shared<slopfab::LcsData>(fixture());
+  d->latent_mean.assign(24, .25f);
+  d->latent_std.assign(24, 2);
+  d->drift_direction.assign(96, 0);
+  d->drift_direction[4] = 1;
+  d->drift_reference = {.5f, .25f};
+  auto settings = slopfab::parse_lcs_settings(
+      "{\"drift_strength\":0.5,\"drift_max\":1,\"start_step\":2,\"end_step\":3}");
+  CHECK(settings.active());
+  slopfab::SamplingStep step;
+  step.frames = 3;
+  step.height = 2;
+  step.width = 4;
+  step.row_width = 96;
+  step.count = 6 * 96;
+  step.step = 2;
+  std::vector<float> values(step.count, .125f);
+  // Frame 0 is below threshold, frame 1 exceeds it by .5 raw units,
+  // frame 2 exceeds the cap. One masked patch in each frame is untouched.
+  for (int r = 0; r < 6; ++r)
+    values[r * 96 + 4] = r < 2 ? .125f : r < 4 ? .5f : 2.f;
+  const auto original = values;
+  step.denoised = values.data();
+  auto effect = slopfab::make_lcs_effect(d, settings, {0, 1});
+  CHECK(effect(step));
+  for (int r = 0; r < 6; ++r)
+    for (int i = 0; i < 96; ++i) {
+      const float delta = i == 4 && r % 2 ? (r == 3 ? -.125f : r == 5 ? -.25f : 0.f) : 0.f;
+      CHECK_NEAR(values[r * 96 + i], original[r * 96 + i] + delta, 1e-7);
+    }
+  // Color and every orthogonal coordinate are unchanged, including nonunit
+  // model normalization. Audio and inactive steps must be exact no-ops.
+  for (int index : {1, 4}) {
+    values = original;
+    step.step = index;
+    CHECK(effect(step));
+    CHECK(values == original);
+  }
+  step.step = 2;
+  step.modality = 1;
+  CHECK(effect(step));
+  CHECK(values == original);
+  const auto path = (std::filesystem::temp_directory_path() / "slopfab-lcs-drift-test.safetensors").string();
+  d->save(path);
+  const auto loaded = slopfab::LcsData::load(path);
+  CHECK(loaded->drift_direction == d->drift_direction);
+  CHECK(loaded->drift_reference == d->drift_reference);
+  std::filesystem::remove(path);
+  CHECK(rejects([&] {
+    slopfab::make_lcs_effect(std::make_shared<slopfab::LcsData>(fixture()), settings);
+  }));
+  d->drift_direction[4] = 2;
+  CHECK(rejects([&] { d->validate(); }));
+  d->drift_direction[4] = 0;
+  d->drift_direction[0] = 1;
+  CHECK(rejects([&] { d->validate(); }));
+  CHECK(rejects([] { slopfab::parse_lcs_settings("{\"drift_strength\":1.1}"); }));
+  CHECK(rejects([] { slopfab::parse_lcs_settings("{\"drift_max\":-1}"); }));
+}
+
 SLOPFAB_TEST(lcs_color_tone_mask_and_structure) {
   auto d = std::make_shared<slopfab::LcsData>(fixture());
   d->latent_std.assign(24, 2);

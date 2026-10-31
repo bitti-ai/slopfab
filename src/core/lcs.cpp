@@ -253,6 +253,20 @@ void LcsData::validate() const {
   require(std::isfinite(explained_variance) && explained_variance >= 0 &&
               explained_variance <= 1.00001f,
           "invalid explained variance");
+  if (!drift_direction.empty() || !drift_reference.empty()) {
+    finite(drift_direction, D);
+    finite(drift_reference, 2);
+    double n = 0;
+    V p{};
+    for (int i = 0; i < D; ++i) {
+      n += double(drift_direction[i]) * drift_direction[i];
+      for (int k = 0; k < 3; ++k)
+        p[k] += drift_direction[i] * basis[i * 3 + k];
+    }
+    require(std::abs(n - 1) < 1e-4 && norm(p) < 1e-4,
+            "drift direction must be unit and color-orthogonal");
+    require(drift_reference[1] >= 0, "negative drift tolerance");
+  }
 }
 
 void LcsData::save(const std::string& path) const {
@@ -263,6 +277,10 @@ void LcsData::save(const std::string& path) const {
       {"latent_std", {24}, latent_std}, {"explained_variance", {1}, {explained_variance}}};
   if (!sharpness.empty())
     t.push_back({"sharpness", {D}, sharpness});
+  if (!drift_direction.empty()) {
+    t.push_back({"drift_direction", {D}, drift_direction});
+    t.push_back({"drift_reference", {2}, drift_reference});
+  }
   write_safetensors_atomic(path, t, {{"slopfab_lcs", "1"}, {"vae_sha256", vae_sha256}});
 }
 
@@ -288,6 +306,10 @@ std::shared_ptr<const LcsData> LcsData::load(const std::string& path) {
   d->explained_variance = read("explained_variance", {1})[0];
   if (st.find("sharpness"))
     d->sharpness = read("sharpness", {D});
+  if (st.find("drift_direction") || st.find("drift_reference")) {
+    d->drift_direction = read("drift_direction", {D});
+    d->drift_reference = read("drift_reference", {2});
+  }
   const auto hash = st.metadata().find("vae_sha256");
   require(hash != st.metadata().end() && hash->second.size() == 64, "missing VAE fingerprint");
   d->vae_sha256 = hash->second;
@@ -391,7 +413,7 @@ void fit_lcs_sharpness(LcsData& d, const std::vector<float>& differences) {
 
 bool LcsSettings::active() const {
   return strength != 0 || contrast != 1 || brightness != 0 || saturation != 1 || temperature != 0 ||
-         sharpness != 0 || (anchor != 0 && anchor_strength != 0);
+         sharpness != 0 || drift_strength != 0 || (anchor != 0 && anchor_strength != 0);
 }
 
 void LcsSettings::validate() const {
@@ -404,7 +426,7 @@ void LcsSettings::validate() const {
   };
   require(range(strength, 0, 2) && range(contrast, 0, 4) && range(brightness, -1, 1) &&
               range(saturation, 0, 4) && range(temperature, -1, 1) && range(sharpness, -5, 5) &&
-              range(anchor_strength, 0, 1),
+              range(anchor_strength, 0, 1) && range(drift_strength, 0, 1) && range(drift_max, 0, 10),
           "invalid effect strength or tone range");
 }
 
@@ -450,6 +472,10 @@ LcsSettings parse_lcs_settings(const std::string& text) try {
       s.temperature = number();
     else if (k == "sharpness")
       s.sharpness = number();
+    else if (k == "drift_strength")
+      s.drift_strength = number();
+    else if (k == "drift_max")
+      s.drift_max = number();
     else if (k == "anchor_strength")
       s.anchor_strength = number();
     else if (k == "start_step")
@@ -513,6 +539,7 @@ SamplingEffect make_lcs_effect(std::shared_ptr<const LcsData> data, LcsSettings 
   data->validate();
   s.validate();
   require(s.sharpness == 0 || !data->sharpness.empty(), "calibration has no sharpness direction");
+  require(s.drift_strength == 0 || !data->drift_direction.empty(), "calibration has no drift direction");
   for (float x : mask)
     require(std::isfinite(x) && x >= 0 && x <= 1, "mask must be in [0,1]");
   if (!s.active())
@@ -530,13 +557,21 @@ SamplingEffect make_lcs_effect(std::shared_ptr<const LcsData> data, LcsSettings 
             "mask does not match latent patch grid");
     const auto& d = *data;
     std::vector<V> colors(rows), means(step.frames, V{});
+    std::vector<double> drift(step.frames, 0);
     for (size_t r = 0; r < rows; ++r) {
       float raw[D];
       for (int i = 0; i < D; ++i)
         raw[i] = step.denoised[r * D + i] * d.latent_std[i / 4] + d.latent_mean[i / 4];
       colors[r] = project(d, raw);
       means[r / plane] = add(means[r / plane], mul(colors[r], 1.f / float(plane)));
+      if (s.drift_strength != 0)
+        for (int i = 0; i < D; ++i)
+          drift[r / plane] += double(raw[i]) * d.drift_direction[i] / double(plane);
     }
+    if (s.drift_strength != 0)
+      for (double& value : drift)
+        value = s.drift_strength * std::clamp(
+            value - double(d.drift_reference[0]) - d.drift_reference[1], 0., double(s.drift_max));
     const V target_hsl = rgb_hsl(s.color), target = space.encode(target_hsl);
     const bool tone =
         s.contrast != 1 || s.brightness != 0 || s.saturation != 1 || s.temperature != 0;
@@ -596,6 +631,8 @@ SamplingEffect make_lcs_effect(std::shared_ptr<const LcsData> data, LcsSettings 
           change += d.basis[i * 3 + k] * delta[k];
         if (s.sharpness != 0)
           change += s.sharpness * weight * d.sharpness[i];
+        if (s.drift_strength != 0)
+          change -= float(drift[r / plane]) * weight * d.drift_direction[i];
         if (change != 0)
           step.denoised[r * D + i] += change / d.latent_std[i / 4];
       }

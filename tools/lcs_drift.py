@@ -135,8 +135,12 @@ def fit(a):
     metadata, calibration = read(a.calibration)
     def samples(path, tail):
         meta, tensors = read(path)
+        if meta.get('slopfab_latents') != 'h3-av-v1':
+            raise ValueError('Expected an H3 saved-latent archive')
         w, h = int(meta['width'])//32, int(meta['height'])//32
         rows = tensors['video_rows'].reshape(-1, h, w, 96)
+        if len(rows) < 7:
+            raise ValueError('Calibration clips need at least seven latent slices')
         # Seven latent slices = 22 decoded frames; discard first boundary slice.
         rows = rows[-6:] if tail else rows[1:7]
         rows = rows.reshape(len(rows), -1, 96).astype(np.float64)
