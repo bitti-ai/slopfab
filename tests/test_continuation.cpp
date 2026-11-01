@@ -237,7 +237,7 @@ SLOPFAB_TEST(keystone_planning_validation) {
   req.continuation = LatentClip::load(fixture.path.string());
   req.keystone = {req.continuation, true, 4};
   req.num_frames = 17;
-  req.num_inference_steps = 9; // Eight advancing video steps.
+  req.num_inference_steps = 8; // Eight advancing video steps.
   const auto plan = resolve_plan(req);
   CHECK(plan.aligned_frames == 56 && plan.sampling_frames == 39);
   CHECK(plan.continuation.tail_padding_frames == 0);
@@ -300,7 +300,7 @@ SLOPFAB_TEST(source_initialized_middle_and_schedule) {
   for (float sigma : baseline.video_sigmas)
     if (sigma < .5f) expected_sigmas.push_back(sigma);
   CHECK(plan.video_sigmas == expected_sigmas);
-  CHECK(plan.num_inference_steps == int(expected_sigmas.size()));
+  CHECK(plan.num_inference_steps == int(expected_sigmas.size() - 1));
   CHECK(plan.num_model_evaluations() == int(sampler::joint_schedule(
       plan.video_timesteps.size(), plan.audio_timesteps.size()).size()));
   const auto& p = plan.latent_end_anchor;

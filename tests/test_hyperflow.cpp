@@ -94,6 +94,8 @@ SLOPFAB_TEST(hyperflow_metadata_and_sampling_contract) {
   CHECK(plan.video_sigma_shift == 12 && plan.audio_sigma_shift == 3);
   CHECK(rejects([&] { validate_sampling_sampler(plan, sampler::SamplerKind::kRenoise); }));
   request.num_inference_steps = 8;
+  CHECK(resolve_plan(request).num_inference_steps == 8);
+  request.num_inference_steps = 9;
   CHECK(rejects([&] { resolve_plan(request); }));
   request.num_inference_steps = 0;
   request.sampling.audio_steps = 5;

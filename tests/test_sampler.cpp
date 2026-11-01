@@ -159,7 +159,7 @@ SLOPFAB_TEST(sampler_dmad_renoise_formula_and_noise_streams) {
   using namespace slopfab::sampler;
   for (float shift : {12.0f, 2.0f}) {
     FlowScheduler scheduler(shift);
-    scheduler.set_timesteps(5);
+    scheduler.set_timesteps(4);
     scheduler.set_sampler(SamplerKind::kRenoise);
     std::vector<float> x = {1, -2, .5f}, velocity = {.5f, 1, -3};
     const std::vector<float> noise = {-1, .25f, 2};
@@ -232,7 +232,7 @@ std::vector<float> reference_euler_step(const FlowScheduler& s, int i, const std
 // measurable rather than merely plausible.
 double linear_ode(float shift, int grid_points, SamplerKind kind, float k) {
   FlowScheduler s(shift);
-  s.set_timesteps(grid_points);
+  s.set_timesteps(grid_points - 1);
   s.set_sampler(kind);
   float x = 1.0f;
   const int steps = static_cast<int>(s.num_steps());
@@ -247,7 +247,7 @@ double linear_ode(float shift, int grid_points, SamplerKind kind, float k) {
 // assert the implementation does *not* match a plausible mistake.
 double linear_ode_wrong(float shift, int grid_points, float k, float c_now, float c_prev) {
   FlowScheduler s(shift);
-  s.set_timesteps(grid_points);
+  s.set_timesteps(grid_points - 1);
   float x = 1.0f;
   float prev_v = 0.0f;
   bool have_prev = false;

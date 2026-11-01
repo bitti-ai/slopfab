@@ -522,7 +522,7 @@ SLOPFAB_TEST(lora_taomate_three_step_schedule_and_plan) {
   CHECK(rejected);
   request.loras.push_back({"TaoMate.safetensors", 1});
   const auto plan = resolve_plan(request);
-  CHECK(plan.num_inference_steps == 4);
+  CHECK(plan.num_inference_steps == 3);
   CHECK(plan.num_model_evaluations() == 3);
   FlowScheduler s;
   for (const auto& grid :

@@ -90,11 +90,11 @@ def main():
     p.add_argument('--verify-first-lcs',action='store_true',help='Require identical starting sources and verify actual output correction across every new slice of the first pair')
     p.add_argument('--exe',type=Path,default=Path('build/Release/slopfab.exe'))
     a = p.parse_args()
-    if a.pairs < 1 or a.steps < 2 or a.new_frames < 17 or a.new_frames % 17:
-        p.error('positive pairs, steps >=2 and new frames a positive multiple of 17 required')
+    if a.pairs < 1 or a.steps < 1 or a.new_frames < 17 or a.new_frames % 17:
+        p.error('positive pairs, steps >=1 and new frames a positive multiple of 17 required')
     if a.decode_every < 0:
         p.error('decode-every must be nonnegative')
-    if a.capstone_lock_after < 0 or (a.keystone_source and a.capstone_lock_after >= a.steps-1):
+    if a.capstone_lock_after < 0 or (a.keystone_source and a.capstone_lock_after >= a.steps):
         p.error('capstone-lock-after must be nonnegative and precede the final denoising update')
     if a.output.exists() and any(a.output.iterdir()):
         p.error('Use a fresh output directory; completed archives can be resumed as new sources')
@@ -190,14 +190,14 @@ def main():
                 if status != -8 or len(reached_decode)!=1 or callback_errors or not path.exists():
                     raise RuntimeError(f'Unexpected completion {status}: {gen_error(generation).decode()}; {callback_errors}')
                 # H3 reports zero-based evaluation indices, plus an initial -1.
-                if {s for s,n in completed_steps if n==a.steps-1 and s>=0} != set(range(a.steps-1)):
+                if {s for s,n in completed_steps if n==a.steps and s>=0} != set(range(a.steps)):
                     raise RuntimeError(f'Incomplete sampling progress: {completed_steps}')
                 frames=validate_extension(sources[label],path,a.new_frames)
                 elapsed=time.monotonic()-began
                 records.append(dict(label=label,index=index,seed=a.seed+index,frames=frames,
                     source_archive=str(sources[label].resolve()),lcs_enabled=label=='corrected',
                     seconds=elapsed,archive=str(path),video_prefix_exact=True,audio_prefix_exact=True,
-                    sampled_updates=a.steps-1,decode_deferred=True,status=status))
+                    sampled_updates=a.steps,decode_deferred=True,status=status))
                 save_json(a.output/'progress.json',records)
                 print(f'  saved {frames} frames ({frames/24:.2f}s), {elapsed:.1f}s; prefixes exact',flush=True)
                 sources[label]=path

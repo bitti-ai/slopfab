@@ -75,10 +75,10 @@ SLOPFAB_TEST(pipeline_plan_default) {
   CHECK(p.layout.num_text == 0);
   CHECK(p.sequence_length_without_text() == 37710);
 
-  // 50 grid points, 49 model evaluations: the terminal sigma gets none.
-  CHECK(p.video_sigmas.size() == 50);
-  CHECK(p.video_timesteps.size() == 49);
-  CHECK(p.num_model_evaluations() == 49);
+  // 50 updates, 51 grid points: the terminal sigma gets none.
+  CHECK(p.video_sigmas.size() == 51);
+  CHECK(p.video_timesteps.size() == 50);
+  CHECK(p.num_model_evaluations() == 50);
   CHECK(p.audio_timesteps.size() == p.video_timesteps.size());
 
   // The shift maps 0 to 0 and 1 to 1 exactly, at both shifts.
@@ -104,8 +104,8 @@ SLOPFAB_TEST(pipeline_plan_default) {
   // matched, the two schedulers would have been built with the same shift.
   const float last_video = p.video_sigmas[p.video_sigmas.size() - 2];
   const float last_audio = p.audio_sigmas[p.audio_sigmas.size() - 2];
-  CHECK_NEAR(last_video, 0.2, 1e-6);
-  CHECK_NEAR(last_audio, 1.0 / 17.0, 1e-6);
+  CHECK_NEAR(last_video, 12.0 / 61.0, 1e-6);
+  CHECK_NEAR(last_audio, 3.0 / 52.0, 1e-6);
   CHECK(last_video > last_audio);
 }
 
@@ -275,10 +275,10 @@ SLOPFAB_TEST(pipeline_plan_explicit_resolution) {
 }
 
 SLOPFAB_TEST(pipeline_plan_rejects_bad_requests) {
-  // A one-point grid has no model evaluation at all.
+  // Negative update counts are invalid; zero inherits the recipe.
   CHECK(::slopfab::test::throws([] {
     slopfab::GenerateRequest r;
-    r.num_inference_steps = 1;
+    r.num_inference_steps = -1;
     slopfab::resolve_plan(r);
   }));
 
@@ -324,7 +324,7 @@ SLOPFAB_TEST(pipeline_schedules_stay_paired) {
   // collapsing the two shifted grids differently would silently truncate the
   // run. resolve_plan asserts they match; check it holds across the practical
   // range rather than only at the default.
-  for (int steps = 2; steps <= 120; ++steps) {
+  for (int steps = 1; steps <= 120; ++steps) {
     slopfab::GenerateRequest r = base_request();
     r.num_inference_steps = steps;
     const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
@@ -341,12 +341,14 @@ SLOPFAB_TEST(pipeline_schedules_stay_paired) {
 // own grids exactly — not nearly, exactly, because the sample is bit-identical
 // only if the loop steps the identical sigmas.
 SLOPFAB_TEST(pipeline_plan_carries_its_schedule_inputs) {
-  for (int steps : {2, 7, 29, 50, 120}) {
+  for (int steps : {1, 4, 7, 29, 50, 120}) {
     slopfab::GenerateRequest r = base_request();
     r.num_inference_steps = steps;
     const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
 
     CHECK(p.num_inference_steps == steps);
+    CHECK(p.num_model_evaluations() == steps);
+    CHECK(p.video_sigmas.size() == size_t(steps + 1));
     CHECK_NEAR(p.video_sigma_shift, 12.0, 0.0);
     CHECK_NEAR(p.audio_sigma_shift, 3.0, 0.0);
 
@@ -372,7 +374,7 @@ SLOPFAB_TEST(pipeline_viggle_schedule_uses_model_identity) {
   const std::vector<slopfab::TensorWrite> tensors = {
       {"adaln_t_table", {1, 8}, std::vector<float>(8)},
       {"blocks.0.adaln_proj.linear.weight", {1, 8}, std::vector<float>(8)}};
-  const std::vector<float> expected = {1.0f, 6.0f / 7.0f, 0.6f, 0.0f};
+  const std::vector<float> expected = {1.0f, .9f, .75f, .5f, 0.0f};
   for (const char* filename :
        {"slopfab_plan_renamed.safetensors", "slopfab_plan_Viggle-Animate.safetensors"}) {
     const auto path = scratch_path(filename);
@@ -399,8 +401,8 @@ SLOPFAB_TEST(pipeline_viggle_schedule_uses_model_identity) {
     CHECK_NEAR(p.video_sigma_shift, 3.0, 0.0);
     CHECK_NEAR(p.audio_sigma_shift, 3.0, 0.0);
     CHECK(p.num_inference_steps == 4);
-    CHECK(p.num_model_evaluations() == 3);
-    CHECK_CLOSE(expected, p.video_sigmas, 1e-6, "Viggle three-pass sigma grid");
+    CHECK(p.num_model_evaluations() == 4);
+    CHECK_CLOSE(expected, p.video_sigmas, 1e-6, "Viggle four-update sigma grid");
     CHECK(p.video_sigmas == p.audio_sigmas);
     for (size_t i = 0; i < p.video_timesteps.size(); ++i)
       CHECK_NEAR(p.video_timesteps[i], 1.0f - expected[i], 1e-6);
@@ -415,7 +417,7 @@ SLOPFAB_TEST(pipeline_viggle_schedule_uses_model_identity) {
       CHECK(video.sigmas() == plan.video_sigmas);
       CHECK(video.timesteps() == plan.video_timesteps);
       CHECK_NEAR(plan.video_sigma_shift, 3.0, 0.0);
-      CHECK(plan.num_model_evaluations() == steps - 1);
+      CHECK(plan.num_model_evaluations() == steps);
     }
 
     // Explicit non-Viggle provenance takes priority over a suggestive name.
@@ -424,8 +426,8 @@ SLOPFAB_TEST(pipeline_viggle_schedule_uses_model_identity) {
     r.num_inference_steps = 4;
     const auto h3 = slopfab::resolve_plan(r);
     CHECK_NEAR(h3.video_sigma_shift, 12.0, 0.0);
-    CHECK_CLOSE((std::vector<float>{1.0f, 0.96f, 6.0f / 7.0f, 0.0f}), h3.video_sigmas, 1e-6,
-                "H3 four-boundary grid is unchanged");
+    CHECK_CLOSE((std::vector<float>{1.0f, 36.0f / 37.0f, 12.0f / 13.0f, .8f, 0.0f}), h3.video_sigmas, 1e-6,
+                "H3 four-update grid");
   }
 }
 
@@ -435,7 +437,7 @@ SLOPFAB_TEST(pipeline_describe_plan) {
   const std::string text = slopfab::describe_plan(r, p);
   CHECK(text.find("768 x 1344") != std::string::npos);
   CHECK(text.find("37710") != std::string::npos);
-  CHECK(text.find("49 model evaluations") != std::string::npos);
+  CHECK(text.find("50 model evaluations") != std::string::npos);
 
   // Every number in the summary comes from the plan, not from the request that
   // produced it. The grid the header prints and the grid the loop integrates
@@ -444,8 +446,8 @@ SLOPFAB_TEST(pipeline_describe_plan) {
   slopfab::GeneratePlan renumbered = p;
   renumbered.num_inference_steps = 7;
   const std::string retold = slopfab::describe_plan(r, renumbered);
-  CHECK(retold.find("7 grid points") != std::string::npos);
-  CHECK(retold.find("50 grid points") == std::string::npos);
+  CHECK(retold.find("7 updates") != std::string::npos);
+  CHECK(retold.find("50 updates") == std::string::npos);
 }
 
 SLOPFAB_TEST(pipeline_reference_image_limit) {

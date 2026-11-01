@@ -109,7 +109,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
         ++boundaries;
         CHECK(a == audio);
       });
-  CHECK(boundaries == 3 && result.steps_completed == 3);
+  CHECK(boundaries == 4 && result.steps_completed == 4);
   CHECK(result.audio_rows == audio);
   CHECK(result.video_rows != std::vector<float>(t.video_output_rows * 4, .5f));
   model.unload();
@@ -304,8 +304,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
                     audio.size());
     vs = sampler::FlowScheduler(12);
     as = sampler::FlowScheduler(2);
-    vs.set_timesteps(5);
-    as.set_timesteps(5);
+    vs.set_timesteps(4);
+    as.set_timesteps(4);
     vs.set_sampler(sampler::SamplerKind::kRenoise);
     as.set_sampler(sampler::SamplerKind::kRenoise);
     std::vector<float> expected_video(n, .5f), expected_audio = audio;

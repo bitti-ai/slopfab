@@ -1140,8 +1140,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
     short_capacity.submit().wait();
   }
   sampler::FlowScheduler denoise_video(12.0f), denoise_audio(3.0f);
-  denoise_video.set_timesteps(4);
-  denoise_audio.set_timesteps(4);
+  denoise_video.set_timesteps(3);
+  denoise_audio.set_timesteps(3);
   denoiser.prepare(prompt_values.data(), prompt_values.size(), video_values.data(),
                    video_values.size(), audio_values.data(), audio_values.size());
   CHECK(denoiser.prepared());
@@ -1189,8 +1189,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
     for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise,
                       sampler::SamplerKind::kErSde}) {
       sampler::FlowScheduler video(12), audio(3);
-      video.set_timesteps(swap ? 4 : 3);
-      audio.set_timesteps(swap ? 3 : 4);
+      video.set_timesteps(swap ? 3 : 2);
+      audio.set_timesteps(swap ? 2 : 3);
       video.set_sampler(kind);
       audio.set_sampler(kind);
       auto previous_video = video_values, previous_audio = audio_values;
@@ -1353,8 +1353,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
   {
     auto mc_config = denoise_config;
     sampler::FlowScheduler mv(12), ma(3);
-    mv.set_timesteps(12);
-    ma.set_timesteps(12);
+    mv.set_timesteps(11);
+    ma.set_timesteps(11);
     auto run_motion = [&](const ExactH3DenoiseConfig& config, bool cancel) {
       auto model = ExactH3Denoiser::create(denoise_context, config);
       model.load(transformer_checkpoint);

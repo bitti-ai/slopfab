@@ -68,8 +68,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_int8_still_full_stack_memory, "integration") {
     video[i] = float(int(i % 61) - 30) / 32;
   model.prepare(prompt.data(), prompt.size(), video.data(), video.size(), nullptr, 0);
   sampler::FlowScheduler video_schedule(12.0f), audio_schedule(3.0f);
-  video_schedule.set_timesteps(2);
-  audio_schedule.set_timesteps(2);
+  video_schedule.set_timesteps(1);
+  audio_schedule.set_timesteps(1);
   const auto output = model.run(video_schedule, audio_schedule);
   CHECK(output.steps_completed == 1 && !output.cancelled);
   CHECK(output.video_rows.size() == video.size() && output.audio_rows.empty());

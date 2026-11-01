@@ -192,7 +192,7 @@ SLOPFAB_TEST(capi_image_edit_snapshot_validation_and_clear) {
   pixels.clear();
   pixels.shrink_to_fit();
   slopfab_plan plan{};
-  CHECK(slopfab_request_set_steps(request, 11) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_steps(request, 10) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
   CHECK(plan.canvas_width == 64 && plan.canvas_height == 64);
   CHECK(plan.aligned_frames == 1 && plan.num_model_evaluations == 5);
@@ -960,7 +960,7 @@ SLOPFAB_TEST(capi_rejects_null_handles) {
 }
 
 // A freshly created request resolves to the same geometry the C++ defaults do
-// — 16:9 at the trained area, 124 frames, 50 grid points. If these ever
+// — 16:9 at the trained area, 124 frames, 50 updates. If these ever
 // diverge, the DLL is quietly a different product from the CLI.
 SLOPFAB_TEST(capi_default_request_matches_cpp_defaults) {
   Request request;
@@ -975,7 +975,7 @@ SLOPFAB_TEST(capi_default_request_matches_cpp_defaults) {
   CHECK(plan.canvas_height == 768);
   CHECK(plan.aligned_frames == 124);
   CHECK(plan.duration_seconds > 0.0);
-  CHECK(plan.num_model_evaluations == 49);
+  CHECK(plan.num_model_evaluations == 50);
   CHECK(plan.sequence_rows_without_text == 37710);
   CHECK(plan.latent_frames == 37);
   CHECK(plan.latent_height == 48);
@@ -991,18 +991,18 @@ SLOPFAB_TEST(capi_audio_steps) {
   CHECK(slopfab_request_set_audio_steps(request.handle, 4) == SLOPFAB_OK);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 4);
-  for (int value : {-1, 1, 1000001})
+  CHECK(plan.num_model_evaluations == 6);
+  for (int value : {-1, 1000001})
     CHECK(slopfab_request_set_audio_steps(request.handle, value) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 4); // invalid setters leave the override intact
+  CHECK(plan.num_model_evaluations == 6); // invalid setters leave the override intact
   char* description = nullptr;
   CHECK(slopfab_describe_plan(request.handle, &description) == SLOPFAB_OK);
-  CHECK(description && std::string(description).find("video 2, audio 3") != std::string::npos);
+  CHECK(description && std::string(description).find("video 3, audio 4") != std::string::npos);
   slopfab_free_string(description);
   CHECK(slopfab_request_set_audio_steps(request.handle, 0) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 2);
+  CHECK(plan.num_model_evaluations == 3);
   CHECK(slopfab_request_set_sampling_settings(
             request.handle, R"({"version":1,"base_sigmas":[1,0.5,0],"audio_steps":6})") ==
         SLOPFAB_OK);
@@ -1013,7 +1013,7 @@ SLOPFAB_TEST(capi_audio_steps) {
   CHECK(plan.num_model_evaluations == 4);
   CHECK(slopfab_request_set_sampling_settings(request.handle, nullptr) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 2);
+  CHECK(plan.num_model_evaluations == 3);
 }
 
 SLOPFAB_TEST(capi_existing_latents_upscale_lifecycle) {
@@ -1215,7 +1215,7 @@ SLOPFAB_TEST(capi_sampling_settings) {
   CHECK(plan.num_model_evaluations == 2);
   CHECK(slopfab_request_set_sampling_settings(request.handle, nullptr) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 49);
+  CHECK(plan.num_model_evaluations == 50);
 }
 
 SLOPFAB_TEST(capi_dmad_sampling_settings_without_named_schedule) {
@@ -1245,7 +1245,7 @@ SLOPFAB_TEST(capi_dmad_sampling_settings_without_named_schedule) {
 
 SLOPFAB_TEST(capi_beta_er_sde_settings) {
   Request request;
-  CHECK(slopfab_request_set_steps(request.handle, 9) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_steps(request.handle, 8) == SLOPFAB_OK);
   CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_BETA) == SLOPFAB_OK);
   CHECK(slopfab_request_set_sampling_settings(
             request.handle,
@@ -1290,8 +1290,8 @@ SLOPFAB_TEST(capi_request_geometry) {
   CHECK(slopfab_request_set_aspect(request.handle, 0, 9) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_aspect(request.handle, 16, -9) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_frames(request.handle, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
-  // The grid includes its terminal zero, so one point is not a schedule.
-  CHECK(slopfab_request_set_steps(request.handle, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  // A requested step is an update; zero is not a valid explicit count.
+  CHECK(slopfab_request_set_steps(request.handle, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_resolution(request.handle, -640, 384) == SLOPFAB_ERR_INVALID_ARGUMENT);
 
   // An explicit canvas wins over the aspect...
@@ -1313,10 +1313,15 @@ SLOPFAB_TEST(capi_request_geometry) {
   CHECK(plan.aligned_frames >= 100);
   CHECK((plan.aligned_frames - 5) % 17 == 0);
 
-  // Steps drive the evaluation count, one fewer than the grid points.
+  // Steps count denoising updates.
+  for (int steps : {1, 4}) {
+    CHECK(slopfab_request_set_steps(request.handle, steps) == SLOPFAB_OK);
+    CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+    CHECK(plan.num_model_evaluations == steps);
+  }
   CHECK(slopfab_request_set_steps(request.handle, 8) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 7);
+  CHECK(plan.num_model_evaluations == 8);
 }
 
 SLOPFAB_TEST(capi_music_plan) {
@@ -1705,7 +1710,7 @@ SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_DEFAULT) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 49);
+  CHECK(plan.num_model_evaluations == 50);
 }
 
 SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
@@ -1730,7 +1735,7 @@ SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
   CHECK(slopfab_request_add_reference_image(request.handle, "repainted.png") == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.canvas_width == 64 && plan.canvas_height == 96);
-  CHECK(plan.num_model_evaluations == 3);
+  CHECK(plan.num_model_evaluations == 4);
   CHECK(plan.num_audio_rows == 130);
   OwnedString description;
   CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
@@ -1740,7 +1745,7 @@ SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
   CHECK(slopfab_request_set_steps(request.handle, 8) == SLOPFAB_OK);
   CHECK(slopfab_request_set_animate(request.handle, 1, 1) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
-  CHECK(plan.num_model_evaluations == 7);
+  CHECK(plan.num_model_evaluations == 8);
   CHECK(slopfab_request_set_animate(request.handle, 0, 0) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.canvas_width == 1344 && plan.canvas_height == 768);

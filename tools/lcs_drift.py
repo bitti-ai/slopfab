@@ -439,8 +439,8 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.set_defaults(func=calibrate)
     a = parser.parse_args()
-    if a.command == 'generate' and (a.windows < 1 or a.steps < 2):
-        parser.error('windows must be positive and steps at least two')
+    if a.command == 'generate' and (a.windows < 1 or a.steps < 1):
+        parser.error('windows must be positive and steps at least one')
     if a.command == 'generate' and (not a.name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in a.name)):
         parser.error('name may contain only letters, numbers, underscores and hyphens')
     if a.command == 'analyze' and a.stride < 1:

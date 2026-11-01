@@ -334,8 +334,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_dit_real_transformer_capture_replay, "integrat
                                             .count();
     sampler::FlowScheduler cuda_video_schedule(12.0f);
     sampler::FlowScheduler cuda_audio_schedule(3.0f);
-    cuda_video_schedule.set_timesteps(4);
-    cuda_audio_schedule.set_timesteps(4);
+    cuda_video_schedule.set_timesteps(3);
+    cuda_audio_schedule.set_timesteps(3);
     DenoiseInputs cuda_inputs;
     cuda_inputs.layout = &denoise_layout;
     cuda_inputs.indices = &denoise_indices;
@@ -376,8 +376,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_dit_real_transformer_capture_replay, "integrat
             .count();
     sampler::FlowScheduler vk_video_schedule(12.0f);
     sampler::FlowScheduler vk_audio_schedule(3.0f);
-    vk_video_schedule.set_timesteps(4);
-    vk_audio_schedule.set_timesteps(4);
+    vk_video_schedule.set_timesteps(3);
+    vk_audio_schedule.set_timesteps(3);
     std::vector<uint64_t> boundary_hashes;
     size_t boundary_index = 0;
     const auto vk_run_begin = std::chrono::steady_clock::now();
@@ -526,8 +526,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_dit_real_transformer_capture_replay, "integrat
                                std::chrono::steady_clock::now() - ref_cuda_load_begin)
                                .count();
         sampler::FlowScheduler ref_cuda_video(12.0f), ref_cuda_audio(3.0f);
-        ref_cuda_video.set_timesteps(ref_schedule_points);
-        ref_cuda_audio.set_timesteps(ref_schedule_points);
+        ref_cuda_video.set_timesteps(ref_schedule_points - 1);
+        ref_cuda_audio.set_timesteps(ref_schedule_points - 1);
         DenoiseInputs ref_cuda_inputs;
         ref_cuda_inputs.layout = &ref_packed.layout;
         ref_cuda_inputs.indices = &ref_packed.indices;
@@ -619,8 +619,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_dit_real_transformer_capture_replay, "integrat
                                         std::chrono::steady_clock::now() - ref_vk_load_begin)
                                         .count();
       sampler::FlowScheduler ref_vk_video(12.0f), ref_vk_audio(3.0f);
-      ref_vk_video.set_timesteps(ref_schedule_points);
-      ref_vk_audio.set_timesteps(ref_schedule_points);
+      ref_vk_video.set_timesteps(ref_schedule_points - 1);
+      ref_vk_audio.set_timesteps(ref_schedule_points - 1);
       std::vector<uint64_t> ref_hashes;
       size_t ref_boundary = 0;
       DeviceTensor ref_packed_tap;
@@ -837,7 +837,7 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_dit_real_transformer_capture_replay, "integrat
     request.canvas_width = 256;
     request.canvas_height = 256;
     request.num_frames = 22;
-    request.num_inference_steps = 4;
+    request.num_inference_steps = 3;
     request.seed = 424242;
     if (normal_prompt) {
       request.prompt = "A copper airship glides above a snowy forest at sunrise.";

@@ -16,7 +16,7 @@ def run(*args, success=True):
 for backend in ("cuda", "vulkan"):
     for schedule in ("--schedule", "--scheduler"):
         output=run("--inference-backend",backend,"--sampler","er_sde",schedule,"beta")
-        assert "er_sde" in output and "beta quantiles" in output and "8 model evaluations" in output
+        assert "er_sde" in output and "beta quantiles" in output and "9 model evaluations" in output
 output=run("--model","krea2","--inference-backend","vulkan","--vulkan-arithmetic","portable",
            "--sampler","er_sde","--schedule","beta")
 assert "er_sde updates" in output and "schedule    beta" in output

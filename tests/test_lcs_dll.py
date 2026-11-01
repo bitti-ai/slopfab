@@ -75,7 +75,7 @@ def main():
             check(bind("request_set_prompt_embedding_path", integer, pointer, string)(request, str(embedding).encode()))
             check(bind("request_set_still_image", integer, pointer, integer)(request, 1))
             check(bind("request_set_resolution", integer, pointer, integer, integer)(request, 64, 64))
-            check(bind("request_set_steps", integer, pointer, integer)(request, 2))
+            check(bind("request_set_steps", integer, pointer, integer)(request, 1))
             check(bind("request_set_verbose", integer, pointer, integer)(request, 0))
             check(calibrate(request, str(calibration).encode(), 8, 64, None, None))
             print("Native DLL calibration passed", flush=True)

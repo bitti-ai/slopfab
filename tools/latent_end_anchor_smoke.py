@@ -34,14 +34,14 @@ def main():
     parser.add_argument("backend", nargs="?", default="cuda", choices=("cuda", "vulkan"))
     parser.add_argument("--source-noise", type=float)
     parser.add_argument("--keystone", action="store_true")
-    parser.add_argument("--steps", type=int, default=3, help="Sigma grid points including terminal zero")
+    parser.add_argument("--steps", type=int, default=3, help="Denoising updates")
     args = parser.parse_args()
-    if args.steps < 2:
-        parser.error("steps must be at least two")
+    if args.steps < 1:
+        parser.error("steps must be at least one")
     if args.source_noise is not None and not 0 < args.source_noise < 1:
         parser.error("source-noise must be in (0,1) to test a nontrivial mixture")
-    if args.keystone and (args.source_noise is not None or args.steps < 3):
-        parser.error("keystone needs at least three sigma points and no source-noise")
+    if args.keystone and (args.source_noise is not None or args.steps < 2):
+        parser.error("keystone needs at least two updates and no source-noise")
     dll = C.CDLL(str(args.library.resolve()))
     root, backend = args.root.resolve(), args.backend
     handle = C.c_void_p

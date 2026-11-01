@@ -204,8 +204,8 @@ SLOPFAB_TEST_CATEGORY(transformer_real_checkpoint, "checkpoint") {
 
   // --- the whole loop -------------------------------------------------------
   slopfab::sampler::FlowScheduler video_sched(12.0f), audio_sched(3.0f);
-  video_sched.set_timesteps(50);
-  audio_sched.set_timesteps(50);
+  video_sched.set_timesteps(49);
+  audio_sched.set_timesteps(49);
   CHECK(video_sched.timesteps().size() == 49);
 
   slopfab::dit::DenoiseInputs in;

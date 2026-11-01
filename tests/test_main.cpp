@@ -435,6 +435,7 @@ void test_scheduler() {
 
   FlowScheduler s(12.0f);
   s.set_timesteps(50);
+  CHECK(s.num_steps() == 50);
 
   const std::vector<float>& sig = s.sigmas();
   CHECK(!sig.empty());
@@ -459,7 +460,7 @@ void test_scheduler() {
   // 12*b/(1+11b) > b for 0 < b < 1.
   FlowScheduler unshifted(1.0f);
   unshifted.set_timesteps(50);
-  CHECK(unshifted.sigmas().size() == 50);
+  CHECK(unshifted.sigmas().size() == 51);
   bool shift_raises = true;
   for (size_t i = 1; i + 1 < unshifted.sigmas().size() && i + 1 < sig.size(); ++i) {
     if (!(sig[i] > unshifted.sigmas()[i]))
@@ -467,7 +468,7 @@ void test_scheduler() {
   }
   CHECK(shift_raises);
   // shift = 1 is the identity map.
-  CHECK_NEAR(unshifted.sigmas()[10], 1.0f - 10.0f / 49.0f, 1e-6);
+  CHECK_NEAR(unshifted.sigmas()[10], 1.0f - 10.0f / 50.0f, 1e-6);
 
   // Audio runs the same scheduler at a different shift.
   FlowScheduler audio(3.0f);
@@ -529,7 +530,11 @@ void test_scheduler() {
 
   CHECK(throws([] {
     FlowScheduler bad(12.0f);
-    bad.set_timesteps(1);
+    bad.set_timesteps(0);
+  }));
+  CHECK(throws([] {
+    FlowScheduler bad(12.0f);
+    bad.set_timesteps(1000001);
   }));
   CHECK(throws([] {
     FlowScheduler bad(0.0f);

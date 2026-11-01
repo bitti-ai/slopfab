@@ -58,7 +58,7 @@ SLOPFAB_TEST(sampling_plan_metadata_precedence_and_renaming) {
   request.sampling.video_sigma_shift = 8.0f;
   plan = resolve_plan(request);
   CHECK(plan.video_sigma_shift == 8 && plan.audio_sigma_shift == 2);
-  CHECK(plan.num_inference_steps == 3);
+  CHECK(plan.num_inference_steps == 2);
   CHECK(describe_plan(request, plan).find("shift 8") != std::string::npos);
   CHECK(describe_plan(request, plan).find("LoRA: ") != std::string::npos);
   CHECK(describe_plan(request, plan).find("request overrides") != std::string::npos);
@@ -108,12 +108,38 @@ SLOPFAB_TEST(sampling_plan_explicit_steps_resolve_adapter_defaults) {
   CHECK(resolve_plan(request).num_inference_steps == 10);
 }
 
+SLOPFAB_TEST(sampling_plan_four_step_lora_counts_updates) {
+  using namespace slopfab;
+  SamplingFixture adapter("slopfab_four_step_adapter.safetensors",
+                          R"({"version":1,"default_steps":4})");
+  GenerateRequest request;
+  request.loras = {{adapter.path.string(), 1}};
+  const auto plan = resolve_plan(request);
+  CHECK(plan.num_inference_steps == 4 && plan.num_model_evaluations() == 4);
+  CHECK(plan.video_timesteps.size() == 4 && plan.audio_timesteps.size() == 4);
+  // Four updates between five boundaries, with the ordinary H3 shifts.
+  CHECK_CLOSE((std::vector<float>{1, 36.f / 37, 12.f / 13, .8f, 0}),
+              plan.video_sigmas, 1e-7, "four-step LoRA video grid");
+  CHECK_CLOSE((std::vector<float>{1, .9f, .75f, .5f, 0}),
+              plan.audio_sigmas, 1e-7, "four-step LoRA audio grid");
+  request.num_inference_steps = 1;
+  auto single = resolve_plan(request);
+  CHECK(single.num_model_evaluations() == 1);
+  CHECK(single.video_sigmas == std::vector<float>({1, 0}));
+  request.num_inference_steps = 0;
+  request.sampling.default_steps = 1;
+  request.sampling.audio_steps = 1;
+  CHECK(resolve_plan(request).num_model_evaluations() == 1);
+  request.schedule = sampler::ScheduleKind::kBeta;
+  CHECK(resolve_plan(request).num_model_evaluations() == 1);
+}
+
 SLOPFAB_TEST(sampling_plan_rejects_invalid_metadata_and_unsafe_execution) {
   using namespace slopfab;
   SamplingFixture bad("slopfab_sampling_bad.safetensors", R"({"version":1,"typo":2})");
   GenerateRequest request;
   request.loras = {{bad.path.string(), 0}};
-  CHECK(resolve_plan(request).num_model_evaluations() == 49);
+  CHECK(resolve_plan(request).num_model_evaluations() == 50);
   request.loras.front().strength = 1;
   CHECK(rejects([&] {
     resolve_plan(request);
@@ -212,8 +238,8 @@ SLOPFAB_TEST(sampling_plan_beta_and_er_sde_routing) {
   r.schedule = sampler::ScheduleKind::kBeta;
   r.sampling.sampler = sampler::SamplerKind::kErSde;
   auto p = resolve_plan(r);
-  CHECK(p.video_sigmas == sampler::beta_sigma_schedule(8, 12));
-  CHECK(p.audio_sigmas == sampler::beta_sigma_schedule(8, 3));
+  CHECK(p.video_sigmas == sampler::beta_sigma_schedule(9, 12));
+  CHECK(p.audio_sigmas == sampler::beta_sigma_schedule(9, 3));
   CHECK(p.sampler == sampler::SamplerKind::kErSde);
   RunOptions o;
   o.attention_mode = AttentionMode::kFlash2;
@@ -223,8 +249,8 @@ SLOPFAB_TEST(sampling_plan_beta_and_er_sde_routing) {
   }
   r.sampling.audio_steps = 5;
   p = resolve_plan(r);
-  CHECK(p.audio_sigmas == sampler::beta_sigma_schedule(4, 3));
-  CHECK(p.video_sigmas == sampler::beta_sigma_schedule(8, 12));
+  CHECK(p.audio_sigmas == sampler::beta_sigma_schedule(5, 3));
+  CHECK(p.video_sigmas == sampler::beta_sigma_schedule(9, 12));
   r.block_cache_span = 1;
   CHECK(rejects([&] {
     validate_generation_options(r, p, o);

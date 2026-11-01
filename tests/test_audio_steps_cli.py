@@ -19,10 +19,13 @@ def run(*args, success=True):
     return result.stdout + result.stderr
 
 
-assert "video 2, audio 2" in run()
-assert "video 2, audio 3" in run("--audio-steps", "4")
-assert "4 model evaluations" in run("--audio-steps", "4")
-for value in ("0", "1", "-1", "2.5", "4junk", "bad", "1000001", "99999999999999999999"):
+assert "video 3, audio 3" in run()
+assert "video 3, audio 4" in run("--audio-steps", "4")
+assert "6 model evaluations" in run("--audio-steps", "4")
+assert "video 3, audio 1" in run("--audio-steps", "1")
+for steps in (1, 4):
+    assert f"{steps} model evaluations" in run("--steps", steps)
+for value in ("0", "-1", "2.5", "4junk", "bad", "1000001", "99999999999999999999"):
     run("--audio-steps", value, success=False)
 run("--audio-steps", success=False)
 with tempfile.TemporaryDirectory(prefix="slopfab-audio-steps-") as directory:
@@ -32,6 +35,6 @@ with tempfile.TemporaryDirectory(prefix="slopfab-audio-steps-") as directory:
     for args in (("--sampling-settings", path, "--audio-steps", "4"),
                  ("--audio-steps", "4", "--sampling-settings", path)):
         output = run(*args)
-        assert "video 2, audio 3" in output
+        assert "video 2, audio 4" in output
         assert "4 model evaluations" in output
 print("audio steps CLI checks passed")

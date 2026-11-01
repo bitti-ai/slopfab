@@ -510,7 +510,7 @@ SLOPFAB_TEST(inpaint_plan_strength_padding_and_invalid_requests) {
   request.still_image = true;
   request.out_path = "edited.ppm";
   request.image_edit = edit_fixture();
-  request.num_inference_steps = 11;
+  request.num_inference_steps = 10;
   const auto plan = slopfab::resolve_plan(request);
   CHECK(plan.canvas_width == 64 && plan.canvas_height == 64);
   CHECK(plan.aligned_frames == 1 && plan.layout.num_audio_rows == 0);

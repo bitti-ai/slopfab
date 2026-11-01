@@ -63,11 +63,11 @@ SLOPFAB_TEST(audio_steps_settings_and_plan) {
   overlay_sampling_settings(settings,
                             parse_sampling_settings(R"({"version":1,"default_steps":4})"));
   CHECK(settings.audio_steps == 25 && settings.default_steps == 4);
-  for (const char* value : {"null", "true", "\"25\"", "0", "1", "-1", "2.5", "1000001"})
+  for (const char* value : {"null", "true", "\"25\"", "0", "-1", "2.5", "1000001"})
     CHECK(rejects([&] {
       parse_sampling_settings(std::string("{\"version\":1,\"audio_steps\":") + value + "}");
     }));
-  for (int value : {-1, 0, 1, 1000001}) {
+  for (int value : {-1, 0, 1000001}) {
     settings.audio_steps = value;
     CHECK(rejects([&] {
       validate_sampling_settings(settings);
@@ -79,17 +79,17 @@ SLOPFAB_TEST(audio_steps_settings_and_plan) {
   request.sampling.audio_steps = 25;
   auto plan = resolve_plan(request);
   CHECK(plan.video_sigmas == original.video_sigmas);
-  CHECK(plan.audio_sigmas.size() == 25 && plan.num_model_evaluations() == 24);
-  CHECK(describe_plan(request, plan).find("video 3, audio 24") != std::string::npos);
+  CHECK(plan.audio_sigmas.size() == 26 && plan.num_model_evaluations() == 28);
+  CHECK(describe_plan(request, plan).find("video 4, audio 25") != std::string::npos);
   request.sampling.audio_steps = 6;
-  CHECK(resolve_plan(request).num_model_evaluations() == 7); // 3 + 5 - gcd(3,5)
+  CHECK(resolve_plan(request).num_model_evaluations() == 8); // 4 + 6 - gcd(4,6)
   request.sampling.base_sigmas = std::vector<float>{1, .7f, .1f, 0};
   plan = resolve_plan(request);
   sampler::FlowScheduler video(12), audio(3);
   video.set_base_sigmas(*request.sampling.base_sigmas);
   audio.set_timesteps(6);
   CHECK(plan.video_sigmas == video.sigmas() && plan.audio_sigmas == audio.sigmas());
-  CHECK(plan.fixed_sampling_grid && plan.num_model_evaluations() == 7);
+  CHECK(plan.fixed_sampling_grid && plan.num_model_evaluations() == 6);
   request.sampling.base_sigmas.reset();
   request.sampling.audio_steps = 4;
   CHECK(resolve_plan(request).audio_sigmas == original.audio_sigmas);
@@ -140,18 +140,18 @@ SLOPFAB_TEST(audio_steps_metadata_precedence) {
   GenerateRequest r;
   r.num_inference_steps = 4;
   r.transformer_path = first.string();
-  CHECK(resolve_plan(r).audio_sigmas.size() == 6);
+  CHECK(resolve_plan(r).audio_sigmas.size() == 7);
   r.loras = {{second.string(), -1}};
-  CHECK(resolve_plan(r).audio_sigmas.size() == 8);
+  CHECK(resolve_plan(r).audio_sigmas.size() == 9);
   r.loras.push_back({first.string(), 1});
   CHECK(rejects([&] {
     resolve_plan(r);
   }));
   r.sampling.audio_steps = 10;
-  CHECK(resolve_plan(r).audio_sigmas.size() == 10);
+  CHECK(resolve_plan(r).audio_sigmas.size() == 11);
   std::reverse(r.loras.begin(), r.loras.end());
-  CHECK(resolve_plan(r).audio_sigmas.size() == 10);
+  CHECK(resolve_plan(r).audio_sigmas.size() == 11);
   r.sampling.audio_steps.reset();
   r.loras[0].strength = 0;
-  CHECK(resolve_plan(r).audio_sigmas.size() == 8);
+  CHECK(resolve_plan(r).audio_sigmas.size() == 9);
 }

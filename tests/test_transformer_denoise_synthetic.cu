@@ -26,7 +26,7 @@ SLOPFAB_TEST_CATEGORY(denoise_preview_is_clean_and_does_not_change_trajectory, "
       CHECK_CLOSE(expected,clean,1e-6,"preview must precede scheduler noise");
     };
     const auto with_preview = dit::denoise(model,in);
-    CHECK(calls == 3);
+    CHECK(calls == 4);
     CHECK(with_preview.video_rows == baseline.video_rows);
     CHECK(with_preview.audio_rows == baseline.audio_rows);
   }
@@ -38,8 +38,8 @@ SLOPFAB_TEST_CATEGORY(denoise_sampling_effect_updates_and_cancellation, "synthet
   const auto layout = tiny_layout();
   const auto indices = dit::build_indices(layout);
   FlowScheduler video(12), audio(3);
-  video.set_timesteps(3);
-  audio.set_timesteps(4);
+  video.set_timesteps(2);
+  audio.set_timesteps(3);
   Transformer model;
   auto in = make_denoise_inputs(layout, indices, video, audio);
   in.velocity = [&](int, const RowTimesteps&, const float*, const float*, float* v, float* a) {
@@ -78,8 +78,8 @@ SLOPFAB_TEST_CATEGORY(denoise_sampling_effect_preserves_cached_prediction, "synt
   const auto layout = tiny_layout();
   const auto indices = dit::build_indices(layout);
   sampler::FlowScheduler video(12), audio(3);
-  video.set_timesteps(7);
-  audio.set_timesteps(7);
+  video.set_timesteps(6);
+  audio.set_timesteps(6);
   Transformer model;
   auto in = make_denoise_inputs(layout, indices, video, audio);
   in.cache.skip_every = 2;
@@ -239,8 +239,8 @@ SLOPFAB_TEST_CATEGORY(denoise_independent_audio_steps, "synthetic") {
     for (auto kind :
          {SamplerKind::kEuler, SamplerKind::kAb2, SamplerKind::kRenoise, SamplerKind::kErSde}) {
       FlowScheduler video(12), audio(3);
-      video.set_timesteps(swap ? 4 : 3);
-      audio.set_timesteps(swap ? 3 : 4);
+      video.set_timesteps(swap ? 3 : 2);
+      audio.set_timesteps(swap ? 2 : 3);
       video.set_sampler(kind);
       audio.set_sampler(kind);
       auto expected_video_scheduler = video, expected_audio_scheduler = audio;
@@ -502,8 +502,8 @@ SLOPFAB_TEST_CATEGORY(denoise_motion_cache_residual_trajectory_and_reset, "synth
   std::vector<float> anchor_v(96, 7), anchor_a(32, 9);
   auto run = [&](bool enabled, bool cancel) {
     slopfab::sampler::FlowScheduler video(12), audio(3);
-    video.set_timesteps(14);
-    audio.set_timesteps(14);
+    video.set_timesteps(13);
+    audio.set_timesteps(13);
     Transformer model;
     auto in = make_denoise_inputs(layout, indices, video, audio);
     in.condition_video_rows = &anchor_v;
@@ -582,8 +582,8 @@ SLOPFAB_TEST_CATEGORY(denoise_skips_exactly_the_planned_steps, "synthetic") {
 
   for (const Case& c : cases) {
     slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
-    video.set_timesteps(16);
-    audio.set_timesteps(16);
+    video.set_timesteps(15);
+    audio.set_timesteps(15);
 
     Transformer model; // never used: `velocity` and `code` short-circuit it
     slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
@@ -636,8 +636,8 @@ SLOPFAB_TEST_CATEGORY(denoise_cache_disabled_changes_nothing, "synthetic") {
 
   auto run = [&](bool set_inert_flags) {
     slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
-    video.set_timesteps(14);
-    audio.set_timesteps(14);
+    video.set_timesteps(13);
+    audio.set_timesteps(13);
     Transformer model;
     slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
     if (set_inert_flags) {
@@ -678,8 +678,8 @@ SLOPFAB_TEST_CATEGORY(denoise_zero_velocity_is_a_fixed_point, "synthetic") {
   const SequenceLayout layout = tiny_layout();
   const PackedIndices idx = slopfab::dit::build_indices(layout);
   slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
-  video.set_timesteps(8);
-  audio.set_timesteps(8);
+  video.set_timesteps(7);
+  audio.set_timesteps(7);
 
   Transformer model; // never used: `velocity` short-circuits the forward pass
   slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
@@ -712,8 +712,8 @@ SLOPFAB_TEST_CATEGORY(denoise_pinned_target_audio_is_clean_and_never_stepped, "s
   layout.condition_audio_is_explicit = true;
   const auto idx = slopfab::dit::build_indices(layout);
   slopfab::sampler::FlowScheduler video(3), audio(3);
-  video.set_timesteps(4);
-  audio.set_timesteps(4);
+  video.set_timesteps(3);
+  audio.set_timesteps(3);
   Transformer model;
   auto in = make_denoise_inputs(layout, idx, video, audio);
   const std::vector<float> initial_audio =
@@ -758,8 +758,8 @@ SLOPFAB_TEST_CATEGORY(denoise_accepts_video_only_still_layout, "synthetic") {
   const PackedIndices idx = slopfab::dit::build_indices(layout);
 
   slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
-  video.set_timesteps(4);
-  audio.set_timesteps(4);
+  video.set_timesteps(3);
+  audio.set_timesteps(3);
 
   Transformer model;
   slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
@@ -783,8 +783,8 @@ SLOPFAB_TEST_CATEGORY(denoise_constant_velocity_matches_cpu_euler, "synthetic") 
   const SequenceLayout layout = tiny_layout();
   const PackedIndices idx = slopfab::dit::build_indices(layout);
   slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
-  video.set_timesteps(12);
-  audio.set_timesteps(12);
+  video.set_timesteps(11);
+  audio.set_timesteps(11);
 
   Transformer model;
   slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
@@ -847,8 +847,8 @@ SLOPFAB_TEST_CATEGORY(denoise_is_deterministic, "synthetic") {
   const SequenceLayout layout = tiny_layout();
   const PackedIndices idx = slopfab::dit::build_indices(layout);
   slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
-  video.set_timesteps(6);
-  audio.set_timesteps(6);
+  video.set_timesteps(5);
+  audio.set_timesteps(5);
 
   Transformer model;
   auto run = [&](uint64_t seed) {
@@ -879,8 +879,8 @@ SLOPFAB_TEST_CATEGORY(denoise_dmad_video_audio_trajectory_and_repeatability, "sy
   auto layout = tiny_layout();
   const auto indices = dit::build_indices(layout);
   sampler::FlowScheduler video(12), audio(2);
-  video.set_timesteps(5);
-  audio.set_timesteps(5);
+  video.set_timesteps(4);
+  audio.set_timesteps(4);
   video.set_sampler(sampler::SamplerKind::kRenoise);
   audio.set_sampler(sampler::SamplerKind::kRenoise);
   Transformer model;

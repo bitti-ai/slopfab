@@ -127,7 +127,7 @@ try:
     outside[top:top + source.height, left:left + source.width] = False
     assert np.abs(rgb[outside].astype(float) - pixels[outside]).mean() > 1
     Image.fromarray(rgb).save(args.output / "result.png")
-    outer_steps = 4 if args.schedule == "dmad-4step" else args.steps - 1
+    outer_steps = 4 if args.schedule == "dmad-4step" else args.steps
     retained_steps = max(1, int(np.ceil(args.strength * outer_steps)))
     assert result.steps_computed == retained_steps * (args.langevin_steps + 1)
     print(f"PASS: source interior preserved, surround generated in {result.steps_computed} evaluations. Inspect {args.output / 'result.png'}", flush=True)
