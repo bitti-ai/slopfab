@@ -440,9 +440,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_still_image(slopfab_request* 
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_audio_steps(slopfab_request* request,
                                                                int32_t steps) {
-  if (request == nullptr || (steps != 0 && (steps < 2 || steps > 1000000)))
+  if (request == nullptr || (steps != 0 && (steps < 1 || steps > 1000000)))
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
-                "slopfab_request_set_audio_steps: expected zero or grid points in [2,1000000]");
+                "slopfab_request_set_audio_steps: expected zero or updates in [1,1000000]");
   if (steps == 0)
     request->request.sampling.audio_steps.reset();
   else
@@ -456,8 +456,6 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* reques
                 "slopfab_request_set_steps: expected a positive step count");
   }
   return guarded([&] {
-    if (steps == 1 && slopfab::request_model_family(request->request) == "h3")
-      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "H3 requires at least 2 grid points");
     request->request.num_inference_steps = steps;
     return SLOPFAB_OK;
   });

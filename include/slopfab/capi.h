@@ -665,13 +665,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_guidance(
     slopfab_request* request, float scale, const char* negative_prompt,
     const int32_t* skip_layers, int32_t count);
 
-/* H3: sigma grid points including terminal zero (`steps - 1` updates), at
- * least 2. Image models: requested updates, at least 1; snapping the training
- * grid can remove duplicate steps. An unset count inherits model defaults. */
+/* Requested denoising updates, at least 1. H3 adds terminal zero as an
+ * extra grid endpoint. Fixed grids determine their own update count; snapping
+ * the training grid can remove duplicate steps. An unset count inherits model
+ * defaults. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* request, int32_t steps);
 
-/* Since 1.21. Experimental independent audio grid: steps includes terminal zero
- * (steps - 1 audio updates), in [2,1000000]. Zero clears this explicit override.
+/* Since 1.21. Experimental independent audio updates, in [1,1000000].
+ * Zero clears this explicit override.
  * Without an inherited audio_steps setting, audio follows the video grid.
  * Extra updates run the shared transformer and hold video fixed between its
  * updates. Requires generated target audio; unsupported with FastH3 V2 or

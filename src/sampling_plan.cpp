@@ -141,7 +141,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
         effective.audio_sigma_shift != required.audio_sigma_shift || effective.audio_steps ||
         effective.sampler != sampler::SamplerKind::kEuler ||
         effective.scheduler == sampler::SigmaSchedule::kBeta ||
-        (request.num_inference_steps && request.num_inference_steps != 9) ||
+        (request.num_inference_steps && request.num_inference_steps != 8) ||
         request.animate || request.continuation || request.image_edit.image ||
         plan.fasth3_v2 || plan.model.pdd_steps > 1)
       throw std::invalid_argument("Hyperflow requires its trained eight intervals, shifts and Euler sampler; alternate schedules, Animate, continuation and image editing are unsupported");
@@ -175,7 +175,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.audio_sigma_shift = 3;
     plan.sampler = sampler::SamplerKind::kEuler;
     plan.fixed_sampling_grid = true;
-    plan.num_inference_steps = int(plan.video_sigmas.size());
+    plan.num_inference_steps = int(plan.video_timesteps.size());
     plan.sampling_sources.push_back("OmniRef PDD32 eight-block recipe");
     return;
   }
@@ -202,13 +202,13 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   plan.video_sigma_shift = *effective.video_sigma_shift;
   plan.audio_sigma_shift = *effective.audio_sigma_shift;
   plan.num_inference_steps = effective.base_sigmas
-                                 ? static_cast<int>(effective.base_sigmas->size())
+                                 ? static_cast<int>(effective.base_sigmas->size() - 1)
                                  : (request.num_inference_steps == 0 ? *effective.default_steps
                                                                      : request.num_inference_steps);
   sampler::FlowScheduler video(plan.video_sigma_shift), audio(plan.audio_sigma_shift);
   const bool beta = effective.scheduler == sampler::SigmaSchedule::kBeta;
-  const auto set_beta = [&](sampler::FlowScheduler& scheduler, int points) {
-    scheduler.set_sigmas(sampler::beta_sigma_schedule(points - 1, scheduler.shift(),
+  const auto set_beta = [&](sampler::FlowScheduler& scheduler, int steps) {
+    scheduler.set_sigmas(sampler::beta_sigma_schedule(steps, scheduler.shift(),
                                                       effective.beta_alpha.value_or(.6f),
                                                       effective.beta_beta.value_or(.6f)));
   };
@@ -252,7 +252,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     const auto vs = video.sigmas(), as = audio.sigmas();
     video.set_sigmas(std::vector<float>(vs.begin() + start, vs.end()));
     audio.set_sigmas(std::vector<float>(as.begin() + start, as.end()));
-    plan.num_inference_steps = static_cast<int>(video.sigmas().size());
+    plan.num_inference_steps = static_cast<int>(video.num_steps());
   }
   if (request.continuation_source_noise > 0) {
     const float start = std::min(request.continuation_source_noise, video.sigmas().front());
@@ -261,7 +261,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
       if (sigma < start)
         tail.push_back(sigma);
     video.set_sigmas(tail);
-    plan.num_inference_steps = static_cast<int>(tail.size());
+    plan.num_inference_steps = static_cast<int>(video.num_steps());
   }
   plan.video_sigmas = video.sigmas();
   plan.audio_sigmas = audio.sigmas();

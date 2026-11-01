@@ -62,9 +62,8 @@ public:
   // `shift` is the exponential sigma shift: sigma' = s*sigma / (1 + (s-1)*sigma).
   explicit FlowScheduler(float shift = 12.0f);
 
-  // Builds the schedule. `num_inference_steps` counts sigma grid points
-  // *including* the terminal zero, so the model is evaluated
-  // `timesteps().size()` times, which is one fewer. TaoMate3Step overrides
+  // Builds the schedule. `num_inference_steps` counts denoising updates.
+  // The sigma grid has one extra endpoint (terminal zero). TaoMate3Step overrides
   // the count with four retained teacher states (three evaluations).
   void set_timesteps(int num_inference_steps, ScheduleKind schedule = ScheduleKind::kDefault);
 

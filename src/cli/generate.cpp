@@ -240,8 +240,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       const std::string value = next("--audio-steps");
       size_t used = 0;
       const int parsed = std::stoi(value, &used);
-      if (used != value.size() || parsed < 2 || parsed > 1000000)
-        throw std::invalid_argument("--audio-steps expects an integer in [2,1000000]");
+      if (used != value.size() || parsed < 1 || parsed > 1000000)
+        throw std::invalid_argument("--audio-steps expects an integer in [1,1000000]");
       audio_steps = parsed;
     } else if (arg == "--seed") {
       // A negative seed asks for a random one, the same as passing no --seed at

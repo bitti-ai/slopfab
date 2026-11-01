@@ -111,7 +111,7 @@ void FlowScheduler::set_sampler(SamplerKind kind) {
 
 void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule) {
   if (schedule == ScheduleKind::kBeta) {
-    set_sigmas(beta_sigma_schedule(num_inference_steps - 1, shift_));
+    set_sigmas(beta_sigma_schedule(num_inference_steps, shift_));
     return;
   }
   if (schedule != ScheduleKind::kDefault) {
@@ -121,8 +121,8 @@ void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule
   // A new schedule invalidates any velocity carried over from the old one.
   clear_history();
 
-  if (num_inference_steps < 2) {
-    throw std::runtime_error("scheduler: num_inference_steps must be >= 2, got " +
+  if (num_inference_steps < 1 || num_inference_steps > 1000000) {
+    throw std::runtime_error("scheduler: num_inference_steps must be in [1,1000000], got " +
                              std::to_string(num_inference_steps));
   }
 
@@ -130,9 +130,9 @@ void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule
   timesteps_.clear();
 
   // The grid is built in fp32 on the host so the schedule never depends on the
-  // accelerator. linspace(1, 0, n) — note the terminal zero is a grid point,
-  // and the shift maps 0 to exactly 0.
-  const int n = num_inference_steps;
+  // accelerator. N updates need N+1 boundaries: linspace(1, 0, N+1).
+  // The terminal zero is an endpoint, not a requested denoising step.
+  const int n = num_inference_steps + 1;
   sigmas_.reserve(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) {
     const float base = 1.0f - static_cast<float>(i) / static_cast<float>(n - 1);

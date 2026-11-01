@@ -51,8 +51,8 @@ Defaults follow the [upstream pipeline](https://huggingface.co/OpenMOSS-Team/MOS
 | Output | PPM file, or planar RGB pixels through the library |
 
 `--uncond-skip-layers none` disables skipping. `--guidance 1` uses only the
-positive branch. MOSS `--steps` counts requested Euler updates, unlike H3's count
-of grid points including terminal zero. Snapping can remove duplicate steps.
+positive branch. MOSS and H3 `--steps` count requested updates, with terminal
+zero added separately. Snapping can remove duplicate steps.
 Use sampling-settings `video_sigma_shift` to override the image shift. Native
 seeded noise is reproducible but does not reproduce PyTorch's RNG.
 

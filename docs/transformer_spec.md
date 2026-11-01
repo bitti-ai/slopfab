@@ -115,7 +115,7 @@ Explicitly **excluded**:
 | `V = F*R` | target video rows |
 | `Sa = 2*A` | audio rows (stereo, channel-major) |
 | `S = L + Sa + V` | packed sequence length (`t2va`: no condition rows) |
-| `N` | `num_inference_steps` as passed; the loop runs `N-1` model evaluations |
+| `N` | Reference Python grid-point count; the reference loop runs `N-1` model evaluations |
 
 Worked example, the reference `t2va` request
 (`ref/scripts/readme/reproducible-768p-t2va-request.sh`: 16:9, short edge 768,
@@ -949,6 +949,11 @@ the grid near `sigma = 1`, so for large `N` two neighbouring float32 sigmas can
 collide there; the collapse then silently shortens the schedule. For
 `N ≤ ~100` no collision occurs at either shift, but the port must implement it
 (and see §9.5).
+
+Slopfab now exposes **update counts**, matching ComfyUI: a request for `S` steps
+builds `linspace(1, 0, S+1)` and performs `S` updates. The reference Python
+notation in this specification uses `N = S+1`. Explicit distilled grids keep
+their original points. See [sampling settings](sampling_settings.md).
 
 ### 7.2 Timesteps (`scheduler.py:169-171`)
 

@@ -17,8 +17,9 @@ struct SamplingSettings {
   std::optional<sampler::SigmaSchedule> scheduler;
   std::optional<float> beta_alpha;
   std::optional<float> beta_beta;
+  // Requested denoising updates; the generated grid adds terminal zero.
   std::optional<int> default_steps;
-  // Independent audio grid points, including terminal zero. Unset inherits
+  // Independent audio denoising updates. Unset inherits
   // the video count/base grid; set uses the selected generated schedule for audio.
   std::optional<int> audio_steps;
   std::optional<float> video_sigma_shift;

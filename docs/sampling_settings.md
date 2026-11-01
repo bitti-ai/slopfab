@@ -21,9 +21,9 @@ The example specifies four evaluations. It illustrates the format; choose values
 
 Only `version` is required. Omitting a field inherits it. `sampler` accepts `"euler"`, `"ab2"`, `"renoise"`, or `"er_sde"`; absent a selection, Euler is used. Shifts must be finite and positive. A grid must have at least two finite points, start in `(0,1]`, decrease strictly, and end at zero. Shifted grids must also remain valid in float32. Unsupported versions, unknown fields, incorrect types and invalid grids are errors. JSON syntax uses the repository's existing parser.
 
-Omit `base_sigmas` to inherit the selected grid, or use the ordinary linspace if no lower layer supplies a grid. `default_steps` is an integer from 2 to 1,000,000 specifying grid points. Explicit `--steps` takes precedence over this default and resolves conflicting adapter step defaults. A fixed grid determines its own length and takes precedence over `--steps`. Fixed grids support Euler, re-noising or ER-SDE and disable approximate step, block and MotionCache reuse. AB2 is rejected with fixed grids. These restrictions also apply when the grid comes from metadata; FastH3 and OmniRef still require Euler.
+Omit `base_sigmas` to inherit the selected grid, or use the ordinary linspace if no lower layer supplies a grid. `default_steps` is an integer from 1 to 1,000,000 specifying denoising updates. Explicit `--steps` takes precedence over this default and resolves conflicting adapter step defaults. A fixed grid determines its own length and takes precedence over `--steps`. Fixed grids support Euler, re-noising or ER-SDE and disable approximate step, block and MotionCache reuse. AB2 is rejected with fixed grids. These restrictions also apply when the grid comes from metadata; FastH3 and OmniRef still require Euler.
 
-CLI, C++ and C API now inherit the same recipe defaults: ordinarily 50 grid points, or 4 for Animate. The CLI previously forced 15. `GenerateRequest::num_inference_steps = 0` means inherit; positive explicit counts are retained when toggling Animate. Set an explicit count to preserve an old CLI invocation's evaluation count.
+CLI, C++ and C API now inherit the same recipe defaults: ordinarily 50 updates, or 4 for Animate. The CLI previously forced 15. `GenerateRequest::num_inference_steps = 0` means inherit; positive explicit counts are retained when toggling Animate. H3 step counts now follow ComfyUI: `--steps 4` requests four updates and creates five sigma boundaries. This also applies to `default_steps`, `audio_steps`, and the C++/C API. To reproduce an older generated H3 grid, subtract one from its former step setting (for example, old `--steps 30` becomes `--steps 29`). Explicit `base_sigmas` and named distilled grids retain their trained trajectories.
 
 ## ER-SDE and beta
 
@@ -56,8 +56,7 @@ descending beta quantiles select nearest-even rounded training-grid indices;
 consecutive duplicates are removed and terminal zero is appended. The training
 grid has 1,000 points for H3/MOSS and 10,000 for Krea/Fibo. Each model's shift
 is applied to the selected training times. Defaults are alpha=beta=0.6.
-H3 `--steps` still counts grid points including zero; image-model `--steps`
-counts requested evaluations. Quantization may reduce the realized count.
+H3 and image-model `--steps` count requested updates. Quantization may reduce the realized count.
 
 The JSON/C API equivalent, with optional shape overrides, is:
 
@@ -84,8 +83,8 @@ uses a short video schedule:
 slopfab generate --prompt "A person playing a piano" --steps 4 --audio-steps 25 --out piano.mp4
 ```
 
-Like `--steps`, this counts grid points **including terminal zero**: the example
-runs 3 video updates and 24 audio updates. Audio uses the selected generated schedule with
+Like `--steps`, this counts denoising updates: the example
+runs 4 video updates and 25 audio updates (28 joint transformer calls). Audio uses the selected generated schedule with
 the resolved `audio_sigma_shift`. Video retains its selected grid, including a
 fixed grid from a LoRA, `base_sigmas`, or a named schedule. Without this option,
 audio continues to inherit the video count and base grid exactly as before.

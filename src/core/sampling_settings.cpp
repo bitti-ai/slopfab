@@ -28,9 +28,9 @@ SamplingSettings parse_sampling_settings(std::string_view text) {
       continue;
     if (key == "default_steps" || key == "audio_steps") {
       const double n = value.as_number();
-      if (!std::isfinite(n) || n < 2 || n > 1000000 || std::floor(n) != n)
+      if (!std::isfinite(n) || n < 1 || n > 1000000 || std::floor(n) != n)
         throw std::invalid_argument("sampling settings: " + key +
-                                    " must be an integer in [2,1000000]");
+                                    " must be an integer in [1,1000000]");
       (key == "audio_steps" ? settings.audio_steps : settings.default_steps) = static_cast<int>(n);
       continue;
     }
@@ -86,10 +86,10 @@ void validate_sampling_settings(const SamplingSettings& settings) {
       throw std::invalid_argument("sampling settings: beta parameters must be in [0.01,100]");
   if (settings.base_sigmas && settings.scheduler == sampler::SigmaSchedule::kBeta)
     throw std::invalid_argument("beta scheduler cannot replace a fixed sigma grid");
-  if (settings.default_steps && (*settings.default_steps < 2 || *settings.default_steps > 1000000))
-    throw std::invalid_argument("sampling settings: default_steps must be in [2,1000000]");
-  if (settings.audio_steps && (*settings.audio_steps < 2 || *settings.audio_steps > 1000000))
-    throw std::invalid_argument("sampling settings: audio_steps must be in [2,1000000]");
+  if (settings.default_steps && (*settings.default_steps < 1 || *settings.default_steps > 1000000))
+    throw std::invalid_argument("sampling settings: default_steps must be in [1,1000000]");
+  if (settings.audio_steps && (*settings.audio_steps < 1 || *settings.audio_steps > 1000000))
+    throw std::invalid_argument("sampling settings: audio_steps must be in [1,1000000]");
   for (const auto& shift : {settings.video_sigma_shift, settings.audio_sigma_shift}) {
     if (shift && (!std::isfinite(*shift) || *shift <= 0.0f))
       throw std::runtime_error("sampling settings: sigma shifts must be finite and positive");

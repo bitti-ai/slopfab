@@ -110,7 +110,7 @@ Common generation options:
 | --- | --- |
 | `--inference-backend cuda\|vulkan` | Select the inference backend |
 | `--vulkan-arithmetic portable\|exact` | Vulkan arithmetic policy; Linux defaults to portable |
-| `--steps N` | H3 grid points (`N - 1` evaluations); Krea/MOSS/Fibo evaluation counts |
+| `--steps N` | Requested denoising updates (`N` updates; terminal zero added separately) |
 | `--sampler KIND` / `--schedule beta` | Select the solver and optional beta grid |
 | `--sampling-settings FILE` | Load sampling JSON overrides |
 | `--audio-steps N` | Experimental independent H3 audio grid length |

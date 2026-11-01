@@ -622,7 +622,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "  latent grid         %d frames of %d x %d  -> %d rows per frame\n"
       "  audio latents       %d per channel -> %d rows\n"
       "  packed sequence     %d rows + prompt length\n"
-      "  steps               %d grid points -> %d model evaluations\n"
+      "  steps               %d updates -> %d model evaluations\n"
       "  sigma range         video %.6f .. %.6f (shift %.6g)\n"
       "                      audio %.6f .. %.6f (shift %.6g)\n"
       "  seed                %llu\n"

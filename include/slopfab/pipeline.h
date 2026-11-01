@@ -98,7 +98,7 @@ struct GenerateRequest {
   bool still_image = false;
   ImageEdit image_edit;
 
-  // Video sigma grid points *including* the terminal zero. Audio inherits
+  // Video denoising updates (terminal zero is an extra endpoint). Audio inherits
   // this grid unless sampling.audio_steps selects an independent count.
   int num_inference_steps = 0; // zero inherits the model/task recipe
   sampler::ScheduleKind schedule = sampler::ScheduleKind::kDefault;
