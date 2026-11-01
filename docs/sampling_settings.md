@@ -105,7 +105,7 @@ do not guarantee better quality, especially with distilled adapters. Compare
 results with the option unset using the same seed.
 
 `audio_steps` also works in version-1 sampling JSON and model/LoRA metadata.
-It accepts integers from 2 to 1,000,000 and follows the usual field precedence
+It accepts integers from 1 to 1,000,000 and follows the usual field precedence
 and adapter conflict rules. Explicit `--audio-steps` wins over the JSON file
 regardless of argument order. A fixed `base_sigmas` grid still governs video;
 `audio_steps` overrides that grid for audio. Even an explicit equal count uses

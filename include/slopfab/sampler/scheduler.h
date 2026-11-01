@@ -1,14 +1,13 @@
 // Rectified-flow Euler scheduler for MiniMax H3.
 //
-// Three things differ from a conventional flow-match scheduler, and all three
-// change the numbers:
+// H3 velocity, timestep, and sigma-grid conventions:
 //
 //   1. The transformer predicts a *data-ward* velocity, so the denoised
 //      estimate is x0 = x_t + sigma*v — a plus, not the usual minus.
 //   2. Timesteps are t = 1 - sigma in [0, 1], with t = 1 meaning clean. The
 //      AdaLN conditioning consumes this convention directly.
-//   3. The sigma grid is linspace(1, 0, steps) with the terminal zero included
-//      in the requested count, then shifted and de-duplicated.
+//   3. The sigma grid is linspace(1, 0, steps + 1), then shifted and
+//      de-duplicated. The terminal zero is an extra endpoint, as in ComfyUI.
 //
 // A request runs two of these, one per modality: shift 12.0 for video latents,
 // 3.0 for audio.

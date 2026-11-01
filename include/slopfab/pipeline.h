@@ -254,8 +254,8 @@ struct GeneratePlan {
   // reconstruct the identical schedulers instead of naming the numbers again.
   float video_sigma_shift = kVideoSigmaShift;
   float audio_sigma_shift = kAudioSigmaShift;
-  // Grid points requested, so a scheduler rebuilt from this plan gets the same
-  // `set_timesteps` argument without consulting the request.
+  // Requested denoising updates, or the retained update count for fixed or
+  // truncated grids. The resolved sigma lists above define the trajectory.
   int num_inference_steps = 0;
 
   int num_model_evaluations() const {
