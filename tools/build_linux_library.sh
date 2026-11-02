@@ -54,7 +54,7 @@ generator=()
 if [[ ! -f "$build_dir/CMakeCache.txt" ]] && command -v ninja >/dev/null; then
   generator=(-G Ninja)
 fi
-printf 'build: configuring Linux CUDA/Vulkan library in %s...\n' "$build_dir"
+printf 'build: configuring Linux CUDA/Vulkan CLI and library in %s...\n' "$build_dir"
 cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CUDA_COMPILER=$cuda_compiler" \
   '-DCMAKE_CUDA_ARCHITECTURES=86;120a' \
@@ -62,8 +62,8 @@ cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DSLOPFAB_BUILD_C_API=ON -DSLOPFAB_BUILD_TESTS=ON \
   -DSLOPFAB_EMBED_TOKENIZER=ON "-DSLOPFAB_TOKENIZER_FILE=$root/ref/text_encoder/tokenizer.json"
 cmake --build "$build_dir" --config Release --parallel "$jobs" \
-  --target slopfab_c slopfab_capi_tests slopfab_embedded_tokenizer_tests
-ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer)$'
+  --target slopfab slopfab_c slopfab_capi_tests slopfab_embedded_tokenizer_tests slopfab_startup_tests
+ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer|agent_cli|settings_cli|mods_cli|cli_startup)$'
 
 major=$(awk '/^#define SLOPFAB_CAPI_VERSION_MAJOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')
 minor=$(awk '/^#define SLOPFAB_CAPI_VERSION_MINOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')
@@ -74,7 +74,7 @@ if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 library="$build_dir/libslopfab.so.$version"
 if [[ ! -f $library ]]; then printf 'build: missing library %s\n' "$library" >&2; exit 1; fi
-python3 "$root/tools/check_glibc.py" "$library"
+python3 "$root/tools/check_glibc.py" "$library" "$build_dir/slopfab"
 destination="$root/dist/linux"
 mkdir -p -- "$destination"
 pending=
@@ -87,13 +87,14 @@ publish() {
   mv -f -- "$pending" "$destination/$2"
   pending=
 }
+publish "$build_dir/slopfab" slopfab
 publish "$library" "libslopfab.so.$version"
 publish "$library" "libslopfab.so.$major"
 publish "$library" libslopfab.so
 publish "$root/include/slopfab/capi.h" capi.h
 (
   cd -- "$destination"
-  sha256sum "libslopfab.so.$version" "libslopfab.so.$major" libslopfab.so capi.h > SHA256SUMS
+  sha256sum slopfab "libslopfab.so.$version" "libslopfab.so.$major" libslopfab.so capi.h > SHA256SUMS
 )
 {
   printf 'slopfab C API %s\n' "$version"
@@ -102,7 +103,7 @@ publish "$root/include/slopfab/capi.h" capi.h
   printf 'CUDA targets: sm_86 and sm_120a; full tokenizer embedded\n'
   printf 'Source: %s\nBuild directory: %s\nCUDA compiler: %s\n' "$root" "$build_dir" "$cuda_compiler"
   printf 'Built UTC: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'Tests passed: capi, embedded_tokenizer\n'
+  printf 'Tests passed: capi, embedded_tokenizer, agent_cli, settings_cli, mods_cli, cli_startup\n'
   printf 'CUDA driver and matching toolkit shared libraries are external dependencies.\n'
 } > "$destination/build-info.txt"
-printf 'build: wrote %s/libslopfab.so (ABI %s)\n' "$destination" "$version"
+printf 'build: wrote %s/slopfab and libslopfab.so (ABI %s)\n' "$destination" "$version"

@@ -1,4 +1,4 @@
-# Build the current checkout's C ABI libraries; build.cmd is the public entry point.
+# Build the current checkout's CLI and C ABI libraries; build.cmd is the public entry point.
 [CmdletBinding()]
 param(
     [ValidateSet('both', 'windows', 'linux')][string]$Target = 'both',
@@ -38,12 +38,12 @@ Usage: build.cmd [-Target both|windows|linux] [-Jobs N] [-Distro NAME]
                  [-WindowsBuildDir PATH] [-LinuxBuildDir LINUX_PATH]
                  [-LinuxCudaCompiler LINUX_PATH]
 
-Builds Release libraries from the current checkout with CUDA, Vulkan and the
+Builds the Release CLI and libraries from the current checkout with CUDA, Vulkan and the
 full embedded tokenizer. Does not pull source or download dependencies/models.
-Runs C API and tokenizer tests before publishing each platform's outputs.
+Runs CLI, C API and tokenizer tests before publishing each platform's outputs.
 
-Windows: dist\windows\slopfab.dll, slopfab_c.lib, capi.h
-Linux:   dist\linux\libslopfab.so, versioned copies, capi.h
+Windows: dist\windows\slopfab.exe, slopfab.dll, slopfab_c.lib, capi.h
+Linux:   dist\linux\slopfab, libslopfab.so, versioned copies, capi.h
 Both folders also contain SHA256SUMS and build-info.txt.
 
 Defaults: both platforms, 2 jobs, WSL Ubuntu-22.04, Windows build\,
@@ -101,7 +101,7 @@ try {
     }
 
     if ($buildWindows) {
-        Write-Host 'build: configuring Windows CUDA/Vulkan library...'
+        Write-Host 'build: configuring Windows CUDA/Vulkan CLI and library...'
         Invoke-Checked 'cmake' @('-S', $root, '-B', $WindowsBuildDir,
             '-G', 'Visual Studio 17 2022', '-A', 'x64', '-T', "cuda=$($cuda12.Replace('\', '/'))",
             '-DCMAKE_CUDA_ARCHITECTURES=86;120a', "-DSLOPFAB_CUDA13_ROOT=$cuda13",
@@ -109,17 +109,18 @@ try {
             '-DSLOPFAB_BUILD_C_API=ON', '-DSLOPFAB_BUILD_TESTS=ON',
             '-DSLOPFAB_EMBED_TOKENIZER=ON', "-DSLOPFAB_TOKENIZER_FILE=$tokenizer")
         Invoke-Checked 'cmake' @('--build', $WindowsBuildDir, '--config', 'Release',
-            '--target', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests',
+            '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests',
             '--parallel', "$Jobs")
         Invoke-Checked 'ctest' @('--test-dir', $WindowsBuildDir, '-C', 'Release',
-            '--output-on-failure', '-R', '^(capi|embedded_tokenizer)$')
+            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|settings_cli|mods_cli|cli_startup)$')
 
         $destination = Join-Path $root 'dist\windows'
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
+        Publish-File (Join-Path $WindowsBuildDir 'Release\slopfab.exe') (Join-Path $destination 'slopfab.exe')
         Publish-File (Join-Path $WindowsBuildDir 'Release\slopfab.dll') (Join-Path $destination 'slopfab.dll')
         Publish-File (Join-Path $WindowsBuildDir 'Release\slopfab_c.lib') (Join-Path $destination 'slopfab_c.lib')
         Publish-File (Join-Path $root 'include\slopfab\capi.h') (Join-Path $destination 'capi.h')
-        $hashes = foreach ($name in @('slopfab.dll', 'slopfab_c.lib', 'capi.h')) {
+        $hashes = foreach ($name in @('slopfab.exe', 'slopfab.dll', 'slopfab_c.lib', 'capi.h')) {
             $digest = (Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256).Hash.ToLowerInvariant()
             "$digest  $name"
         }
@@ -131,15 +132,15 @@ try {
         @("slopfab C API $($version -join '.')", 'Windows x64 Release; CUDA 12.8; Vulkan enabled',
             'CUDA targets: sm_86 and sm_120a; full tokenizer embedded',
             "Source: $root", "Build directory: $WindowsBuildDir", "Built UTC: $([DateTime]::UtcNow.ToString('o'))",
-            'Tests passed: capi, embedded_tokenizer') |
+            'Tests passed: capi, embedded_tokenizer, agent_cli, settings_cli, mods_cli, cli_startup') |
             Set-Content -LiteralPath (Join-Path $destination 'build-info.txt') -Encoding UTF8
-        Write-Host "build: wrote $destination\slopfab.dll"
+        Write-Host "build: wrote $destination\slopfab.exe and slopfab.dll"
     }
 
     if ($buildLinux) {
         Invoke-Checked 'wsl.exe' $linuxArguments
     }
-    Write-Host "build: finished. Libraries are under $root\dist"
+    Write-Host "build: finished. CLI and libraries are under $root\dist"
     exit 0
 } catch {
     [Console]::Error.WriteLine("build: $($_.Exception.Message)")

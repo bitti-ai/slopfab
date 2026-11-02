@@ -1,6 +1,7 @@
 # Linux
 
-slopfab builds a native Linux CLI and `libslopfab.so` with CUDA, Vulkan, or both.
+slopfab builds a native Linux CLI named `slopfab` (the counterpart of Windows
+`slopfab.exe`) and `libslopfab.so` with CUDA, Vulkan, or both.
 Vulkan-only generation and the C API do not require a CUDA toolkit. A build with
 both backends disabled still supports host tools such as checkpoint inspection.
 The initial distribution target is x86-64 Linux.
@@ -21,7 +22,8 @@ docker run --rm -v "$PWD:/src" -v slopfab-linux-glibc235:/build \
   slopfab-linux-glibc235
 ```
 
-The tokenizer must already exist in the checkout. Outputs go to `dist/linux/`.
+The tokenizer must already exist in the checkout. The `slopfab` executable,
+shared library, headers and checksums go to `dist/linux/`.
 The container does not need GPU access for the build and host C API tests.
 For native WSL builds, install `Ubuntu-22.04` and its compiler/toolkit dependencies;
 `build.cmd` now selects that distribution by default. Use CMake 3.31 or newer
@@ -121,6 +123,25 @@ libraries must be discoverable by the dynamic linker at runtime. Linux does
 not use Windows' automatic CUDA 12/13 toolkit switching. To build CUDA alone,
 set `SLOPFAB_ENABLE_VULKAN=OFF`.
 
+## Agent CLI on Linux
+
+The Linux executable supports the same settings, mods, NDJSON output and job
+commands as Windows. No Windows compatibility layer is needed. To build just
+the executable after configuring either backend:
+
+```sh
+cmake --build build/linux-vulkan --target slopfab --parallel 2
+build/linux-vulkan/slopfab settings set weight_paths /path/to/weights
+build/linux-vulkan/slopfab mods list --agent
+build/linux-vulkan/slopfab help generate
+```
+
+Global settings default to `$XDG_CONFIG_HOME/slopfab/config.json`, falling back
+to `~/.config/slopfab/config.json`. Share mods as `mods/NAME/MOD.md` beside that
+file, beside the executable, or in the working directory. See the [agent CLI
+guide](agent-cli.md) and [mod format](mods.md). Use a supported GPU backend for
+actual generation; host-only builds support discovery and request validation.
+
 ## Media dependencies
 
 The executable and shared library no longer load FFmpeg libraries or launch
@@ -156,6 +177,12 @@ search paths so the installation can be relocated.
 
 ## Validation and CI
 
+The agent CLI update was built on WSL Ubuntu 26.04.1 with GCC 15.2 and CMake
+4.2.3 in both host-only and Vulkan configurations. All 12 host-only and 13 Vulkan
+CLI checks passed, covering settings, mods, background jobs, request validation,
+startup and native delivery. This is development-build validation, separate from
+the glibc 2.35 release baseline and from GPU inference qualification.
+
 Release baseline validation on 2026-11-02 used an isolated Ubuntu 22.04
 filesystem with glibc 2.35, GCC 11.4 and CMake 3.31.6. The Vulkan build passed
 17 host tests with three model/GPU integration tests skipped; its installed CLI
@@ -176,9 +203,10 @@ use the CUDA build directory. Suites without required hardware or checkpoints
 report skipped tests. Full validation also requires real generation, reference
 input, LoRA, continuation and output tests with the desired model files.
 
-The Linux workflow builds host-only and Vulkan configurations with media support
-enabled and disabled, exercises host and C API tests, and checks installation
-and packaging. It embeds a small test tokenizer; its uploaded archives are test
+The Linux workflow builds host-only and Vulkan configurations, exercises CLI
+(including settings, mods and agent jobs), host and C API tests, and checks
+installation and packaging. FFmpeg is only an external conversion tool; there
+is no FFmpeg build option or linked dependency. It embeds a small test tokenizer; its uploaded archives are test
 builds and cannot tokenize real model prompts correctly. A manually enabled
 CUDA job compiles CLI and C API against CUDA 12.8 for SM86. Hosted CI does not
 claim GPU execution, native SM120a coverage or successful model generation.
@@ -218,15 +246,15 @@ CUDA 13.3:
 
 Run the same Linux commands inside the WSL distribution, for example from
 `/mnt/d/Projects/slopfab`. Keep Linux and Windows build directories separate.
-From Windows, `build.cmd` builds both C API libraries into `dist/windows` and
-`dist/linux`; `build.cmd -Target linux -Distro Ubuntu-22.04` builds only the Linux
-library. Release builds use Ubuntu 22.04 (pass `-Distro Ubuntu-22.04`). The build
+From Windows, `build.cmd` builds the CLI and C API libraries into `dist/windows`
+and `dist/linux`; `build.cmd -Target linux -Distro Ubuntu-22.04` builds only the
+Linux executable and library. Release builds use Ubuntu 22.04 (pass `-Distro Ubuntu-22.04`). The build
 directory defaults to `$HOME/slopfab-build-linux-glibc235` inside WSL and reuses its
 cached CUDA compiler, or discovers `/usr/local/cuda/bin/nvcc` for a new build.
 Override these with `-LinuxBuildDir /absolute/build/path` and
 `-LinuxCudaCompiler /absolute/path/to/nvcc`. The same helper can be run natively
 as `bash tools/build_linux_library.sh`. Matching headers, SHA-256 manifests and
-build information accompany the shared libraries; no model weights or runtime
+build information accompany the executables and shared libraries; no model weights or runtime
 dependencies are copied.
 
 Use a build directory on the Linux filesystem, such as

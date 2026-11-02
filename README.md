@@ -31,9 +31,9 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "cuda=$($env:CUDA_PATH_
 cmake --build build --config Release
 ```
 
-Build and test Windows/Linux libraries together with `.\build.cmd` (Linux uses WSL).
+Build and test the Windows/Linux CLI and libraries together with `.\build.cmd` (Linux uses WSL).
 Use `-Target windows|linux`, `-Distro Ubuntu-22.04` or `-Jobs 4` to narrow the build;
-`.\build.cmd -Help` lists all options. Libraries, headers and checksums go to
+`.\build.cmd -Help` lists all options. Executables, libraries, headers and checksums go to
 `dist/windows/` and `dist/linux/`. Linux releases target glibc 2.35 and default
 to WSL Ubuntu-22.04; the Linux guide also provides a container build. GPU runtimes remain external.
 
