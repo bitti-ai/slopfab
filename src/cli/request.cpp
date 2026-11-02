@@ -1,4 +1,5 @@
 #include "agent.h"
+#include "startup.h"
 #include "commands.h"
 #include "slopfab/model_profile.h"
 #include <cmath>
@@ -474,7 +475,7 @@ Value capabilities() {
              {"execution", str("one generation per local worker; CLI processes share a GPU lock")},
              {"external_conversion",
               str("Use a separate ffmpeg installation to encode MP4, MP3 or other formats.")},
-             {"schema_command", str("slopfab schema --agent")}});
+             {"schema_command", str("slopfab schema")}});
 }
 
 int discovery_command(const std::string& command, const std::vector<std::string>& args) {
@@ -519,6 +520,7 @@ int discovery_command(const std::string& command, const std::vector<std::string>
                         {"models", Value(models)},
                         {"presets", cfg.find("presets") ? *cfg.find("presets") : Value(Object{})}});
   } else {
+    const auto dependencies = startup_dependencies(agent().executable);
     Array devices, diagnostics;
 #if SLOPFAB_WITH_CUDA
     try {
@@ -546,14 +548,19 @@ int discovery_command(const std::string& command, const std::vector<std::string>
       diagnostics.push_back(str(e.what()));
     }
 #endif
-    data = Value(
-        Object{{"gpu_available", Value(!devices.empty())},
-               {"devices", Value(devices)},
-               {"diagnostics", Value(diagnostics)},
-               {"config_path", str(config_path().u8string())},
-               {"jobs_path", str(jobs_path().u8string())},
-               {"ffmpeg_required", Value(false)},
-               {"next", str("Use models list, then validate --request FILE --check-ready.")}});
+    data = Value(Object{
+        {"gpu_available", Value(!devices.empty())},
+        {"devices", Value(devices)},
+        {"diagnostics", Value(diagnostics)},
+        {"config_path", str(config_path().u8string())},
+        {"jobs_path", str(jobs_path().u8string())},
+        {"ffmpeg_required", Value(false)},
+        {"ffmpeg_available", Value(dependencies.ffmpeg)},
+        {"cuda_installed", Value(dependencies.cuda)},
+        {"startup_ready", Value(std::string(missing_startup_dependency(dependencies)).empty())},
+        {"next", str(std::string(missing_startup_dependency(dependencies)).empty()
+                         ? "Use models list, then validate --request FILE --check-ready."
+                         : startup_instructions(dependencies))}});
   }
   emit({{"type", str("result")}, {"ok", Value(true)}, {"data", data}}, true);
   return 0;

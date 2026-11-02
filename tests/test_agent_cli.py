@@ -28,10 +28,20 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
         assert sum(e["type"] in ("result", "error", "help") for e in events) == 1, events
         return events[-1]
 
-    help_result = run()
-    assert len(help_result["instructions"].splitlines()) <= 7
+    startup = run()
+    if "missing_dependency" in startup:
+        assert len(startup["instructions"].splitlines()) == 1
+        assert "commands" not in startup
+    else:
+        assert len(startup["instructions"].splitlines()) == 4
+    help_result = run("help")
+    instructions = help_result["instructions"].splitlines()
+    assert instructions[1] == "When running inside agent, add --agent parameter"
+    assert "--agent" not in "\n".join(instructions[2:])
     for command in help_result["commands"]:
-        assert run(command["command"], "--help")["type"] == "help"
+        command_help=run(command["command"], "--help")
+        assert command_help["type"] == "help"
+        assert "--agent" not in command_help["usage"]
     assert "png" in run("capabilities")["data"]["output_formats"]
     assert run("schema")["data"]["additionalProperties"] is False
     assert run("models", "list")["data"]["models"]

@@ -1,6 +1,6 @@
 # --- cli --------------------------------------------------------------------
 
-set(SLOPFAB_CLI_SOURCES src/main.cpp src/cli/agent.cpp src/cli/request.cpp src/cli/jobs.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
+set(SLOPFAB_CLI_SOURCES src/main.cpp src/cli/startup.cpp src/cli/agent.cpp src/cli/request.cpp src/cli/jobs.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 
 # The CLI and C API use the same in-process CUDA core. On Windows cuBLAS is
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
@@ -15,7 +15,7 @@ target_sources(slopfab PRIVATE
   src/cli/decode.cpp src/cli/tokenize.cpp src/cli/generate.cpp src/cli/devices.cpp)
 set(SLOPFAB_CLI_TARGET slopfab)
 
-target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core)
+target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core ${CMAKE_DL_LIBS})
 target_compile_definitions(${SLOPFAB_CLI_TARGET} PRIVATE
   SLOPFAB_WITH_VULKAN=$<IF:$<BOOL:${SLOPFAB_ENABLE_VULKAN}>,1,0>)
 if(SLOPFAB_ENABLE_VULKAN)

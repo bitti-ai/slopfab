@@ -1,18 +1,23 @@
 # Agent CLI
 
-Run `slopfab` with no arguments for a short introduction. Every command accepts
+Run `slopfab` with no arguments for a short introduction. Startup first suggests
+installing the NVIDIA CUDA Toolkit when NVIDIA hardware is present without a
+compatible installation, then installing FFmpeg if it is absent from PATH and
+the executable directory. It shows only the first missing prerequisite; rerun
+after installation to get normal instructions. Explicit help and commands remain
+accessible. FFmpeg remains an external conversion tool, not a linked dependency. Every command accepts
 `--help`; add `--agent` for machine-readable help and responses. The DLL's C ABI
 is unchanged. CLI requests, jobs, output policy, and configuration are separate
 from DLL generation.
 
 ```sh
-slopfab capabilities --agent
-slopfab models list --agent
-slopfab doctor --agent
-slopfab schema --agent
-slopfab generate image --prompt "A red apple" --seed 42 --out apple.png --agent
-slopfab generate video --prompt "A cat playing piano" --duration 5 --out cat.y4m --agent
-slopfab generate music --prompt "Gentle piano" --duration 10 --out piano.wav --agent
+slopfab capabilities
+slopfab models list
+slopfab doctor
+slopfab schema
+slopfab generate image --prompt "A red apple" --seed 42 --out apple.png
+slopfab generate video --prompt "A cat playing piano" --duration 5 --out cat.y4m
+slopfab generate music --prompt "Gentle piano" --duration 10 --out piano.wav
 ```
 
 Image defaults to Krea 2, video to H3, and music to YuE2. `--model` selects a
@@ -40,9 +45,9 @@ compatibility or that inference fits in memory.
 ```
 
 ```sh
-slopfab validate --request request.json --agent
-slopfab validate --request request.json --check-ready --agent
-slopfab generate --request request.json --agent
+slopfab validate --request request.json
+slopfab validate --request request.json --check-ready
+slopfab generate --request request.json
 ```
 
 `--request -` reads one UTF-8 JSON object from stdin (maximum 16 MiB). Prompts
@@ -189,10 +194,10 @@ use aliases or explicit checkpoint paths to disambiguate.
 ## Persistent jobs
 
 ```sh
-slopfab submit --request request.json --idempotency-key scene-17 --agent
-slopfab status JOB_ID --agent
-slopfab wait JOB_ID --timeout 60 --agent
-slopfab cancel JOB_ID --agent
+slopfab submit --request request.json --idempotency-key scene-17
+slopfab status JOB_ID
+slopfab wait JOB_ID --timeout 60
+slopfab cancel JOB_ID
 slopfab worker --idle-seconds 60
 slopfab worker --stop
 ```

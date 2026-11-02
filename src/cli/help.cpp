@@ -65,6 +65,7 @@
 
 #include "commands.h"
 #include "agent.h"
+#include "startup.h"
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
@@ -414,28 +415,26 @@ const CommandHelp kCommands[] = {
      "Input bundles are flattened in order; each member keeps its metadata and dtype.\n"
      "Up to 256 members. Does not encode raw media. No models or GPU are needed.\n"
      "Use generate --refmod to load the bundle; strength/copies apply to all members.\n"},
-    {"capabilities", "slopfab capabilities --agent",
+    {"capabilities", "slopfab capabilities",
      "Discover tasks, model families, backends and native formats.",
      "No weights or GPU initialization. Next: models list, doctor, schema.\n"},
-    {"schema", "slopfab schema --agent", "Get the version-1 generation request JSON Schema.",
+    {"schema", "slopfab schema", "Get the version-1 generation request JSON Schema.",
      "Pass a request with generate --request FILE or --request - for stdin.\n"},
-    {"models", "slopfab models list --agent",
-     "List installed model files, configured aliases and presets.",
+    {"models", "slopfab models list", "List installed model files, configured aliases and presets.",
      "Use --config FILE or SLOPFAB_CONFIG to select config. Paths in config are relative to that file.\n"},
-    {"doctor", "slopfab doctor --agent", "Check available GPUs and report configuration paths.",
-     "No inference. Next: validate --request FILE --check-ready --agent.\n"},
-    {"validate", "slopfab validate --request FILE --agent",
+    {"doctor", "slopfab doctor", "Check available GPUs and report configuration paths.",
+     "No inference. Next: validate --request FILE --check-ready.\n"},
+    {"validate", "slopfab validate --request FILE",
      "Resolve and validate a generation without loading GPU weights.",
      "--check-ready also checks required model files. Validation does not guarantee available VRAM.\nSee schema and generate --help for request fields and options.\n"},
-    {"submit", "slopfab submit --request FILE --idempotency-key KEY --agent",
+    {"submit", "slopfab submit --request FILE --idempotency-key KEY",
      "Queue a persistent generation and start a local worker.",
      "Same requests as generate. Queue capacity: 32. Retrying a key returns its existing job; changed requests fail.\nUse status JOB_ID, wait JOB_ID --timeout 60, or cancel JOB_ID. --jobs-dir selects a store.\n"},
-    {"status", "slopfab status JOB_ID --agent",
-     "Read persistent job state, result and event-file path.",
+    {"status", "slopfab status JOB_ID", "Read persistent job state, result and event-file path.",
      "States: queued, running, succeeded, failed, cancelled, interrupted.\n"},
-    {"wait", "slopfab wait JOB_ID --timeout 60 --agent", "Wait for a terminal job state.",
+    {"wait", "slopfab wait JOB_ID --timeout 60", "Wait for a terminal job state.",
      "Timeout returns exit 8 with timed_out=true. Waiting does not cancel the job.\n"},
-    {"cancel", "slopfab cancel JOB_ID --agent",
+    {"cancel", "slopfab cancel JOB_ID",
      "Request cooperative cancellation of a queued or running job.",
      "A running GPU operation may finish before cancellation takes effect. Inspect status afterward.\n"},
     {"worker", "slopfab worker --idle-seconds 60",
@@ -533,18 +532,22 @@ int print_command_help(const CommandHelp& c) {
 }
 
 void print_usage(bool list_commands) {
-  const std::string text =
-      "slopfab generates videos (Y4M + WAV), images (PNG), and music (WAV) locally.\n"
-      "Start: slopfab capabilities --agent; slopfab models list --agent; slopfab doctor --agent.\n"
-      "Generate: slopfab generate video|image|music --prompt TEXT --out FILE --agent.\n"
-      "JSON requests: slopfab schema --agent; slopfab validate --request FILE --agent.\n"
-      "Run requests: slopfab generate --request FILE --agent, or submit for a background job.\n"
-      "More: slopfab help COMMAND. Use external ffmpeg to convert Y4M/WAV to MP4 or other formats.\n";
+  const auto dependencies = list_commands ? StartupDependencies{false, false, true}
+                                          : startup_dependencies(agent().executable);
+  const auto text = startup_instructions(dependencies);
+  const std::string missing = missing_startup_dependency(dependencies);
   if (agent().enabled) {
-    Array commands;
-    for (const auto& c : kCommands)
-      commands.push_back(Value(Object{{"command", str(c.name)}, {"description", str(c.summary)}}));
-    emit({{"type", str("help")}, {"instructions", str(text)}, {"commands", Value(commands)}}, true);
+    Object response{{"type", str("help")}, {"instructions", str(text)}};
+    if (!missing.empty())
+      response["missing_dependency"] = str(missing);
+    if (list_commands) {
+      Array commands;
+      for (const auto& c : kCommands)
+        commands.push_back(
+            Value(Object{{"command", str(c.name)}, {"description", str(c.summary)}}));
+      response["commands"] = Value(commands);
+    }
+    emit(std::move(response), true);
   } else {
     std::fputs(text.c_str(), stdout);
     if (list_commands)
