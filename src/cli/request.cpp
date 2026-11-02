@@ -1,5 +1,6 @@
 #include "agent.h"
 #include "startup.h"
+#include "settings.h"
 #include "commands.h"
 #include "slopfab/model_profile.h"
 #include <cmath>
@@ -39,18 +40,7 @@ std::string scalar(const Value& v, const std::string& field) {
 }
 
 Value config() {
-  const auto path = config_path();
-  if (!std::filesystem::exists(path)) {
-    if (!agent().config_path.empty() || std::getenv("SLOPFAB_CONFIG"))
-      throw CliError("INPUT_NOT_FOUND", "config file not found: " + path.u8string(), 3);
-    return Value(Object{});
-  }
-  auto result = read_json(path);
-  keys(result, {"schema_version", "models", "presets", "weights_directory"}, "config");
-  if (const auto* version = result.find("schema_version"))
-    if (!version->is_number() || version->as_number() != 1)
-      throw CliError("INVALID_REQUEST", "unsupported config schema_version");
-  return result;
+  return load_settings();
 }
 
 Value read_request(const std::string& path) {
@@ -518,9 +508,11 @@ int discovery_command(const std::string& command, const std::vector<std::string>
     }
     data = Value(Object{{"config_path", str(config_path().u8string())},
                         {"models", Value(models)},
+                        {"weight_paths", *cfg.find("weight_paths")},
                         {"presets", cfg.find("presets") ? *cfg.find("presets") : Value(Object{})}});
   } else {
     const auto dependencies = startup_dependencies(agent().executable);
+    const bool has_weights = !configured_weight_paths().empty();
     Array devices, diagnostics;
 #if SLOPFAB_WITH_CUDA
     try {
@@ -557,10 +549,12 @@ int discovery_command(const std::string& command, const std::vector<std::string>
         {"ffmpeg_required", Value(false)},
         {"ffmpeg_available", Value(dependencies.ffmpeg)},
         {"cuda_installed", Value(dependencies.cuda)},
-        {"startup_ready", Value(std::string(missing_startup_dependency(dependencies)).empty())},
-        {"next", str(std::string(missing_startup_dependency(dependencies)).empty()
+        {"weight_paths", *load_settings().find("weight_paths")},
+        {"startup_ready",
+         Value(std::string(missing_startup_dependency(dependencies, has_weights)).empty())},
+        {"next", str(std::string(missing_startup_dependency(dependencies, has_weights)).empty()
                          ? "Use models list, then validate --request FILE --check-ready."
-                         : startup_instructions(dependencies))}});
+                         : startup_instructions(dependencies, has_weights))}});
   }
   emit({{"type", str("result")}, {"ok", Value(true)}, {"data", data}}, true);
   return 0;

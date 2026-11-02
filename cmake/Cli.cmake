@@ -1,6 +1,6 @@
 # --- cli --------------------------------------------------------------------
 
-set(SLOPFAB_CLI_SOURCES src/main.cpp src/cli/startup.cpp src/cli/agent.cpp src/cli/request.cpp src/cli/jobs.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
+set(SLOPFAB_CLI_SOURCES src/main.cpp src/cli/startup.cpp src/cli/settings.cpp src/cli/agent.cpp src/cli/request.cpp src/cli/jobs.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 
 # The CLI and C API use the same in-process CUDA core. On Windows cuBLAS is
 # late-bound, so neither module has a fixed CUDA-major import and no launcher

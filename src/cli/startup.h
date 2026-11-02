@@ -9,6 +9,8 @@ struct StartupDependencies {
 };
 
 StartupDependencies startup_dependencies(const std::string& executable);
-const char* missing_startup_dependency(const StartupDependencies& dependencies);
-std::string startup_instructions(const StartupDependencies& dependencies);
+const char* missing_startup_dependency(const StartupDependencies& dependencies,
+                                       bool has_weight_paths = true);
+std::string startup_instructions(const StartupDependencies& dependencies,
+                                 bool has_weight_paths = true);
 }

@@ -66,6 +66,7 @@
 #include "commands.h"
 #include "agent.h"
 #include "startup.h"
+#include "settings.h"
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
@@ -415,6 +416,18 @@ const CommandHelp kCommands[] = {
      "Input bundles are flattened in order; each member keeps its metadata and dtype.\n"
      "Up to 256 members. Does not encode raw media. No models or GPU are needed.\n"
      "Use generate --refmod to load the bundle; strength/copies apply to all members.\n"},
+    {"settings", "slopfab settings get [KEY] | set KEY VALUE | remove KEY [PATH]",
+     "Read or update global settings; changes persist across invocations.",
+     "  settings get                         show all settings and the file path\n"
+     "  settings get weight_paths            show configured weight paths\n"
+     "  settings set weight_paths PATH [PATH ...]  replace the list; JSON arrays also work\n"
+     "  settings remove weight_paths [PATH ...]   remove selected paths, or clear the list\n"
+     "  settings set models.NAME JSON        set a model alias\n"
+     "  settings set presets.NAME JSON       set a generation preset\n"
+     "  settings remove models.NAME          remove a model alias\n"
+     "Writable keys: weight_paths, models, presets; dotted keys access nested fields.\n"
+     "Paths may name directories or checkpoint files. Relative paths are saved as absolute paths.\n"
+     "Use --config FILE to select another settings file. GPU and model files are not required.\n"},
     {"capabilities", "slopfab capabilities",
      "Discover tasks, model families, backends and native formats.",
      "No weights or GPU initialization. Next: models list, doctor, schema.\n"},
@@ -534,8 +547,9 @@ int print_command_help(const CommandHelp& c) {
 void print_usage(bool list_commands) {
   const auto dependencies = list_commands ? StartupDependencies{false, false, true}
                                           : startup_dependencies(agent().executable);
-  const auto text = startup_instructions(dependencies);
-  const std::string missing = missing_startup_dependency(dependencies);
+  const bool has_weights = list_commands || !configured_weight_paths().empty();
+  const auto text = startup_instructions(dependencies, has_weights);
+  const std::string missing = missing_startup_dependency(dependencies, has_weights);
   if (agent().enabled) {
     Object response{{"type", str("help")}, {"instructions", str(text)}};
     if (!missing.empty())

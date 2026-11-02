@@ -151,20 +151,25 @@ StartupDependencies startup_dependencies(const std::string& executable) {
   return result;
 }
 
-const char* missing_startup_dependency(const StartupDependencies& dependencies) {
+const char* missing_startup_dependency(const StartupDependencies& dependencies,
+                                       bool has_weight_paths) {
   if (dependencies.nvidia && !dependencies.cuda)
     return "cuda";
   if (!dependencies.ffmpeg)
     return "ffmpeg";
+  if (!has_weight_paths)
+    return "weight_paths";
   return "";
 }
 
-std::string startup_instructions(const StartupDependencies& dependencies) {
-  const std::string missing = missing_startup_dependency(dependencies);
+std::string startup_instructions(const StartupDependencies& dependencies, bool has_weight_paths) {
+  const std::string missing = missing_startup_dependency(dependencies, has_weight_paths);
   if (missing == "cuda")
     return "Install the NVIDIA CUDA Toolkit, then run slopfab again.\n";
   if (missing == "ffmpeg")
     return "Install FFmpeg and add it to PATH, then run slopfab again.\n";
+  if (missing == "weight_paths")
+    return "Ask the user for a weight path, then save it with: slopfab settings set weight_paths PATH\n";
   return "slopfab generates videos, images and music.\n"
          "When running inside agent, add --agent parameter\n"
          "Generate: slopfab generate video|image|music --prompt TEXT --out FILE\n"

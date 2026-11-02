@@ -65,6 +65,7 @@
 
 #include "commands.h"
 #include "agent.h"
+#include "settings.h"
 #include "slopfab/model_profile.h"
 
 namespace slopfab::cli {
@@ -87,106 +88,103 @@ std::string counted_output_path(const std::string& base, int index, int count) {
       .string();
 }
 
-std::filesystem::path find_weights_directory(const char* executable) {
-  std::vector<std::filesystem::path> starts;
-  const auto cfg_path = config_path();
-  if (std::filesystem::exists(cfg_path)) {
-    const auto cfg = read_json(cfg_path);
-    if (const auto* root = cfg.find("weights_directory")) {
-      auto p = std::filesystem::u8path(root->as_string());
-      return p.is_relative() ? cfg_path.parent_path() / p : p;
-    }
-  }
-  std::error_code ec;
-  const std::filesystem::path exe = std::filesystem::absolute(executable, ec);
-  if (!ec)
-    starts.push_back(exe.parent_path());
-
-  for (std::filesystem::path start : starts) {
-    for (int level = 0; level < 4 && !start.empty(); ++level) {
-      const std::filesystem::path candidate = start / "weights";
-      if (std::filesystem::is_directory(candidate, ec))
-        return candidate;
-      start = start.parent_path();
-    }
-  }
-  return {};
-}
-
-std::string find_checkpoint(const std::filesystem::path& directory,
-                            std::string_view required_name_part) {
+namespace {
+std::string find_weight(const std::vector<std::filesystem::path>& roots,
+                        std::initializer_list<const char*> folders, std::string_view hint,
+                        bool exact_name = false) {
   std::vector<std::filesystem::path> matches;
-  std::error_code ec;
-  for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end;
-       it.increment(ec)) {
-    if (!it->is_regular_file(ec) || it->path().extension() != ".safetensors")
-      continue;
-    std::string name = it->path().filename().string();
+  auto match = [&](const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec))
+      return;
+    auto name = path.filename().u8string();
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
+      return char(std::tolower(c));
     });
-    if (required_name_part.empty() || name.find(required_name_part) != std::string::npos) {
-      matches.push_back(it->path());
+    if (exact_name ? name != hint
+                   : (path.extension() != ".safetensors" || name.find(hint) == std::string::npos))
+      return;
+    auto canonical = std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+      canonical = path;
+    // The same file may be reachable through overlapping configured paths.
+    for (const auto& old : matches) {
+      if (std::filesystem::equivalent(old, canonical, ec) && !ec)
+        return;
+      ec.clear();
+    }
+    matches.push_back(std::move(canonical));
+  };
+  for (const auto& root : roots) {
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(root, ec)) {
+      match(root);
+      continue;
+    }
+    for (const auto* folder : folders) {
+      const auto directory = *folder ? root / folder : root;
+      if (exact_name) {
+        match(directory / std::string(hint));
+        continue;
+      }
+      ec.clear();
+      for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end;
+           it.increment(ec))
+        match(it->path());
     }
   }
   std::sort(matches.begin(), matches.end());
-  if (matches.size() > 1)
+  if (matches.size() > 1) {
+    std::string detail;
+    for (const auto& match : matches)
+      detail += " " + match.u8string();
     throw CliError("MODEL_AMBIGUOUS",
-                   "multiple matching checkpoints in " + directory.u8string() +
+                   "multiple matching checkpoints in weight_paths:" + detail +
                        "; configure a model alias or explicit paths",
                    3);
-  return matches.empty() ? std::string() : matches.front().string();
+  }
+  return matches.empty() ? std::string() : matches.front().u8string();
+}
 }
 
 void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable) {
+  (void)executable;
   const auto& profile = model_profile(request_model_family(req));
   if (profile.image_only)
     req.still_image = true;
-  const std::filesystem::path weights = find_weights_directory(executable);
+  const auto weights = configured_weight_paths();
   if (weights.empty())
     return;
   if (std::string_view(profile.family) == "yue2") {
     if (req.transformer_path.empty())
-      req.transformer_path = find_checkpoint(weights, "yue2_3b");
-    if (req.transformer_path.empty())
-      req.transformer_path = find_checkpoint(weights / "transformer", "yue2_3b");
+      req.transformer_path = find_weight(weights, {"", "transformer"}, "yue2_3b");
     return;
   }
   if (std::string_view(profile.family) == "minimax_music3") {
     if (req.transformer_path.empty())
-      req.transformer_path = find_checkpoint(weights, profile.transformer_hint);
-    if (req.transformer_path.empty())
-      req.transformer_path = find_checkpoint(weights / "transformer", profile.transformer_hint);
+      req.transformer_path = find_weight(weights, {"", "transformer"}, profile.transformer_hint);
     if (req.text_encoder_path.empty())
-      req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
-    if (req.text_encoder_path.empty())
-      req.text_encoder_path = find_checkpoint(weights, profile.conditioner_hint);
+      req.text_encoder_path = find_weight(weights, {"text_encoder", ""}, profile.conditioner_hint);
     if (req.audio_vae_path.empty())
-      req.audio_vae_path = find_checkpoint(weights, profile.vae_hint);
-    if (req.audio_vae_path.empty())
-      req.audio_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
+      req.audio_vae_path = find_weight(weights, {"", "vae"}, profile.vae_hint);
     return;
   }
   if (req.text_encoder_path.empty())
-    req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
+    req.text_encoder_path = find_weight(weights, {"text_encoder", ""}, profile.conditioner_hint);
   if (req.transformer_path.empty()) {
-    const std::string_view architecture =
-        (std::string_view(profile.family) == "h3" && req.has_references())
-            ? "ref2va"
-            : profile.transformer_hint;
-    req.transformer_path = find_checkpoint(weights / "transformer", architecture);
+    const auto architecture = (std::string_view(profile.family) == "h3" && req.has_references())
+                                  ? "ref2va"
+                                  : profile.transformer_hint;
+    req.transformer_path = find_weight(weights, {"transformer", ""}, architecture);
   }
   if (req.video_vae_path.empty())
-    req.video_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
-  if (std::string_view(profile.family) == "krea2" && req.video_vae_path.empty())
-    req.video_vae_path = find_checkpoint(weights / "text_encoder", profile.vae_hint);
-  if (std::string_view(profile.family) == "moss" && req.tokenizer_path.empty()) {
-    const auto tokenizer = weights / "text_encoder" / "qwen3.5_tokenizer.json";
-    if (std::filesystem::exists(tokenizer))
-      req.tokenizer_path = tokenizer.string();
-  }
+    req.video_vae_path = std::string_view(profile.family) == "krea2"
+                             ? find_weight(weights, {"vae", "text_encoder", ""}, profile.vae_hint)
+                             : find_weight(weights, {"vae", ""}, profile.vae_hint);
+  if (std::string_view(profile.family) == "moss" && req.tokenizer_path.empty())
+    req.tokenizer_path = find_weight(weights, {"text_encoder", ""}, "qwen3.5_tokenizer.json", true);
   if (!profile.image_only && req.audio_vae_path.empty())
-    req.audio_vae_path = find_checkpoint(weights / "vae", "audio");
+    req.audio_vae_path = find_weight(weights, {"vae", ""}, "audio");
 }
 
 void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_encoder) {
@@ -201,12 +199,12 @@ void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_
       throw std::runtime_error("missing YuE2 bundle: pass --transformer FILE");
     return;
   }
-  const auto require_model = [](const std::string& path, const char* option,
-                                const char* directory) {
+  const auto require_model = [](const std::string& path, const char* option, const char*) {
     if (path.empty())
       throw std::runtime_error(
-          std::string("missing model: place a compatible checkpoint in weights/") + directory +
-          " or pass " + option + " <file>");
+          std::string(
+              "missing model: set weight_paths with slopfab settings set weight_paths PATH, or pass ") +
+          option + " <file>");
   };
   if (need_text_encoder)
     require_model(req.text_encoder_path, "--text-encoder", "text_encoder/");

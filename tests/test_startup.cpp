@@ -56,6 +56,19 @@ int main() {
                     "installation guidance must be one line");
         }
 
+    require(std::string(missing_startup_dependency({true, false, false}, false)) == "cuda",
+            "weight prompt hid missing CUDA");
+    require(std::string(missing_startup_dependency({true, true, false}, false)) == "ffmpeg",
+            "weight prompt hid missing FFmpeg");
+    require(std::string(missing_startup_dependency({true, true, true}, false)) == "weight_paths",
+            "missing weight paths were not reported");
+    require(
+        startup_instructions({false, false, true}, false).find("Ask the user for a weight path") !=
+            std::string::npos,
+        "startup did not ask the agent to request a weight path");
+    require(std::string(missing_startup_dependency({true, true, true}, true)).empty(),
+            "configured paths did not restore normal startup");
+
     // Probe an isolated executable directory and PATH, then simulate adding and
     // removing an external installation. Nothing is executed or installed.
     std::filesystem::create_directories(root / "bin");

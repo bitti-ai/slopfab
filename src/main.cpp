@@ -1,5 +1,6 @@
 #include "cli/commands.h"
 #include "cli/agent.h"
+#include "cli/settings.h"
 #include <cstdio>
 #include <set>
 #ifdef _WIN32
@@ -44,6 +45,7 @@ int cli_main(int argc, char** argv) {
     }
     initialize_agent(machine,
                      std::filesystem::absolute(std::filesystem::u8path(argv[0])).u8string());
+    ensure_settings();
     if (args.empty()) {
       print_usage();
       return finish_command(0);
@@ -81,6 +83,8 @@ int cli_main(int argc, char** argv) {
     }
     if (const auto* help = find_command(command); help && wants_help(ac, av.data(), command))
       return print_command_help(*help);
+    if (command == "settings")
+      return settings_command(args);
     if (command == "generate" || command == "validate") {
       if (command == "validate")
         args.push_back("--dry-run");
