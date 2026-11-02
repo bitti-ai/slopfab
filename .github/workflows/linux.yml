@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   host:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -24,7 +24,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build and media tools
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ libpng-dev libjpeg-dev ffmpeg
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build g++ libpng-dev libjpeg-dev ffmpeg binutils python3-pip
+          python3 -m pip install cmake==3.31.6
+      - name: Check glibc baseline and checker
+        run: |
+          python3 tools/check_glibc.py --check-host
+          python3 -m unittest discover -s tools -p test_check_glibc.py
       - name: Configure
         shell: bash
         run: |
@@ -43,6 +49,7 @@ jobs:
         shell: bash
         run: |
           cmake --install build/linux --prefix "$RUNNER_TEMP/slopfab"
+          python3 tools/check_glibc.py "$RUNNER_TEMP/slopfab"
           "$RUNNER_TEMP/slopfab/bin/slopfab" --help
           (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/slopfab/bin/slopfab" tokenize hello)
           test -f "$RUNNER_TEMP/slopfab/share/licenses/slopfab/LICENSE"
@@ -60,10 +67,12 @@ jobs:
   cuda-compile:
     if: github.event_name == 'workflow_dispatch' && inputs.compile_cuda
     runs-on: ubuntu-24.04
-    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    container: nvidia/cuda:12.8.1-devel-ubuntu22.04
     steps:
       - name: Install build tools
-        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build g++ libpng-dev libjpeg-dev
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3-pip binutils ninja-build g++ libpng-dev libjpeg-dev
+          python3 -m pip install cmake==3.31.6
       - uses: actions/checkout@v4
       - name: Configure CUDA and Vulkan
         run: |
@@ -74,3 +83,5 @@ jobs:
             -DSLOPFAB_TOKENIZER_FILE="$GITHUB_WORKSPACE/tests/fixtures/tokenizer.json"
       - name: Compile CLI and C API
         run: cmake --build build/linux --target slopfab slopfab_c --parallel 2
+      - name: Check CUDA artifacts against glibc baseline
+        run: python3 tools/check_glibc.py --check-host build/linux/slopfab build/linux/libslopfab.so

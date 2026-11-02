@@ -28,7 +28,8 @@ if [[ $(uname -s) != Linux ]]; then
   printf 'package: run this script on Linux (including WSL).\n' >&2
   exit 2
 fi
-build_dir=${build_dir:-"$root/build/linux-$backend"}
+python3 "$root/tools/check_glibc.py" --check-host
+build_dir=${build_dir:-"$root/build/linux-glibc235-$backend"}
 cmake -S "$root" -B "$build_dir" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
   -DSLOPFAB_ENABLE_CUDA="$cuda" -DSLOPFAB_ENABLE_VULKAN="$vulkan" \
@@ -46,6 +47,8 @@ mkdir -p -- "$root/dist"
 # copy only the completed archive back to the checkout.
 package_dir=$(mktemp -d /tmp/slopfab-package.XXXXXXXX)
 trap 'rm -rf -- "$package_dir"' EXIT
+cmake --install "$build_dir" --config Release --prefix "$package_dir/check"
+python3 "$root/tools/check_glibc.py" "$package_dir/check"
 cpack --config "$build_dir/CPackConfig.cmake" -C Release -B "$package_dir"
 cp -- "$package_dir/"*.tar.gz "$root/dist/"
 printf 'package: wrote Linux archive under %s/dist (model weights and GPU/media runtimes are external).\n' "$root"

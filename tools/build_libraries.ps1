@@ -3,7 +3,7 @@
 param(
     [ValidateSet('both', 'windows', 'linux')][string]$Target = 'both',
     [ValidateRange(1, 64)][int]$Jobs = 2,
-    [string]$Distro = '',
+    [string]$Distro = 'Ubuntu-22.04',
     [string]$WindowsBuildDir = '',
     [string]$LinuxBuildDir = '',
     [string]$LinuxCudaCompiler = '',
@@ -46,13 +46,14 @@ Windows: dist\windows\slopfab.dll, slopfab_c.lib, capi.h
 Linux:   dist\linux\libslopfab.so, versioned copies, capi.h
 Both folders also contain SHA256SUMS and build-info.txt.
 
-Defaults: both platforms, 2 jobs, default WSL distribution, Windows build\,
-Linux $HOME/slopfab-build-linux. Relative Windows paths are based on the repo.
+Defaults: both platforms, 2 jobs, WSL Ubuntu-22.04, Windows build\,
+Linux $HOME/slopfab-build-linux-glibc235. Relative Windows paths are based on the repo.
 Linux paths must be absolute. Existing build configurations are reused;
 other CMake settings such as FFmpeg are retained (new builds use CMake defaults).
 
 Windows requires CMake >=3.31, VS 2022 C++ tools, CUDA 12.8 and CUDA 13.0 headers.
-Linux requires WSL, CMake >=3.31, C++ build tools, CUDA, libpng-dev/libjpeg-dev.
+Linux requires glibc <=2.35, WSL, CMake >=3.31, C++ tools, CUDA, libpng-dev/libjpeg-dev,
+Python 3.10+ and binutils. Install the baseline with wsl --install -d Ubuntu-22.04.
 The tokenizer must exist at ref\text_encoder\tokenizer.json.
 '@
     exit 0

@@ -5,6 +5,37 @@ Vulkan-only generation and the C API do not require a CUDA toolkit. A build with
 both backends disabled still supports host tools such as checkpoint inspection.
 The initial distribution target is x86-64 Linux.
 
+## Release compatibility
+
+Release libraries and packages target **glibc 2.35** (Ubuntu 22.04). Build on
+Ubuntu 22.04, including its system libraries; building on a newer distribution
+and copying the binary cannot lower its glibc requirements. Development builds
+through CMake can still use the host distribution. The publishing helpers reject
+newer build hosts and check ELF version requirements before copying artifacts.
+
+For an isolated CUDA 13 / Vulkan release build from Linux or WSL with Docker:
+
+```sh
+docker build -t slopfab-linux-glibc235 -f tools/linux-build.Dockerfile tools
+docker run --rm -v "$PWD:/src" -v slopfab-linux-glibc235:/build \
+  slopfab-linux-glibc235
+```
+
+The tokenizer must already exist in the checkout. Outputs go to `dist/linux/`.
+The container does not need GPU access for the build and host C API tests.
+For native WSL builds, install `Ubuntu-22.04` and its compiler/toolkit dependencies;
+`build.cmd` now selects that distribution by default. Use CMake 3.31 or newer
+(for example `python3 -m pip install cmake==3.31.6`), Python 3.10+ and binutils.
+Do not reuse build directories from a newer distribution. The default release
+build directories include `glibc235` to separate them from earlier outputs.
+
+`python3 tools/check_glibc.py FILE_OR_DIRECTORY...` checks all ELF files,
+including shared libraries and weak version requirements. When integrating
+`libslopfab.so` into Slopus, rebuild the app and all AppImage dependencies on the
+same baseline and scan the complete extracted AppImage. Replacing slopfab alone
+cannot fix newer requirements in GTK, GLib or WebKitGTK. glibc compatibility does
+not replace the GPU driver, CUDA, media or webview requirements.
+
 ## Build
 
 Install CMake 3.24 or newer, a C++17 compiler and a build tool. On Ubuntu:
@@ -126,7 +157,7 @@ bash package.sh --backend both -- -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
 
 `package.sh` configures, builds and runs host/C API/reference-decode tests, then
 creates `dist/slopfab-VERSION-linux-x86_64-BACKEND.tar.gz`. It uses a separate
-directory under `build/` for each backend; `--build-dir DIR` overrides it.
+directory `build/linux-glibc235-BACKEND`; `--build-dir DIR` overrides it.
 Additional CMake arguments follow `--`. Set `CMAKE_BUILD_PARALLEL_LEVEL` to
 change the default of two compilation jobs. Packaging stages files under Linux
 `/tmp` before copying the archive to `dist/`, so WSL checkouts on Windows drives
@@ -199,7 +230,8 @@ Run the same Linux commands inside the WSL distribution, for example from
 `/mnt/d/Projects/slopfab`. Keep Linux and Windows build directories separate.
 From Windows, `build.cmd` builds both C API libraries into `dist/windows` and
 `dist/linux`; `build.cmd -Target linux -Distro Ubuntu` builds only the Linux
-library. It defaults to `$HOME/slopfab-build-linux` inside WSL and reuses its
+library. Release builds use Ubuntu 22.04 (pass `-Distro Ubuntu-22.04`). The build
+directory defaults to `$HOME/slopfab-build-linux-glibc235` inside WSL and reuses its
 cached CUDA compiler, or discovers `/usr/local/cuda/bin/nvcc` for a new build.
 Override these with `-LinuxBuildDir /absolute/build/path` and
 `-LinuxCudaCompiler /absolute/path/to/nvcc`. The same helper can be run natively

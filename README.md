@@ -32,9 +32,10 @@ cmake --build build --config Release
 ```
 
 Build and test Windows/Linux libraries together with `.\build.cmd` (Linux uses WSL).
-Use `-Target windows|linux`, `-Distro Ubuntu` or `-Jobs 4` to narrow the build;
+Use `-Target windows|linux`, `-Distro Ubuntu-22.04` or `-Jobs 4` to narrow the build;
 `.\build.cmd -Help` lists all options. Libraries, headers and checksums go to
-`dist/windows/` and `dist/linux/`. GPU runtimes remain external.
+`dist/windows/` and `dist/linux/`. Linux releases target glibc 2.35 and default
+to WSL Ubuntu-22.04; the Linux guide also provides a container build. GPU runtimes remain external.
 
 The default CUDA targets are RTX 30-series and RTX 50-series. Windows selects
 cuBLAS from an installed CUDA 13 or CUDA 12 toolkit; Linux links its build toolkit.

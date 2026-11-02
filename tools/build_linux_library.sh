@@ -3,7 +3,7 @@
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-build_dir="$HOME/slopfab-build-linux"
+build_dir="$HOME/slopfab-build-linux-glibc235"
 cuda_compiler=
 jobs=2
 check_only=false
@@ -27,9 +27,10 @@ fi
 if [[ $build_dir != /* ]]; then
   printf 'build: --build-dir must be an absolute Linux path\n' >&2; exit 2
 fi
-for tool in cmake ctest c++; do
+for tool in cmake ctest c++ python3 readelf; do
   command -v "$tool" >/dev/null || { printf 'build: install Linux %s\n' "$tool" >&2; exit 1; }
 done
+python3 "$root/tools/check_glibc.py" --check-host
 if [[ ! -f "$root/ref/text_encoder/tokenizer.json" ]]; then
   printf 'build: missing ref/text_encoder/tokenizer.json\n' >&2; exit 1
 fi
@@ -73,6 +74,7 @@ if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 library="$build_dir/libslopfab.so.$version"
 if [[ ! -f $library ]]; then printf 'build: missing library %s\n' "$library" >&2; exit 1; fi
+python3 "$root/tools/check_glibc.py" "$library"
 destination="$root/dist/linux"
 mkdir -p -- "$destination"
 pending=
@@ -96,6 +98,7 @@ publish "$root/include/slopfab/capi.h" capi.h
 {
   printf 'slopfab C API %s\n' "$version"
   printf 'Linux x86_64 Release; CUDA and Vulkan enabled\n'
+  printf 'Maximum required glibc: 2.35 (verified before publishing)\n'
   printf 'CUDA targets: sm_86 and sm_120a; full tokenizer embedded\n'
   printf 'Source: %s\nBuild directory: %s\nCUDA compiler: %s\n' "$root" "$build_dir" "$cuda_compiler"
   printf 'Built UTC: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
