@@ -100,6 +100,7 @@ if(SLOPFAB_ENABLE_CUDA)
       src/krea/vae.cu
       src/fibo/ops.cu
       src/fibo/text.cu
+      src/text/clip_student.cu
       src/fibo/render.cpp
       src/fibo/transformer.cu
       src/moss/runtime.cu

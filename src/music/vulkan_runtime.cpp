@@ -2,6 +2,7 @@
 #include "runtime.cuh"
 #include "slopfab/int8_weight.h"
 #include "slopfab/tensor_convert.h"
+#include "slopfab/text/clip_projection.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -170,7 +171,7 @@ Tensor Runtime::project(const Tensor& x, const std::string& name, bool fused_bia
   if (it == matrices_.end()) {
     Matrix m;
     if (view.dtype != DType::kI8 && view.dtype != DType::kBF16 && view.dtype != DType::kF16 &&
-        view.dtype != DType::kF32)
+        view.dtype != DType::kF32 && !(allow_clip_fp8 && view.dtype == DType::kF8E4M3))
       throw std::invalid_argument("Vulkan music unsupported weight dtype: " + name);
     Int8WeightState quant;
     if (view.dtype == DType::kI8) {
@@ -203,6 +204,14 @@ Tensor Runtime::project(const Tensor& x, const std::string& name, bool fused_bia
         v.data =
             static_cast<const uint8_t*>(view.data) + size_t(first) * x.cols * dtype_size(v.dtype);
         values = to_f32(v);
+        if (view.dtype == DType::kF8E4M3) {
+          const auto* scale = checkpoint.find(name + ".weight_scale");
+          if (!scale) scale = checkpoint.find(name + ".scale_weight");
+          if (!scale || scale->numel() != 1) throw std::invalid_argument("ClipProj: missing FP8 scalar scale");
+          const float factor = to_f32(*scale)[0];
+          if (!std::isfinite(factor) || factor <= 0) throw std::invalid_argument("ClipProj: invalid FP8 scalar scale");
+          for (float& value : values) value *= factor;
+        }
       }
       m.tiles.push_back(engine->upload(values, count, x.cols));
       if (bias_view)

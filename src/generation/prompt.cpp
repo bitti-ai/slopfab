@@ -49,6 +49,7 @@
 #include "prefetch.h"
 #include "decode.h"
 #include "prompt.h"
+#include "clip_student.h"
 
 namespace slopfab::generation {
 bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions& options,
@@ -71,8 +72,9 @@ bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions&
         reference_conditioning_grids.push_back(
             text::qwen3vl_conditioning_grid(reference_images[i].width, reference_images[i].height));
         const bool outpaint = request.image_edit.invert_mask;
-        labels.push_back(tokenizer.encode(outpaint && i == 0 ? "Source scene: "
-            : "<Picture " + std::to_string(i + (outpaint ? 0 : 1)) + ">: "));
+        labels.push_back(tokenizer.encode(
+            outpaint && i == 0 ? "Source scene: "
+                               : "<Picture " + std::to_string(i + (outpaint ? 0 : 1)) + ">: "));
         if (labels.back().size() > std::numeric_limits<size_t>::max() - nonvision_tokens)
           throw std::overflow_error("reference conditioning token overflow");
         nonvision_tokens += labels.back().size();
@@ -172,10 +174,12 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
                                                              : ConditionerAuthority::kCudaShipped);
   const std::string prompt_key =
       cache_prompt ? conditioning_cache_key_for_authority(request, reference_identities,
-                                                                  conditioner_authority) +
-                                  (options.inference_backend == DeviceBackend::kVulkan &&
-                                   options.vulkan_portable_arithmetic ? ":portable" : ":qualified")
-                           : std::string();
+                                                          conditioner_authority) +
+                         (options.inference_backend == DeviceBackend::kVulkan &&
+                                  options.vulkan_portable_arithmetic
+                              ? ":portable"
+                              : ":qualified")
+                   : std::string();
   if (!options.prompt_embedding_path.empty()) {
     const Clock::time_point t0 = Clock::now();
     try {
@@ -188,8 +192,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     if (options.verbose)
       std::printf("prompt      captured [%d, %d] from %s (no conditioner)\n", prompt.num_tokens,
                   prompt.hidden_size, options.prompt_embedding_path.c_str());
-  } else if (cache_prompt && reuse.conditioning_key == prompt_key &&
-             !reuse.prompt.data.empty()) {
+  } else if (cache_prompt && reuse.conditioning_key == prompt_key && !reuse.prompt.data.empty()) {
     prompt = reuse.prompt;
     if (options.verbose) {
       std::printf("prompt      reused cached [%d, %d] conditioning\n", prompt.num_tokens,
@@ -239,13 +242,43 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     SafeTensors encoder_file;
     encoder_file.open(request.text_encoder_path);
     try {
-      text::require_reference_vision_support(encoder_file, qwen_images.size());
+      if (request.clip_projection_path.empty())
+        text::require_reference_vision_support(encoder_file, qwen_images.size());
     } catch (const std::exception& e) {
       result.message = e.what();
       return false;
     }
     const char* conditioner_mode = nullptr;
-    if (options.inference_backend == DeviceBackend::kCuda) {
+    if (!request.clip_projection_path.empty()) {
+      if (!qwen_images.empty())
+        throw std::invalid_argument("ClipProj supports text-only conditioning");
+      text::ClipProjection projection(request.clip_projection_path);
+      (void)text::validate_clip_student(encoder_file, projection);
+      auto check = [&]() {
+        if (options.on_progress &&
+            !options.on_progress(RunStage::kConditioning, -1, 0, options.hook_userdata)) {
+          result.cancelled = true;
+          throw std::runtime_error("ClipProj conditioning cancelled");
+        }
+      };
+      text::PromptEmbedding hidden;
+      if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
+        hidden = text::encode_clip_student_cuda(request.text_encoder_path, projection, ids, check);
+#else
+        throw std::runtime_error("CUDA support is not compiled in");
+#endif
+      } else {
+#if SLOPFAB_WITH_VULKAN
+        hidden =
+            text::encode_clip_student_vulkan(request.text_encoder_path, projection, ids, check);
+#else
+        throw std::runtime_error("Vulkan support is not compiled in");
+#endif
+      }
+      prompt = projection.apply(hidden, check);
+      conditioner_mode = "ClipProj streaming student + host projection";
+    } else if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
       text::Encoder encoder;
       text::EncoderConfig ecfg;
@@ -263,7 +296,8 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
 #endif
     } else {
 #if SLOPFAB_WITH_VULKAN
-      vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic, true);
+      vulkan::Device device =
+          create_vulkan_inference_device(options.vulkan_portable_arithmetic, true);
       vulkan::TensorContextOptions tensor_options;
       tensor_options.max_batch_operators = 64;
       vulkan::TensorContext context(device, tensor_options);
@@ -280,7 +314,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
       }
       encoder.unload();
       conditioner_mode = options.vulkan_portable_arithmetic ? "Vulkan streaming portable"
-                                                           : "Vulkan streaming exact";
+                                                            : "Vulkan streaming exact";
 #else
       throw std::logic_error("Vulkan conditioner compiled out after validation");
 #endif

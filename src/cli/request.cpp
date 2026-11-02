@@ -241,7 +241,7 @@ void resolve_model_alias(GenerateRequest& request, const std::string& name) {
     request.model_family = name;
     return;
   }
-  keys(*model, {"family", "transformer", "text_encoder", "vae", "audio_vae", "tokenizer"},
+  keys(*model, {"family", "transformer", "text_encoder", "clip_projection", "vae", "audio_vae", "tokenizer"},
        "models." + name);
   const auto* family = model->find("family");
   if (!family)
@@ -250,6 +250,7 @@ void resolve_model_alias(GenerateRequest& request, const std::string& name) {
   for (auto field : std::initializer_list<std::pair<const char*, std::string*>>{
            {"transformer", &request.transformer_path},
            {"text_encoder", &request.text_encoder_path},
+           {"clip_projection", &request.clip_projection_path},
            {"vae", &request.video_vae_path},
            {"audio_vae", &request.audio_vae_path},
            {"tokenizer", &request.tokenizer_path}}) {
@@ -465,6 +466,10 @@ Value capabilities() {
       {"execution", str("one generation per local worker; CLI processes share a GPU lock")},
       {"external_conversion",
        str("Use a separate ffmpeg installation to encode MP4, MP3 or other formats.")},
+      {"h3_clip_projection", Value(Object{
+          {"option", str("--clip-projection FILE")},
+          {"encoders", Value(Array{str("Qwen3-VL-4B"),str("Qwen3-VL-8B")})},
+          {"conditioning", str("text only; BF16 streaming student, CPU ridge/MLP projection")}})},
       {"mods",
        Value(Object{{"index_command", str("slopfab mods list")},
                     {"load_command", str("slopfab mods load NAME")},
@@ -507,6 +512,7 @@ int discovery_command(const std::string& command, const std::vector<std::string>
                                     {"reason", str(reason)},
                                     {"transformer", str(r.transformer_path)},
                                     {"text_encoder", str(r.text_encoder_path)},
+                                    {"clip_projection", str(r.clip_projection_path)},
                                     {"vae", str(r.video_vae_path)},
                                     {"audio_vae", str(r.audio_vae_path)}}));
     }

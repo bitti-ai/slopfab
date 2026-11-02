@@ -33,6 +33,7 @@ if(SLOPFAB_ENABLE_VULKAN)
     src/vulkan/tensor_krea.cpp
     src/krea/vulkan_runtime.cpp
     src/krea/text_vulkan.cpp
+    src/text/clip_student_vulkan.cpp
     src/krea/transformer_vulkan.cpp
     src/krea/vae_vulkan.cpp
     src/vulkan/tensor_music.cpp

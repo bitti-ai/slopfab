@@ -26,7 +26,7 @@ std::string format_bytes(uint64_t);
 uint64_t random_seed();
 std::string timestamped_output_path();
 std::string counted_output_path(const std::string&, int, int);
-void discover_generate_checkpoints(GenerateRequest&, const char*);
+void discover_generate_checkpoints(GenerateRequest&, const char*, bool text_only = false);
 void ensure_generate_models(const GenerateRequest&, bool);
 int cmd_inspect(int, char**);
 int cmd_compare(int, char**);

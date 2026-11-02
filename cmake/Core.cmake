@@ -63,6 +63,7 @@ add_library(slopfab_core STATIC
   src/text/nfc.cpp
   src/text/tokenizer_contract.cpp
   src/text/encoder.cpp
+  src/text/clip_projection.cpp
   src/text/prompt_embedding.cpp
   src/text/layer_capture.cpp
   src/text/qwen_vision.cpp

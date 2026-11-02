@@ -1,3 +1,4 @@
+#include "slopfab/text/clip_projection.h"
 #include "agent.h"
 #include "commands.h"
 #include "native_media.h"
@@ -424,6 +425,7 @@ Value plan_json(const GenerateRequest& r, const GeneratePlan& p) {
       {"output", str(std::filesystem::absolute(std::filesystem::u8path(r.out_path)).u8string())},
       {"transformer", str(r.transformer_path)},
       {"text_encoder", str(r.text_encoder_path)},
+      {"clip_projection", str(r.clip_projection_path)},
       {"video_vae", str(r.video_decode_path())},
       {"audio_vae", str(r.audio_vae_path)},
       {"description", str(describe_plan(r, p))}});
@@ -436,9 +438,19 @@ void check_models_ready(const GenerateRequest& r, bool need_text) {
     throw CliError("MODEL_MISSING", e.what(), 3);
   }
   for (const auto& p : {r.transformer_path, r.text_encoder_path, r.video_vae_path,
-                        r.video_decode_path(), r.audio_vae_path})
+                        r.video_decode_path(), r.audio_vae_path, r.clip_projection_path})
     if (!p.empty() && !std::filesystem::is_regular_file(std::filesystem::u8path(p)))
       throw CliError("MODEL_MISSING", "checkpoint does not exist: " + p, 3);
+  if (need_text && !r.clip_projection_path.empty()) {
+    try {
+      text::ClipProjection projection(r.clip_projection_path);
+      SafeTensors encoder;
+      encoder.open(r.text_encoder_path);
+      (void)text::validate_clip_student(encoder, projection);
+    } catch (const std::exception& e) {
+      throw CliError("INVALID_REQUEST", e.what(), 2, "clip_projection");
+    }
+  }
 }
 
 Delivery::Delivery(const std::string& path)

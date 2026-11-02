@@ -42,6 +42,7 @@ public:
   cuda::LinearRunner linear;
   // Autoregressive models reuse each matrix for thousands of single-token calls.
   bool cache_dense_weights = false;
+  bool allow_clip_fp8 = false; // Opt-in for ClipProj students only.
   const BFloat* weight(const std::string& name);
   const float* float_weight(const std::string& name);
   Tensor project(const Tensor& x, const std::string& name, bool fused_bias = true);

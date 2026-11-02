@@ -69,7 +69,7 @@ int cmd_encode_refmod(int argc, char** argv, const char* executable) {
   GenerateRequest discovery;
   discovery.video_vae_path = request.video_vae_path;
   discovery.audio_vae_path = request.audio_vae_path;
-  discover_generate_checkpoints(discovery, executable);
+  discover_generate_checkpoints(discovery, executable, true);
   request.video_vae_path = discovery.video_vae_path;
   request.audio_vae_path = discovery.audio_vae_path;
   const int members = export_refmod(request, output);
@@ -144,6 +144,8 @@ int cmd_encode_text(int argc, char** argv, const char* executable) {
       output = next();
     else if (arg == "--text-encoder")
       request.text_encoder_path = next();
+    else if (arg == "--clip-projection")
+      request.clip_projection_path = next();
     else if (arg == "--tokenizer")
       request.tokenizer_path = next();
     else if (arg == "--inference-backend") {
@@ -194,7 +196,8 @@ int cmd_encode_text(int argc, char** argv, const char* executable) {
     throw std::invalid_argument("encode-text requires a nonempty prompt and --output");
   GenerateRequest discovery;
   discovery.text_encoder_path = request.text_encoder_path;
-  discover_generate_checkpoints(discovery, executable);
+  discovery.clip_projection_path = request.clip_projection_path;
+  discover_generate_checkpoints(discovery, executable, true);
   request.text_encoder_path = discovery.text_encoder_path;
 #if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
   std::printf("encoding text using %s\n", request.text_encoder_path.c_str());

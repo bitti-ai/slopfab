@@ -117,6 +117,7 @@ struct GenerateRequest {
 
   std::string transformer_path;
   std::string text_encoder_path;
+  std::string clip_projection_path; // Optional H3 Qwen3-VL-4B/8B ClipProj safetensors.
   std::string tokenizer_path;
   std::string video_vae_path;
   // Optional decoder-only checkpoint; video_vae_path remains the reference encoder.

@@ -112,6 +112,7 @@ const CommandHelp kCommands[] = {
      "  --check-ready               with --dry-run, check required model files\n"
      "  Native outputs: .png/.ppm images, .y4m video plus .wav audio, .wav music.\n"
      "  Convert other formats with an external ffmpeg installation.\n"
+     "  --clip-projection FILE      H3 ClipProj safetensors with a matching 4B/8B text encoder; text-only\n"
      "  --model NAME                h3, moss, fibo2, krea2, yue2 or minimax_music3\n"
      "  --lyrics TEXT               music lyrics; --prompt supplies style/tags\n"
      "  --music-duration SECONDS    music duration ceiling (default 30, maximum 300)\n"
@@ -401,6 +402,7 @@ const CommandHelp kCommands[] = {
      "save standalone H3 prompt conditioning without loading a transformer or VAE",
      "  --prompt-file <file>         UTF-8 prompt instead of --prompt\n"
      "  --text-encoder <file>        checkpoint (otherwise discover weights/text_encoder)\n"
+     "  --clip-projection FILE      H3 4B/8B projection; student streams layers, projection runs on CPU\n"
      "  --tokenizer <file>           override embedded tokenizer\n"
      "  --inference-backend cuda|vulkan\n"
      "  --residency streaming|resident|auto  CUDA weights; default streaming\n"

@@ -1,3 +1,4 @@
+#include "slopfab/text/clip_projection.h"
 // slopfab - MiniMax H3 video generation in C++/CUDA.
 
 #include <algorithm>
@@ -147,7 +148,7 @@ std::string find_weight(const std::vector<std::filesystem::path>& roots,
 }
 }
 
-void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable) {
+void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable, bool text_only) {
   (void)executable;
   const auto& profile = model_profile(request_model_family(req));
   if (profile.image_only)
@@ -169,8 +170,15 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
       req.audio_vae_path = find_weight(weights, {"", "vae"}, profile.vae_hint);
     return;
   }
-  if (req.text_encoder_path.empty())
-    req.text_encoder_path = find_weight(weights, {"text_encoder", ""}, profile.conditioner_hint);
+  if (req.text_encoder_path.empty()) {
+    std::string hint = profile.conditioner_hint;
+    if (!req.clip_projection_path.empty()) {
+      text::ClipProjection projection(req.clip_projection_path);
+      hint = projection.input_width() == 2560 ? "qwen3vl_4b" : "qwen3vl_8b";
+    }
+    req.text_encoder_path = find_weight(weights, {"text_encoder", "text_encoders", ""}, hint);
+  }
+  if (text_only) return;
   if (req.transformer_path.empty()) {
     const auto architecture = (std::string_view(profile.family) == "h3" && req.has_references())
                                   ? "ref2va"

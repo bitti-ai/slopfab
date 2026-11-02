@@ -11,6 +11,13 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  require(r.clip_projection_path.empty() || o.prompt_embedding_path.empty(),
+          "use either ClipProj or a precomputed prompt embedding, not both");
+  if (!r.clip_projection_path.empty()) {
+    require(o.attention_mode != AttentionMode::kExact, "ClipProj does not implement the exact conditioner arithmetic mode");
+    require(o.inference_backend != DeviceBackend::kVulkan || o.vulkan_portable_arithmetic,
+            "ClipProj Vulkan requires --vulkan-arithmetic portable");
+  }
   require(r.video_decoder_path.empty() || p.model.family == "h3",
           "a separate video decoder is supported only for MiniMax H3");
   if (p.model.family == "h3" && !r.video_decode_path().empty() &&

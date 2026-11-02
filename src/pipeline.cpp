@@ -84,6 +84,12 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (!request.clip_projection_path.empty()) {
+    if (request_model_family(request) != "h3")
+      throw std::invalid_argument("ClipProj is supported only for MiniMax H3");
+    if (!request.conditioning_image_paths().empty() || !request.reference_media.empty() || request.image_edit.invert_mask)
+      throw std::invalid_argument("ClipProj currently supports text-only H3 conditioning; use the 32B encoder for image/video references");
+  }
   if (request.keystone.source) {
     validate_keystone(request.keystone);
     if (request_model_family(request) != "h3" || request.still_image || request.bridge ||
@@ -447,6 +453,7 @@ std::string conditioning_cache_key(const GenerateRequest& request,
   }
   std::string key = "conditioning:h3-special-v1";
   append_file_identity(key, request.text_encoder_path);
+  if (!request.clip_projection_path.empty()) append_file_identity(key, request.clip_projection_path);
   append_file_identity(key, request.tokenizer_path);
   key.push_back('\0');
   key += request.prompt;
@@ -478,6 +485,7 @@ conditioning_cache_key_for_authority(const GenerateRequest& request,
 std::string conditioning_cache_key(const GenerateRequest& request) {
   std::string key = "conditioning:h3-special-v1";
   append_file_identity(key, request.text_encoder_path);
+  if (!request.clip_projection_path.empty()) append_file_identity(key, request.clip_projection_path);
   append_file_identity(key, request.tokenizer_path);
   key.push_back('\0');
   key += request.prompt;

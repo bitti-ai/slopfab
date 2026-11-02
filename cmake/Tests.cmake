@@ -10,6 +10,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME clipproj_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_clipproj_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(clipproj_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME mods_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mods_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(mods_cli PROPERTIES LABELS synthetic TIMEOUT 60)
@@ -127,6 +130,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_sampling_effect.cpp
     tests/test_lcs.cpp
     tests/test_krea.cpp
+    tests/test_clip_projection.cpp
     tests/test_fibo.cpp
     tests/test_music.cpp
     tests/test_moss.cpp

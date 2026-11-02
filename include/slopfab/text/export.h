@@ -8,6 +8,7 @@ namespace slopfab::text {
 struct TextExportRequest {
   std::string prompt;
   std::string text_encoder_path;
+  std::string clip_projection_path; // Optional H3 Qwen3-VL-4B/8B ClipProj safetensors.
   std::string tokenizer_path; // Empty selects the embedded tokenizer.
 #if !SLOPFAB_WITH_CUDA && SLOPFAB_WITH_VULKAN
   DeviceBackend backend = DeviceBackend::kVulkan;

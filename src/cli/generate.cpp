@@ -307,6 +307,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.transformer_path = next("--transformer");
     } else if (arg == "--text-encoder") {
       req.text_encoder_path = next("--text-encoder");
+    } else if (arg == "--clip-projection") {
+      req.clip_projection_path = next("--clip-projection");
     } else if (arg == "--tokenizer") {
       req.tokenizer_path = next("--tokenizer");
     } else if (arg == "--vae") {

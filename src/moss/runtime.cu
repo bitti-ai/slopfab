@@ -3,6 +3,7 @@
 #include "slopfab/int8_weight.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/text/encoder.h"
+#include "slopfab/text/clip_projection.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -167,7 +168,9 @@ const BFloat* Runtime::weight(const std::string& name) {
   auto it = storage_.find(name);
   if (it != storage_.end())
     return reinterpret_cast<const BFloat*>(it->second.get());
-  const auto values = to_f32(checkpoint.at(name));
+  const auto values = allow_clip_fp8 && checkpoint.at(name).dtype == DType::kF8E4M3
+                          ? text::clip_dense_values(checkpoint, name)
+                          : to_f32(checkpoint.at(name));
   std::vector<BFloat> bits(values.size());
   for (size_t i = 0; i < bits.size(); ++i)
     bits[i] = __float2bfloat16(values[i]);
@@ -201,7 +204,7 @@ Tensor Runtime::project(const Tensor& x, const std::string& name, bool fuse_bias
       w.convrot = state.rotation_group > 1;
       w.convrot_group = state.rotation_group;
     } else if (tensor.dtype == DType::kBF16 || tensor.dtype == DType::kF32 ||
-               tensor.dtype == DType::kF16) {
+               tensor.dtype == DType::kF16 || (allow_clip_fp8 && tensor.dtype == DType::kF8E4M3)) {
       w.format = cuda::QuantFormat::kBF16;
       w.data = weight(name + ".weight");
     } else

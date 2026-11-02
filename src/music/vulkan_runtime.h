@@ -42,6 +42,7 @@ public:
   SafeTensors checkpoint;
   std::shared_ptr<Engine> engine;
   bool cache_dense_weights = false;
+  bool allow_clip_fp8 = false; // Opt-in for ClipProj students only.
   vk::DeviceTensor& weight(const std::string&);
   vk::DeviceTensor& float_weight(const std::string&);
   Tensor project(const Tensor&, const std::string&, bool fused_bias = true);

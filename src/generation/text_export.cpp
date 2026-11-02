@@ -3,6 +3,7 @@
 #include "slopfab/pipeline.h"
 #include "slopfab/dit/packing.h"
 #include "helpers.h"
+#include "clip_student.h"
 #if SLOPFAB_WITH_VULKAN
 #include "slopfab/vulkan/text_encoder.h"
 #include "slopfab/vulkan/tensor.h"
@@ -23,6 +24,14 @@ int export_prompt_embedding(const TextExportRequest& request, const std::string&
   if (request.backend == DeviceBackend::kVulkan)
     throw std::runtime_error("text export: Vulkan backend is not compiled in");
 #endif
+  if (!request.clip_projection_path.empty()) {
+    if (request.residency == Residency::kResident ||
+        request.arithmetic == EncoderArithmetic::kExact)
+      throw std::invalid_argument(
+          "ClipProj uses streaming student layers and shipped BF16 arithmetic; resident/exact modes are unsupported");
+    if (request.backend == DeviceBackend::kVulkan && !request.vulkan_portable_arithmetic)
+      throw std::invalid_argument("ClipProj Vulkan requires --vulkan-arithmetic portable");
+  }
   Tokenizer tokenizer;
   if (request.tokenizer_path.empty())
     tokenizer.load_embedded();
@@ -39,9 +48,25 @@ int export_prompt_embedding(const TextExportRequest& request, const std::string&
   config.residency = request.residency;
   config.arithmetic = request.arithmetic;
   config.max_prompt_tokens = static_cast<int>(ids.size());
-  const auto descriptor = resolve_conditioner_descriptor(checkpoint, config);
+  const auto descriptor = request.clip_projection_path.empty()
+                              ? resolve_conditioner_descriptor(checkpoint, config)
+                              : ConditionerDescriptor{};
   PromptEmbedding embedding;
-  if (request.backend == DeviceBackend::kCuda) {
+  if (!request.clip_projection_path.empty()) {
+    ClipProjection projection(request.clip_projection_path);
+    (void)validate_clip_student(checkpoint, projection);
+    PromptEmbedding hidden;
+    if (request.backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
+      hidden = encode_clip_student_cuda(request.text_encoder_path, projection, ids, {});
+#endif
+    } else {
+#if SLOPFAB_WITH_VULKAN
+      hidden = encode_clip_student_vulkan(request.text_encoder_path, projection, ids, {});
+#endif
+    }
+    embedding = projection.apply(hidden);
+  } else if (request.backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
     Encoder encoder;
     encoder.load(checkpoint, config);
@@ -77,6 +102,12 @@ int export_prompt_embedding(const TextExportRequest& request, const std::string&
        request.backend == DeviceBackend::kVulkan || request.arithmetic == EncoderArithmetic::kExact
            ? "exact"
            : "shipped"}};
+  if (!request.clip_projection_path.empty()) {
+    metadata["clip_projection"] = request.clip_projection_path;
+    metadata["conditioner"] = "clipproj-qwen3-vl-v1";
+    metadata["arithmetic"] = "bf16-student-host-projection";
+    append_file_identity(metadata["clip_projection_identity"], request.clip_projection_path);
+  }
   write_prompt_embedding(output, embedding, metadata);
   return embedding.num_tokens;
 }
