@@ -16,7 +16,7 @@ def run(args, expected=0):
 with tempfile.TemporaryDirectory() as directory:
     source = pathlib.Path(directory) / 'input with spaces.mp4'
     source.touch()  # dry-run must not decode media or load models
-    standalone = ['upscale', '--input', str(source), '--out', str(source.with_name('out.mp4')),
+    standalone = ['upscale', '--input', str(source), '--out', str(source.with_name('out.y4m')),
                   '--inference-backend', 'cuda', '--dry-run']
     generate = ['generate', '--prompt', 'test', '--resolution', '32x32', '--frames', '22',
                 '--inference-backend', 'cuda', '--dry-run']

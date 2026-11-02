@@ -31,7 +31,6 @@ cmake -S "%ROOT%" -B "%BUILD%" -G "Visual Studio 17 2022" -A x64 ^
   "-DSLOPFAB_CUDA13_ROOT=%CUDA13%" ^
   -DSLOPFAB_ENABLE_CUDA=ON ^
   -DSLOPFAB_ENABLE_VULKAN=ON ^
-  -DSLOPFAB_WITH_FFMPEG=ON ^
   -DSLOPFAB_BUILD_C_API=ON
 if errorlevel 1 exit /b 1
 cmake --build "%BUILD%" --config Release --target slopfab slopfab_c
@@ -76,17 +75,9 @@ copy /y "%ROOT%\third_party\seedvr2\LICENSE" "%STAGE%\SEEDVR2-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\seedvr2\NOTICE" "%STAGE%\SEEDVR2-NOTICE.txt" >nul
 if errorlevel 1 exit /b 1
-copy /y "%ROOT%\external\ffmpeg\LICENSE" "%STAGE%\FFMPEG-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 
-for %%F in (avcodec-62.dll avformat-62.dll avdevice-62.dll avfilter-11.dll avutil-60.dll swresample-6.dll swscale-9.dll ffmpeg.exe ffprobe.exe) do (
-  if not exist "%ROOT%\external\ffmpeg\bin\%%F" (
-    echo package: required FFmpeg runtime not found at %ROOT%\external\ffmpeg\bin\%%F
-    exit /b 1
-  )
-  copy /y "%ROOT%\external\ffmpeg\bin\%%F" "%STAGE%\%%F" >nul
-  if errorlevel 1 exit /b 1
-)
+
 
 powershell -NoLogo -NoProfile -NonInteractive -Command ^
   "Compress-Archive -LiteralPath '%STAGE%' -DestinationPath '%ZIP%' -CompressionLevel Optimal"

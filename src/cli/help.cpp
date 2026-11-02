@@ -64,6 +64,7 @@
 #endif
 
 #include "commands.h"
+#include "agent.h"
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
@@ -75,7 +76,7 @@ const CommandHelp kCommands[] = {
      "  --no-chunking              process all latent frames together\n"
      "Output is a new H3 latent archive with resized video and unchanged audio.\n"},
     {"upscale", "slopfab upscale --input FILE --out FILE --upscale-method NAME [options]",
-     "restore images or stream video with Real-ESRGAN or SeedVR2",
+     "restore native images or Y4M video with Real-ESRGAN or SeedVR2",
      "  --upscale-method NAME       realesrgan (default), seedvr2 (CUDA)\n"
      "  --upscale-model FILE        checkpoint; default path depends on method\n"
      "  --inference-backend NAME    cuda or vulkan (Real-ESRGAN only)\n"
@@ -91,15 +92,23 @@ const CommandHelp kCommands[] = {
      "  --upscale-no-color-match    disable SeedVR2 color correction\n"
      "  --dump FILE                save float pixels for .ppm output\n"
      "  --dry-run                  validate arguments without loading weights\n\n"
-     "Output .ppm restores one image; .mp4/.mkv streams the full clip. Video requires\n"
-     "ffmpeg/ffprobe; audio is copied and variable FPS normalized to the average.\n"
-     "Memory is bounded by temporal segments, independent of clip duration.\n"},
+     "Output: .png/.ppm for images; .y4m for video. Convert compressed media externally.\n"
+     "Video input: BT.709 limited-range progressive Y4M, 8-bit 4:2:0.\n"
+     "Decoded input is limited to 2 GiB; use short clips. Audio remains a separate WAV.\n"},
     {"prepare-lora", "slopfab prepare-lora --adapter FILE --width N",
      "prepare an adapter's AdaLN grid outside inference",
      "  --adapter FILE             adapter to update atomically\n"
      "  --width N                  base transformer hidden width\n"
      "  Requires an embedded grid or a local companion file.\n"},
-    {"generate", "slopfab generate --prompt <text> [options]", "text to image, video and audio",
+    {"generate", "slopfab generate [video|image|music] --prompt TEXT [options]", "text to image, video and audio",
+     "  --request FILE|-            versioned JSON request; excludes generation flags\n"
+     "  --agent                     NDJSON progress and final result; logs on stderr\n"
+     "  --duration SECONDS          video/music duration; result reports resolved length\n"
+     "  --deadline SECONDS          cooperative generation deadline\n"
+     "  --overwrite                 allow replacing output artifacts\n"
+     "  --check-ready               with --dry-run, check required model files\n"
+     "  Native outputs: .png/.ppm images, .y4m video plus .wav audio, .wav music.\n"
+     "  Convert other formats with an external ffmpeg installation.\n"
      "  --model NAME                h3, moss, fibo2, krea2, yue2 or minimax_music3\n"
      "  --lyrics TEXT               music lyrics; --prompt supplies style/tags\n"
      "  --music-duration SECONDS    music duration ceiling (default 30, maximum 300)\n"
@@ -117,28 +126,18 @@ const CommandHelp kCommands[] = {
      "                               instead; a BOM and surrounding blank space are\n"
      "                               stripped. Cannot be combined with --prompt\n"
      "  --reference-image <file>     ordered Ref2VA image; repeat up to 9 times.\n"
-     "  --edit-image <file>          source for still-image inpainting; output is .ppm\n"
+     "  --edit-image <file>          source for still-image inpainting; output is .png or .ppm\n"
      "  --edit-box x,y,w,h           editable rectangle in original-image pixels\n"
      "  --edit-strength <0..1>       fraction of denoising steps, >0 (default 1)\n"
      "  --edit-feather <pixels>      inward edge blending (default 0)\n"
      "  --refmod <file>              standalone or mixed H3 RefMod bundle; repeatable.\n"
      "  --refmod-strength <0..1>     strength of preceding refmod (default 1).\n"
      "  --refmod-copies <1..10>      copies of preceding refmod (default 1).\n"
-     "  --reference-video <file>     ingest clip and soundtrack (up to 3).\n"
-     "  --reference-audio <file>     ingest standalone audio (up to 3).\n"
-     "                               Video/audio generation supports CUDA/Vulkan; file\n"
-     "                               ingestion requires ffmpeg and ffprobe.\n"
-#if SLOPFAB_WITH_FFMPEG
-     "                               Any still or video FFmpeg can decode (a video\n"
-     "                               contributes its first frame), plus binary PPM.\n"
-#else
-     "                               PNG, JPEG, BMP, TIFF, GIF and binary PPM on\n"
-     "                               Windows; binary PPM elsewhere (no FFmpeg in this\n"
-     "                               build).\n"
-#endif
-     "                               Requires Ref2VA transformer weights. Files are\n"
-     "                               read only when the run starts\n"
-     "  --out <file>                 output path (default output/video-<timestamp>.mp4)\n"
+     "  --reference-video FILE      native Y4M video, 2..15 seconds (up to 3).\n"
+     "  --reference-audio FILE      mono/stereo WAV, 2..15 seconds (up to 3).\n"
+     "  --reference-image FILE      PNG/JPEG/PPM; Windows also supports platform image codecs.\n"
+     "                               References require compatible Ref2VA weights.\n"
+     "  --out FILE                  native output (default output/<unique-id>/video.y4m).\n"
      "  --aspect <W:H>               display aspect (default 16:9; model canvas limits)\n"
      "  --resolution <WxH>           exact canvas instead of an aspect; both axes a\n"
      "                               multiple of 32, ratio 1:4 to 4:1. Not capped to the\n"
@@ -154,10 +153,10 @@ const CommandHelp kCommands[] = {
      "  --sampling-settings FILE    JSON sampler, sigma shifts and optional fixed base grid\n"
      "  --conditioning-settings FILE  JSON reference and fixed-conditioning policy\n"
      "  --sampler <name>            euler, ab2, renoise or er_sde (default inherits)\n"
-     "  --seed <n>                   noise seed; negative or absent draws a random one\n"
+     "  --seed <n>                   noise seed; -1 or absent draws a random one\n"
      "  --count <n>                  generate n videos; explicit seeds increment by one,\n"
      "                               random ones are drawn afresh for each\n"
-     "  --raw                        write .y4m + .wav instead of muxing MP4\n"
+     "  --raw                        compatibility flag; video always writes Y4M + WAV\n"
      "  --vulkan-arithmetic portable|exact\n"
      "                               portable checks features without CUDA bit parity;\n"
      "                               exact requires a qualified device/driver\n"
@@ -182,7 +181,7 @@ const CommandHelp kCommands[] = {
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"
      "                               independent of the inference backend\n"
-     "  --dry-run                    resolve and print the plan, touch no weights\n"
+     "  --dry-run                    resolve and print the plan, do not load GPU weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
      "                               noise, to exercise the VAEs and the muxer\n"
      "  --attn-band <frames>         frame-banded attention: a video row attends to\n"
@@ -393,7 +392,7 @@ const CommandHelp kCommands[] = {
      "  --inference-backend MODE   cuda or vulkan\n"
      "  --vulkan-arithmetic MODE   portable or exact\n"
      "  --output FILE              one member: v4; multiple: mixed v5 bundle\n"
-     "  Video/audio input: 2..15 seconds; CLI decoding requires FFmpeg.\n"
+     "  Video/audio input: 2..15 seconds; use native Y4M or WAV.\n"
      "  Loads only VAEs; no text encoder or diffusion transformer.\n"},
     {"encode-text", "slopfab encode-text --prompt <text> --output <file> [options]",
      "save standalone H3 prompt conditioning without loading a transformer or VAE",
@@ -414,6 +413,16 @@ const CommandHelp kCommands[] = {
      "Input bundles are flattened in order; each member keeps its metadata and dtype.\n"
      "Up to 256 members. Does not encode raw media. No models or GPU are needed.\n"
      "Use generate --refmod to load the bundle; strength/copies apply to all members.\n"},
+    {"capabilities", "slopfab capabilities --agent", "Discover tasks, model families, backends and native formats.", "No weights or GPU initialization. Next: models list, doctor, schema.\n"},
+    {"schema", "slopfab schema --agent", "Get the version-1 generation request JSON Schema.", "Pass a request with generate --request FILE or --request - for stdin.\n"},
+    {"models", "slopfab models list --agent", "List installed model files, configured aliases and presets.", "Use --config FILE or SLOPFAB_CONFIG to select config. Paths in config are relative to that file.\n"},
+    {"doctor", "slopfab doctor --agent", "Check available GPUs and report configuration paths.", "No inference. Next: validate --request FILE --check-ready --agent.\n"},
+    {"validate", "slopfab validate --request FILE --agent", "Resolve and validate a generation without loading GPU weights.", "--check-ready also checks required model files. Validation does not guarantee available VRAM.\nSee schema and generate --help for request fields and options.\n"},
+    {"submit", "slopfab submit --request FILE --idempotency-key KEY --agent", "Queue a persistent generation and start a local worker.", "Same requests as generate. Queue capacity: 32. Retrying a key returns its existing job; changed requests fail.\nUse status JOB_ID, wait JOB_ID --timeout 60, or cancel JOB_ID. --jobs-dir selects a store.\n"},
+    {"status", "slopfab status JOB_ID --agent", "Read persistent job state, result and event-file path.", "States: queued, running, succeeded, failed, cancelled, interrupted.\n"},
+    {"wait", "slopfab wait JOB_ID --timeout 60 --agent", "Wait for a terminal job state.", "Timeout returns exit 8 with timed_out=true. Waiting does not cancel the job.\n"},
+    {"cancel", "slopfab cancel JOB_ID --agent", "Request cooperative cancellation of a queued or running job.", "A running GPU operation may finish before cancellation takes effect. Inspect status afterward.\n"},
+    {"worker", "slopfab worker --idle-seconds 60", "Process the local queue serially and reuse generation sessions.", "Submit starts this automatically. One worker per store. Exits after idle timeout.\nOn restart, abandoned running jobs become interrupted and are never automatically rerun.\n"},
     {"devices", "slopfab devices", "list CUDA and Vulkan compute devices", ""},
     {"version", "slopfab version", "print the version and exit", ""},
 };
@@ -428,47 +437,46 @@ const CommandHelp* find_command(std::string_view name) {
 
 // True when the argument list asks for help. Checked before any other option,
 // so `--help` works even alongside otherwise invalid arguments.
+bool option_takes_value(std::string_view a) {
+  if (a.rfind("--", 0) != 0 || a.find('=') != std::string_view::npos) return false;
+  for (const char* flag : {"--agent", "--help", "--dry-run", "--check-ready", "--overwrite",
+      "--raw", "--motion-cache", "--motion-cache-verbose", "--synthetic-latents", "--keystone-front-only",
+      "--lock-overlap", "--animate", "--preserve-driving-audio", "--latent-upscale", "--latent-upscale-no-chunking",
+      "--upscale-no-color-match", "--no-chunking", "--list", "--pieces", "--h3", "--all", "--stop"})
+    if (a == flag) return false;
+  return true;
+}
 bool wants_help(int argc, char** argv) {
   for (int i = 0; i < argc; ++i) {
     const std::string_view a = argv[i];
-    if (a == "--help" || a == "-h" || a == "help")
-      return true;
+    if (a == "--help" || a == "-h" || (i == 0 && a == "help")) return true;
+    if (option_takes_value(a) && i + 1 < argc) ++i;
   }
   return false;
 }
 
 int print_command_help(const CommandHelp& c) {
-  std::printf("usage: %s\n\n%s\n", c.usage, c.summary);
-  if (c.detail[0] != '\0')
-    std::printf("\noptions:\n%s", c.detail);
+  const std::string next = "Add --agent for NDJSON responses and generation progress. Use schema for JSON requests; capabilities for supported tasks; doctor for setup checks.";
+  if (agent().enabled) {
+    emit({{"type",str("help")},{"command",str(c.name)},{"usage",str(c.usage)},
+      {"description",str(c.summary)},{"options",str(c.detail)},{"next",str(next)}},true);
+  } else {
+    std::printf("%s\nusage: %s\n\n%s\n%s\n",c.summary,c.usage,c.detail,next.c_str());
+  }
   return 0;
 }
-
 void print_usage() {
-  std::printf("slopfab %s - MiniMax H3 video generation\n"
-              "\n"
-#if SLOPFAB_WITH_CUDA
-              "usage: slopfab [--cuda-version=auto|13|12] <command> [options]\n"
-#else
-              "usage: slopfab <command> [options]\n"
-#endif
-              "       slopfab <command> --help\n"
-              "\n"
-              "commands:\n",
-              kVersion);
-  for (const CommandHelp& c : kCommands) {
-    std::printf("  %-9s %s\n", c.name, c.summary);
-  }
-  std::printf("\nRun `slopfab <command> --help` for that command's options.\n");
-#if SLOPFAB_WITH_CUDA
-#if defined(_WIN32)
-  std::printf("CUDA defaults to installed version 13, then 12; "
-              "SLOPFAB_CUDA_VERSION provides the same override.\n");
-#else
-  std::printf("CUDA uses the toolkit selected at build time; --cuda-version and "
-              "SLOPFAB_CUDA_VERSION must match that major or use auto.\n");
-#endif
-#endif
+  const std::string text =
+    "slopfab generates videos (Y4M + WAV), images (PNG), and music (WAV) locally.\n"
+    "Start: slopfab capabilities --agent; slopfab models list --agent; slopfab doctor --agent.\n"
+    "Generate: slopfab generate video|image|music --prompt TEXT --out FILE --agent.\n"
+    "JSON requests: slopfab schema --agent; slopfab validate --request FILE --agent.\n"
+    "Run requests: slopfab generate --request FILE --agent, or submit for a background job.\n"
+    "More: slopfab help COMMAND. Use external ffmpeg to convert Y4M/WAV to MP4 or other formats.\n";
+  if (agent().enabled) {
+    Array commands;for(const auto& c:kCommands)commands.push_back(Value(Object{{"command",str(c.name)},{"description",str(c.summary)}}));
+    emit({{"type",str("help")},{"instructions",str(text)},{"commands",Value(commands)}},true);
+  } else std::fputs(text.c_str(),stdout);
 }
 
 #if SLOPFAB_WITH_CUDA

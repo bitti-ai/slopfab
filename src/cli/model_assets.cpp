@@ -64,6 +64,7 @@
 #endif
 
 #include "commands.h"
+#include "agent.h"
 #include "slopfab/model_profile.h"
 
 namespace slopfab::cli {
@@ -73,16 +74,7 @@ uint64_t random_seed() {
 }
 
 std::string timestamped_output_path() {
-  const std::time_t now = std::time(nullptr);
-  std::tm local{};
-#if defined(_WIN32)
-  localtime_s(&local, &now);
-#else
-  localtime_r(&now, &local);
-#endif
-  char stamp[32];
-  std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
-  return (std::filesystem::path("output") / (std::string("video-") + stamp + ".mp4")).string();
+  return (std::filesystem::path("output") / unique_id() / "video.y4m").string();
 }
 
 std::string counted_output_path(const std::string& base, int index, int count) {
@@ -96,7 +88,15 @@ std::string counted_output_path(const std::string& base, int index, int count) {
 }
 
 std::filesystem::path find_weights_directory(const char* executable) {
-  std::vector<std::filesystem::path> starts = {std::filesystem::current_path()};
+  std::vector<std::filesystem::path> starts;
+  const auto cfg_path = config_path();
+  if (std::filesystem::exists(cfg_path)) {
+    const auto cfg = read_json(cfg_path);
+    if (const auto* root = cfg.find("weights_directory")) {
+      auto p = std::filesystem::u8path(root->as_string());
+      return p.is_relative() ? cfg_path.parent_path() / p : p;
+    }
+  }
   std::error_code ec;
   const std::filesystem::path exe = std::filesystem::absolute(executable, ec);
   if (!ec)
@@ -130,6 +130,8 @@ std::string find_checkpoint(const std::filesystem::path& directory,
     }
   }
   std::sort(matches.begin(), matches.end());
+  if (matches.size() > 1) throw CliError("MODEL_AMBIGUOUS",
+    "multiple matching checkpoints in " + directory.u8string() + "; configure a model alias or explicit paths", 3);
   return matches.empty() ? std::string() : matches.front().string();
 }
 

@@ -66,6 +66,7 @@
 #endif
 
 #include "commands.h"
+#include "agent.h"
 
 namespace slopfab::cli {
 int cmd_generate(int argc, char** argv, const char* executable) {
@@ -131,6 +132,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string latent_upscale_model;
   LatentUpscaleOptions latent_upscale;
 
+  auto integer = [](const char* text) {
+    size_t end = 0; std::string value(text); int n = std::stoi(value, &end);
+    if (end != value.size()) throw std::invalid_argument("invalid integer: " + value);
+    return n;
+  };
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
     auto next = [&](const char* what) -> const char* {
@@ -183,7 +189,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         throw std::invalid_argument("--edit-feather expects a nonnegative integer");
       saw_edit_option = true;
     } else if (arg == "--model") {
-      req.model_family = next("--model");
+      resolve_model_alias(req, next("--model"));
     } else if (arg == "--music-settings") {
       req.music = slopfab::parse_music_settings(next("--music-settings"));
     } else if (arg == "--lyrics") {
@@ -233,9 +239,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       saw_out = true;
     } else if (arg == "--frames") {
       saw_frames = true;
-      req.num_frames = std::atoi(next("--frames"));
+      req.num_frames = integer(next("--frames"));
     } else if (arg == "--steps") {
-      req.num_inference_steps = std::atoi(next("--steps"));
+      req.num_inference_steps = integer(next("--steps"));
     } else if (arg == "--audio-steps") {
       const std::string value = next("--audio-steps");
       size_t used = 0;
@@ -244,21 +250,15 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         throw std::invalid_argument("--audio-steps expects an integer in [1,1000000]");
       audio_steps = parsed;
     } else if (arg == "--seed") {
-      // A negative seed asks for a random one, the same as passing no --seed at
-      // all. Checked on the text rather than on the parsed value because
-      // `strtoull` silently wraps "-1" to 2^64-1, which would read as an
-      // ordinary explicit seed. Testing the sign first also keeps the whole
-      // unsigned range usable for seeds that really are meant to be large.
-      const std::string_view value = next("--seed");
-      const size_t first = value.find_first_not_of(" \t");
-      if (first != std::string_view::npos && value[first] == '-') {
-        saw_seed = false;
-      } else {
-        req.seed = std::strtoull(value.data(), nullptr, 10);
-        saw_seed = true;
+      const std::string value = next("--seed");
+      if (value == "-1") saw_seed = false;
+      else {
+        if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+          throw std::invalid_argument("--seed requires an unsigned decimal integer or -1");
+        size_t used = 0; req.seed = std::stoull(value, &used); saw_seed = true;
       }
     } else if (arg == "--count") {
-      count = std::atoi(next("--count"));
+      count = integer(next("--count"));
     } else if (arg == "--sampler") {
       const std::string v = next("--sampler");
       if (v == "euler") {
@@ -281,8 +281,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         std::fprintf(stderr, "slopfab: --aspect wants W:H, e.g. 16:9\n");
         return 2;
       }
-      req.aspect_w = std::atoi(v.substr(0, colon).c_str());
-      req.aspect_h = std::atoi(v.substr(colon + 1).c_str());
+      req.aspect_w = integer(v.substr(0, colon).c_str());
+      req.aspect_h = integer(v.substr(colon + 1).c_str());
       req.canvas_width = 0;
       req.canvas_height = 0;
       saw_aspect = true;
@@ -293,8 +293,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         std::fprintf(stderr, "slopfab: --resolution wants WxH, e.g. 1344x768\n");
         return 2;
       }
-      req.canvas_width = std::atoi(v.substr(0, x).c_str());
-      req.canvas_height = std::atoi(v.substr(x + 1).c_str());
+      req.canvas_width = integer(v.substr(0, x).c_str());
+      req.canvas_height = integer(v.substr(x + 1).c_str());
       if (req.canvas_width <= 0 || req.canvas_height <= 0) {
         std::fprintf(stderr, "slopfab: --resolution wants two positive numbers, got '%s'\n",
                      v.c_str());
@@ -403,17 +403,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--cache-threshold") {
       req.cache_threshold = static_cast<float>(std::strtod(next("--cache-threshold"), nullptr));
     } else if (arg == "--cache-warmup") {
-      req.cache_warmup = std::atoi(next("--cache-warmup"));
+      req.cache_warmup = integer(next("--cache-warmup"));
     } else if (arg == "--skip-every") {
-      req.skip_every = std::atoi(next("--skip-every"));
+      req.skip_every = integer(next("--skip-every"));
     } else if (arg == "--block-cache-span") {
-      req.block_cache_span = std::atoi(next("--block-cache-span"));
+      req.block_cache_span = integer(next("--block-cache-span"));
     } else if (arg == "--block-cache-start") {
-      req.block_cache_start = std::atoi(next("--block-cache-start"));
+      req.block_cache_start = integer(next("--block-cache-start"));
     } else if (arg == "--block-cache-interval") {
-      req.block_cache_interval = std::atoi(next("--block-cache-interval"));
+      req.block_cache_interval = integer(next("--block-cache-interval"));
     } else if (arg == "--block-cache-warmup") {
-      req.block_cache_warmup = std::atoi(next("--block-cache-warmup"));
+      req.block_cache_warmup = integer(next("--block-cache-warmup"));
     } else if (arg == "--dry-run") {
       dry_run = true;
     } else if (arg == "--synthetic-latents") {
@@ -496,7 +496,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
           req.continuation_source_noise <= 0 || req.continuation_source_noise > 1)
         throw std::invalid_argument("--continuation-source-noise requires a value in (0,1]");
     } else if (arg == "--attn-band") {
-      attn_band = std::atoi(next("--attn-band"));
+      attn_band = integer(next("--attn-band"));
     } else if (arg == "--attention") {
       saw_attention = true;
       const std::string v = next("--attention");
@@ -527,17 +527,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--sol-error-v") {
       sol_schedule.error_v = std::strtof(next("--sol-error-v"), nullptr);
     } else if (arg == "--sol-step-start") {
-      sol_schedule.step_begin = std::atoi(next("--sol-step-start"));
+      sol_schedule.step_begin = integer(next("--sol-step-start"));
     } else if (arg == "--sol-step-end") {
-      sol_schedule.step_end = std::atoi(next("--sol-step-end"));
+      sol_schedule.step_end = integer(next("--sol-step-end"));
     } else if (arg == "--sol-step-every") {
-      sol_schedule.step_every = std::atoi(next("--sol-step-every"));
+      sol_schedule.step_every = integer(next("--sol-step-every"));
     } else if (arg == "--sol-layer-start") {
-      sol_schedule.layer_begin = std::atoi(next("--sol-layer-start"));
+      sol_schedule.layer_begin = integer(next("--sol-layer-start"));
     } else if (arg == "--sol-layer-end") {
-      sol_schedule.layer_end = std::atoi(next("--sol-layer-end"));
+      sol_schedule.layer_end = integer(next("--sol-layer-end"));
     } else if (arg == "--sol-layer-every") {
-      sol_schedule.layer_every = std::atoi(next("--sol-layer-every"));
+      sol_schedule.layer_every = integer(next("--sol-layer-every"));
     } else if (arg == "--init-latents") {
       init_latents = next("--init-latents");
     } else if (arg == "--lora") {
@@ -590,7 +590,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--lcs-settings") {
       lcs_settings = next("--lcs-settings");
     } else if (arg == "--bench-load") {
-      bench_load = std::atoi(next("--bench-load"));
+      bench_load = integer(next("--bench-load"));
     } else {
       std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
@@ -676,9 +676,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     req.out_path = timestamped_output_path();
   if (req.image_edit.image) {
     if (!saw_out)
-      req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
-    if (std::filesystem::path(req.out_path).extension() != ".ppm")
-      throw std::invalid_argument("image edits require --out with a .ppm extension");
+      req.out_path = std::filesystem::path(req.out_path).replace_extension(".png").string();
+    if (std::filesystem::path(req.out_path).extension() != ".ppm" && std::filesystem::path(req.out_path).extension() != ".png")
+      throw std::invalid_argument("image edits require --out with a .png or .ppm extension");
   }
   if (saw_overlap && continue_from.empty())
     throw std::runtime_error("--overlap-frames requires --continue-from");
@@ -729,12 +729,37 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (saw_aspect)
       throw std::invalid_argument("This model requires --resolution WxH instead of --aspect");
     if (!saw_out)
-      req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
-    if (std::filesystem::path(req.out_path).extension() != ".ppm")
-      throw std::invalid_argument("Image file output requires --out FILE.ppm");
+      req.out_path = std::filesystem::path(req.out_path).replace_extension(".png").string();
+    if (std::filesystem::path(req.out_path).extension() != ".ppm" && std::filesystem::path(req.out_path).extension() != ".png")
+      throw std::invalid_argument("Image file output requires --out FILE.png or FILE.ppm");
   } else if (saw_image_guidance) {
     throw std::invalid_argument("image guidance options require --model moss");
   }
+  const auto family = slopfab::request_model_family(req);
+  const bool music = family == "yue2" || family == "minimax_music3";
+  if (agent().task == "image") req.still_image = true;
+  if ((agent().task == "video" && (req.still_image || music)) ||
+      (agent().task == "music" && !music) || (agent().task == "image" && music))
+    throw CliError("UNSUPPORTED_CAPABILITY", "model does not support the requested task", 4, "task");
+  if (req.still_image) {
+    if (!saw_out) req.out_path = std::filesystem::path(req.out_path).replace_extension(".png").string();
+    const auto extension = std::filesystem::path(req.out_path).extension();
+    if (extension != ".png" && extension != ".ppm")
+      throw CliError("INVALID_REQUEST", "image output requires .png or .ppm", 2, "output.path");
+  } else if (!music && std::filesystem::path(req.out_path).extension() != ".y4m") {
+    throw CliError("INVALID_REQUEST", "video output requires .y4m; use external ffmpeg to encode MP4", 2, "output.path");
+  }
+  if (agent().requested_duration > 0) {
+    if (music) req.music.duration = agent().requested_duration;
+    else if (req.still_image) throw CliError("INVALID_REQUEST", "images do not have duration");
+    else {
+      auto geometry_plan = slopfab::resolve_plan(req);
+      req.num_frames = static_cast<int>(std::ceil(agent().requested_duration * geometry_plan.geometry.fps));
+    }
+  }
+  req.raw_output = true;
+  if (agent().enabled && req.prompt.empty() && prompt_embedding.empty() && !synthetic)
+    throw CliError("INVALID_REQUEST", "provide prompt or options.prompt-embedding", 2, "prompt");
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;
   slopfab::RunOptions options;
@@ -744,6 +769,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.upscale = upscaling.options;
   options.latent_upscale_model_path = latent_upscale_model;
   options.latent_upscale = latent_upscale;
+  options.verbose = !agent().enabled;
+  options.on_progress = progress;
   options.source =
       synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
   options.inference_backend = inference_backend == "vulkan" ? slopfab::DeviceBackend::kVulkan
@@ -814,7 +841,12 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         std::printf("\n");
       std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
       print_upscale();
+      if (agent().check_ready) check_models_ready(req, prompt_embedding.empty());
+      agent().results.push_back(plan_json(req, plan));
     }
+    if (agent().enabled || agent().worker) emit({{"type",str("result")},{"ok",Value(true)},
+      {"validation",str(agent().check_ready ? "files_checked" : "structural")},
+      {"execution_guaranteed",Value(false)},{"plans",Value(agent().results)}}, true);
     return 0;
   }
 
@@ -859,7 +891,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (!saw_out)
     std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
 
-  ensure_generate_models(req, prompt_embedding.empty());
+  check_models_ready(req, prompt_embedding.empty());
   plan = slopfab::resolve_plan(req);
   slopfab::validate_generation_options(req, plan, options);
 
@@ -908,28 +940,60 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.output_frame_converter = output_converter.get();
 #endif
 
-  slopfab::GenerationSession session;
+  FileLock gpu(config_path().parent_path() / "gpu.lock");
+  if (!gpu.acquired()) throw CliError("GPU_BUSY", "another CLI generation is running; retry or submit a job", 7, {}, true);
+  static slopfab::GenerationSession session;
+  std::vector<std::unique_ptr<Delivery>> deliveries;
+  for (int i = 0; i < count; ++i) {
+    auto delivery = std::make_unique<Delivery>(counted_output_path(base_out_path, i, count));
+    delivery->reserve(delivery->output);
+    if (!music && !req.still_image) {
+      auto audio = std::filesystem::u8path(delivery->output); audio.replace_extension(".wav");
+      delivery->reserve(audio.u8string());
+    }
+    for (const auto& extra : {save_latents, dump_latents}) if (!extra.empty())
+      delivery->reserve(std::filesystem::absolute(counted_output_path(extra, i, count)).u8string());
+    deliveries.push_back(std::move(delivery));
+  }
   for (int generation = 0; generation < count; ++generation) {
     req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
     req.out_path = counted_output_path(base_out_path, generation, count);
-    options.reuse_models = count > 1;
+    options.reuse_models = agent().worker || count > 1;
+    auto& delivery = *deliveries[generation];
+    delivery.fps = {plan.geometry.fps, 1};
+    options.on_samples = Delivery::samples;
+    options.hook_userdata = &delivery;
+    options.dump_latents_path = dump_latents.empty() ? std::string() : counted_output_path(dump_latents, generation, count);
     options.save_latents_path =
         save_latents.empty() ? std::string() : counted_output_path(save_latents, generation, count);
-    options.release_reused_models = generation + 1 == count;
+    options.release_reused_models = !agent().worker && generation + 1 == count;
     if (generation > 0)
       std::printf("\n");
     std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
     print_upscale();
     std::printf("\n");
+    if (cancelled()) throw CliError("CANCELLED", "generation cancelled before execution", 130);
+    if (agent().enabled || agent().worker) emit({{"type",str("started")},{"index",num(generation)},{"plan",plan_json(req,plan)}});
     const slopfab::RunResult run = slopfab::run_generate(session, req, plan, options);
+    Object result{{"index",num(generation)},{"plan",plan_json(req,plan)},
+      {"artifacts",Value(delivery.artifacts)},{"ok",Value(run.ok)},
+      {"elapsed_seconds",num(std::chrono::duration<double>(std::chrono::steady_clock::now()-agent().started).count())}};
+    for (const auto& extra : {options.save_latents_path, options.dump_latents_path})
+      if (!extra.empty() && std::filesystem::is_regular_file(extra)) {
+        delivery.artifacts.push_back(Value(Object{{"path",str(std::filesystem::absolute(extra).u8string())},
+          {"media_type",str("application/x-safetensors")}}));
+      }
+    result["artifacts"] = Value(delivery.artifacts);
+    agent().results.push_back(Value(result));
     if (!run.ok) {
-      std::fprintf(stderr, "\nslopfab: generation %d of %d: %s\n", generation + 1, count,
-                   run.message.c_str());
-      return 1;
+      if (run.cancelled || cancelled()) throw CliError("CANCELLED", run.message, 130);
+      throw std::runtime_error(run.message);
     }
+    if (agent().enabled || agent().worker) emit({{"type",str("artifact")},{"result",Value(result)}});
     std::printf("\ndone in %.2f s\n", run.seconds_denoise + run.seconds_video_decode +
                                           run.seconds_audio_decode + run.seconds_output);
   }
+  emit({{"type",str("result")},{"ok",Value(true)},{"results",Value(agent().results)}}, true);
   return 0;
 #endif // SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
 }

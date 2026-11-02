@@ -71,26 +71,8 @@ add_library(slopfab_core STATIC
   src/audio/wav.cpp
 )
 
-# The muxer, or the stub that stands in for it. Exactly one of the two is
-# compiled: they define the same four functions, so every call site links
-# against whichever this build has and none of them needs an #if.
-if(SLOPFAB_WITH_FFMPEG)
-  target_sources(slopfab_core PRIVATE
-    src/video/mux.cpp
-    src/video/ffmpeg_runtime.cpp
-    src/video/mux_codecs.cpp
-    src/video/mux_audio.cpp
-    src/video/media_decode.cpp)
-else()
-  target_sources(slopfab_core PRIVATE src/video/mux_disabled.cpp)
-endif()
-
-# PUBLIC because headers branch on it: media.h only declares the demuxer where
-# it exists, and image.cpp picks its decoder with it. A consumer that saw a
-# different value than this library was built with would disagree about which
-# functions exist.
-target_compile_definitions(slopfab_core PUBLIC
-  SLOPFAB_WITH_FFMPEG=$<IF:$<BOOL:${SLOPFAB_WITH_FFMPEG}>,1,0>)
+target_sources(slopfab_core PRIVATE src/video/mux_disabled.cpp)
+target_compile_definitions(slopfab_core PUBLIC SLOPFAB_WITH_FFMPEG=0)
 
 target_include_directories(slopfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -103,9 +85,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(PNG REQUIRED)
   find_package(JPEG REQUIRED)
   target_link_libraries(slopfab_core PRIVATE PNG::PNG JPEG::JPEG)
-endif()
-if(SLOPFAB_WITH_FFMPEG)
-  target_link_libraries(slopfab_core PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 # The RGB -> YUV 4:2:0 conversion in src/video/y4m.cpp is threaded. MSVC needs

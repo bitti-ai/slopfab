@@ -44,10 +44,7 @@ foreach(dependency IN ITEMS sageattention motioncache vulkan seedvr2)
 endforeach()
 install(FILES third_party/seedvr2/NOTICE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab
   RENAME seedvr2-NOTICE.txt)
-if(SLOPFAB_WITH_FFMPEG)
-  install(FILES external/ffmpeg/LICENSE
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab RENAME ffmpeg-LICENSE.txt)
-endif()
+
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_ENABLE_VULKAN)

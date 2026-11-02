@@ -10,6 +10,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME agent_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_agent_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(agent_cli PROPERTIES LABELS synthetic TIMEOUT 90)
     add_test(NAME lcs_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lcs_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(lcs_cli PROPERTIES LABELS synthetic TIMEOUT 60)
@@ -163,28 +166,9 @@ if(SLOPFAB_BUILD_TESTS)
   endif()
   add_test(NAME unit COMMAND slopfab_tests)
   set_tests_properties(unit PROPERTIES LABELS synthetic SKIP_RETURN_CODE 77)
-  find_program(SLOPFAB_TEST_FFMPEG ffmpeg HINTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
-  find_program(SLOPFAB_TEST_FFPROBE ffprobe HINTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
-  if(SLOPFAB_TEST_FFMPEG AND SLOPFAB_TEST_FFPROBE)
-    add_executable(slopfab_upscale_orientation_tests tests/test_upscale_orientation.cpp
-      src/cli/pipe_process.cpp)
-    target_link_libraries(slopfab_upscale_orientation_tests PRIVATE slopfab_core)
-    add_test(NAME upscale_orientation COMMAND slopfab_upscale_orientation_tests
-      "${SLOPFAB_TEST_FFMPEG}" "${SLOPFAB_TEST_FFPROBE}")
-    set_tests_properties(upscale_orientation PROPERTIES LABELS synthetic TIMEOUT 60)
-  endif()
-  if(SLOPFAB_WITH_FFMPEG)
-    if(SLOPFAB_TEST_FFMPEG AND SLOPFAB_TEST_FFPROBE)
-      add_executable(slopfab_reference_decode_tests tests/test_reference_decode.cpp src/cli/reference_decode.cpp)
-      target_link_libraries(slopfab_reference_decode_tests PRIVATE slopfab_core)
-      add_test(NAME reference_media_decode COMMAND ${CMAKE_COMMAND}
-        "-DPROBE=$<TARGET_FILE:slopfab_reference_decode_tests>" "-DFFMPEG=${SLOPFAB_TEST_FFMPEG}"
-        "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/reference_media_fixture"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_reference_decode.cmake")
-      set_tests_properties(reference_media_decode PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
-    endif()
-  endif()
+  add_executable(slopfab_native_media_tests tests/test_native_media.cpp src/cli/native_media.cpp)
+  target_link_libraries(slopfab_native_media_tests PRIVATE slopfab_core)
+  add_test(NAME native_media COMMAND slopfab_native_media_tests)
 
   if(SLOPFAB_ENABLE_VULKAN)
     add_executable(slopfab_vulkan_w4a8probe tools/vulkan_w4a8probe.cpp)

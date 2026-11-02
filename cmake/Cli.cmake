@@ -1,6 +1,6 @@
 # --- cli --------------------------------------------------------------------
 
-set(SLOPFAB_CLI_SOURCES src/main.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
+set(SLOPFAB_CLI_SOURCES src/main.cpp src/cli/agent.cpp src/cli/request.cpp src/cli/jobs.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 
 # The CLI and C API use the same in-process CUDA core. On Windows cuBLAS is
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
@@ -9,7 +9,7 @@ add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 target_sources(slopfab PRIVATE src/cli/reference_decode.cpp)
 target_sources(slopfab PRIVATE src/cli/assets.cpp)
 target_sources(slopfab PRIVATE src/cli/upscale_latents.cpp)
-target_sources(slopfab PRIVATE src/cli/upscale.cpp src/cli/pipe_process.cpp src/cli/upscale_options.cpp)
+target_sources(slopfab PRIVATE src/cli/upscale.cpp src/cli/upscale_options.cpp src/cli/native_media.cpp)
 target_sources(slopfab PRIVATE
   src/cli/model_assets.cpp src/cli/help.cpp src/cli/inspect.cpp
   src/cli/decode.cpp src/cli/tokenize.cpp src/cli/generate.cpp src/cli/devices.cpp)
@@ -29,38 +29,5 @@ if(MSVC)
   target_compile_options(${SLOPFAB_CLI_TARGET} PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()
   target_compile_options(${SLOPFAB_CLI_TARGET} PRIVATE -Wall -Wextra)
-endif()
-
-# Staging the FFmpeg runtime beside the executable, which only a build that
-# compiled the muxer has any use for. Guarded rather than left unconditional
-# because the check below is a FATAL_ERROR: without this, configuring with
-# -DSLOPFAB_WITH_FFMPEG=OFF would still refuse to proceed without the very
-# distribution the option exists to do without.
-if(WIN32 AND SLOPFAB_WITH_FFMPEG)
-  # FFmpeg remains runtime-loaded (and therefore replaceable), but the checked-in
-  # distribution is the default used by local builds. Include the command-line
-  # tools for streamed SeedVR2 decoding, probing and encoding.
-  set(SLOPFAB_FFMPEG_BIN "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
-  set(SLOPFAB_FFMPEG_RUNTIME_DLLS
-    avcodec-62.dll
-    avformat-62.dll
-    avdevice-62.dll
-    avfilter-11.dll
-    avutil-60.dll
-    swresample-6.dll
-    swscale-9.dll
-    ffmpeg.exe
-    ffprobe.exe)
-  foreach(SLOPFAB_FFMPEG_DLL IN LISTS SLOPFAB_FFMPEG_RUNTIME_DLLS)
-    if(NOT EXISTS "${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}")
-      message(FATAL_ERROR
-        "slopfab: required FFmpeg runtime is missing: ${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}")
-    endif()
-    add_custom_command(TARGET ${SLOPFAB_CLI_TARGET} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}"
-        "$<TARGET_FILE_DIR:slopfab>/${SLOPFAB_FFMPEG_DLL}"
-      VERBATIM)
-  endforeach()
 endif()
 

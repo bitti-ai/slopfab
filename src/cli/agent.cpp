@@ -1,0 +1,287 @@
+#include "agent.h"
+#include "commands.h"
+#include "native_media.h"
+#include "slopfab/audio/wav.h"
+#include "slopfab/model_profile.h"
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <csignal>
+#include <cstdio>
+#include <fstream>
+#include <mutex>
+#include <random>
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+#include <sys/file.h>
+#include <fcntl.h>
+#endif
+
+namespace slopfab::cli {
+namespace {
+AgentContext context;
+FILE* protocol=nullptr;
+std::mutex output_mutex;
+std::atomic<bool> interrupted{false};
+static_assert(std::atomic<bool>::is_always_lock_free);
+void interrupt(int) { interrupted.store(true); }
+#ifdef _WIN32
+BOOL WINAPI console_interrupt(DWORD type) {
+  if (type==CTRL_C_EVENT || type==CTRL_BREAK_EVENT || type==CTRL_CLOSE_EVENT) {
+    interrupted.store(true); return TRUE;
+  }
+  return FALSE;
+}
+#endif
+const char* stage_name(RunStage s) {
+  switch(s) {
+    case RunStage::kStarting:return "starting";
+    case RunStage::kReferences:return "references";
+    case RunStage::kConditioning:return "conditioning";
+    case RunStage::kTransformerLoad:return "loading_model";
+    case RunStage::kDenoising:return "denoising";
+    case RunStage::kVideoDecode:return "video_decode";
+    case RunStage::kAudioDecode:return "audio_decode";
+    case RunStage::kDelivering:return "writing";
+    case RunStage::kFinished:return "finished";
+    case RunStage::kUpscaling:return "upscaling";
+  }
+  return "unknown";
+}
+}
+AgentContext& agent() { return context; }
+void initialize_agent(bool enabled, const std::string& executable) {
+  context.enabled=enabled; context.executable=executable;
+  std::signal(SIGINT,interrupt); std::signal(SIGTERM,interrupt);
+#ifdef _WIN32
+  SetConsoleCtrlHandler(console_interrupt, TRUE);
+#endif
+  if (enabled && !protocol) {
+    std::fflush(stdout);
+#ifdef _WIN32
+    protocol=_fdopen(_dup(_fileno(stdout)),"wb");
+    _dup2(_fileno(stderr),_fileno(stdout));
+#else
+    protocol=fdopen(dup(fileno(stdout)),"w");
+    dup2(fileno(stderr),fileno(stdout));
+#endif
+    if (!protocol) throw std::runtime_error("cannot open agent output stream");
+  }
+}
+void emit(Object event, bool terminal) {
+  std::lock_guard<std::mutex> lock(output_mutex);
+  event["schema_version"]=num(1);
+  const auto value=Value(std::move(event));
+  context.last_event=value;
+  if (terminal) context.terminal=true;
+  const auto line=json::stringify(value)+"\n";
+  if (!context.event_file.empty()) {
+    std::ofstream f(std::filesystem::u8path(context.event_file),std::ios::binary|std::ios::app);
+    f<<line; f.flush();
+    if (!f) throw CliError("OUTPUT_FAILED","cannot write job events",6);
+  }
+  if (context.enabled) {
+    FILE* target=protocol ? protocol : stdout;
+    std::fwrite(line.data(),1,line.size(),target); std::fflush(target);
+  } else if (terminal) {
+    std::fwrite(line.data(),1,line.size(),stdout);
+  }
+}
+int report_exception(const std::exception& error) {
+  const auto* typed=dynamic_cast<const CliError*>(&error);
+  std::string code=typed?typed->code:"GENERATION_FAILED";
+  int status=typed?typed->exit_code:1;
+  bool retry=typed && typed->retryable;
+  if (!typed && (dynamic_cast<const std::invalid_argument*>(&error) ||
+                 dynamic_cast<const std::out_of_range*>(&error))) {code="INVALID_REQUEST";status=2;}
+  std::string message=error.what();
+  if (!typed && (message.find("out of memory")!=std::string::npos ||
+                 message.find("OUT_OF_MEMORY")!=std::string::npos || dynamic_cast<const std::bad_alloc*>(&error))) {
+    code="OUT_OF_MEMORY";status=5;
+  }
+  emit({{"type",str("error")},{"ok",Value(false)},
+        {"error",Value(Object{{"code",str(code)},{"message",str(message)},
+          {"field",typed && !typed->field.empty()?str(typed->field):Value()},
+          {"retryable",Value(retry)}})}, {"results",Value(context.results)}},true);
+  if (!context.enabled) std::fprintf(stderr,"slopfab: %s\n",error.what());
+  return status;
+}
+int finish_command(int status) {
+  if (!context.terminal && context.enabled) {
+    if (status) return report_exception(CliError(status==2?"INVALID_REQUEST":"COMMAND_FAILED",
+                            "Command failed; diagnostic details are on stderr.",status));
+    emit({{"type",str("result")},{"ok",Value(true)}},true);
+  }
+  return status;
+}
+void start_request() {
+  context.started=std::chrono::steady_clock::now();
+  context.results.clear(); context.terminal=false;
+  if (context.worker) interrupted.store(false);
+}
+bool cancelled() {
+  return interrupted.load() || (!context.cancel_file.empty() && std::filesystem::exists(std::filesystem::u8path(context.cancel_file))) ||
+    (context.deadline_seconds>0 && std::chrono::duration<double>(std::chrono::steady_clock::now()-context.started).count()>=context.deadline_seconds);
+}
+bool progress(RunStage stage,int step,int total,void*) {
+  // Heartbeats are deliberately rate limited; stage transitions are immediate.
+  static auto last=std::chrono::steady_clock::time_point{};
+  static RunStage previous=RunStage::kFinished;
+  auto now=std::chrono::steady_clock::now();
+  if ((context.enabled || context.worker) && (stage!=previous || now-last>=std::chrono::milliseconds(250) || step==total)) {
+    emit({{"type",str("progress")},{"stage",str(stage_name(stage))},
+          {"completed",step>=0?num(step):Value()},{"total",total>0?num(total):Value()},
+          {"elapsed_seconds",num(std::chrono::duration<double>(now-context.started).count())}});
+    previous=stage;last=now;
+  }
+  return !cancelled();
+}
+std::string unique_id() {
+  char text[40]; std::snprintf(text,sizeof(text),"%016llx%016llx",
+    static_cast<unsigned long long>(random_seed()),static_cast<unsigned long long>(random_seed()));
+  return text;
+}
+std::filesystem::path config_path() {
+  if (!context.config_path.empty()) return std::filesystem::u8path(context.config_path);
+  if (const char* env=std::getenv("SLOPFAB_CONFIG")) return std::filesystem::u8path(env);
+#ifdef _WIN32
+  if (const char* env=std::getenv("LOCALAPPDATA")) return std::filesystem::u8path(env)/"slopfab"/"config.json";
+#else
+  if (const char* env=std::getenv("XDG_CONFIG_HOME")) return std::filesystem::u8path(env)/"slopfab"/"config.json";
+  if (const char* env=std::getenv("HOME")) return std::filesystem::u8path(env)/".config"/"slopfab"/"config.json";
+#endif
+  return std::filesystem::absolute(context.executable).parent_path()/"slopfab.json";
+}
+std::filesystem::path jobs_path() {
+  return context.jobs_path.empty()?config_path().parent_path()/"jobs":std::filesystem::u8path(context.jobs_path);
+}
+Value read_json(const std::filesystem::path& path) {
+  std::ifstream f(path,std::ios::binary);
+  if (!f) throw CliError("INPUT_NOT_FOUND","cannot read "+path.u8string(),3);
+  if (std::filesystem::file_size(path)>16*1024*1024) throw CliError("INVALID_REQUEST","JSON file exceeds 16 MiB");
+  std::string text((std::istreambuf_iterator<char>(f)),{});
+  if (text.compare(0,3,"\xef\xbb\xbf")==0) text.erase(0,3);
+  try {return json::parse(text);} catch(const std::exception& e) {throw CliError("INVALID_REQUEST",e.what());}
+}
+void atomic_json(const std::filesystem::path& path,const Value& value) {
+  if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
+  auto tmp=path;tmp+= "."+unique_id()+".tmp";
+  try {
+    std::ofstream f(tmp,std::ios::binary); f<<json::stringify(value)<<'\n'; f.close();
+    if (!f) throw CliError("OUTPUT_FAILED","cannot write "+path.u8string(),6);
+#ifdef _WIN32
+    if (!MoveFileExW(tmp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+      throw CliError("OUTPUT_FAILED","cannot publish "+path.u8string(),6);
+#else
+    std::filesystem::rename(tmp,path);
+#endif
+  } catch(...) {std::error_code ec;std::filesystem::remove(tmp,ec);throw;}
+}
+struct FileLock::Impl {
+#ifdef _WIN32
+  HANDLE handle=INVALID_HANDLE_VALUE;
+#else
+  int fd=-1;
+#endif
+  bool held=false;
+};
+FileLock::FileLock(const std::filesystem::path& path):impl_(new Impl) {
+  std::filesystem::create_directories(path.parent_path());
+#ifdef _WIN32
+  impl_->handle=CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,
+                          nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+  OVERLAPPED ov{};
+  if(impl_->handle!=INVALID_HANDLE_VALUE)
+    impl_->held=LockFileEx(impl_->handle,LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0,1,0,&ov)!=0;
+#else
+  impl_->fd=open(path.c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);
+  impl_->held=impl_->fd>=0 && flock(impl_->fd,LOCK_EX|LOCK_NB)==0;
+#endif
+}
+FileLock::~FileLock() {
+#ifdef _WIN32
+  if(impl_->handle!=INVALID_HANDLE_VALUE) CloseHandle(impl_->handle);
+#else
+  if(impl_->fd>=0) close(impl_->fd);
+#endif
+}
+bool FileLock::acquired() const {return impl_->held;}
+
+Value plan_json(const GenerateRequest& r,const GeneratePlan& p) {
+  return Value(Object{{"model",str(request_model_family(r))},{"seed",str(std::to_string(r.seed))},
+    {"width",num(p.canvas_width)},{"height",num(p.canvas_height)},{"frames",num(p.aligned_frames)},
+    {"duration_seconds",num(p.duration_seconds)},{"requested_duration_seconds",context.requested_duration>0?num(context.requested_duration):Value()},
+    {"output",str(std::filesystem::absolute(std::filesystem::u8path(r.out_path)).u8string())},
+    {"transformer",str(r.transformer_path)},{"text_encoder",str(r.text_encoder_path)},
+    {"video_vae",str(r.video_decode_path())},{"audio_vae",str(r.audio_vae_path)},
+    {"description",str(describe_plan(r,p))}});
+}
+void check_models_ready(const GenerateRequest& r,bool need_text) {
+  try {ensure_generate_models(r,need_text);} catch(const std::exception& e) {throw CliError("MODEL_MISSING",e.what(),3);}
+  for (const auto& p:{r.transformer_path,r.text_encoder_path,r.video_vae_path,r.video_decode_path(),r.audio_vae_path})
+    if(!p.empty() && !std::filesystem::is_regular_file(std::filesystem::u8path(p)))
+      throw CliError("MODEL_MISSING","checkpoint does not exist: "+p,3);
+}
+Delivery::Delivery(const std::string& path):output(std::filesystem::absolute(std::filesystem::u8path(path)).u8string()) {}
+Delivery::~Delivery() {for(const auto& p:reservations){std::error_code ec;std::filesystem::remove(p,ec);}}
+void Delivery::reserve(const std::string& name) {
+  auto path=std::filesystem::u8path(name); std::filesystem::create_directories(path.parent_path());
+  auto lock=path;lock+=".slopfab-reserved";
+  if(!std::filesystem::create_directory(lock)) throw CliError("OUTPUT_EXISTS","output is reserved: "+name,6);
+  reservations.push_back(lock);
+  if(!context.overwrite && std::filesystem::exists(path)) throw CliError("OUTPUT_EXISTS","output already exists: "+name,6);
+}
+bool Delivery::samples(RunSamples& s,void* user) {
+  auto& d=*static_cast<Delivery*>(user);
+  struct Pending {std::filesystem::path temp,final;Value metadata;};
+  std::vector<Pending> pending;
+  auto write=[&](const std::string& name,const std::string& mime,Object info,const auto& writer) {
+    auto final=std::filesystem::u8path(name); auto tmp=final;tmp+="."+unique_id()+".tmp";
+    info["path"]=str(name);info["media_type"]=str(mime);
+    pending.push_back({tmp,final,Value()}); writer(tmp.u8string());
+    info["bytes"]=num(double(std::filesystem::file_size(tmp)));pending.back().metadata=Value(std::move(info));
+  };
+  try {
+    if(cancelled()) throw CliError("CANCELLED","cancelled before writing output",130);
+    if(s.video && !s.video->empty()) {
+      if(std::filesystem::u8path(d.output).extension()==".png" || std::filesystem::u8path(d.output).extension()==".ppm") {
+        if(s.frames!=1) throw CliError("OUTPUT_FAILED","image delivery received multiple frames",6);
+        size_t plane=size_t(s.width)*s.height; std::vector<uint8_t> rgb(plane*3);
+        for(size_t p=0;p<plane;++p) for(size_t c=0;c<3;++c)
+          rgb[p*3+c]=uint8_t(std::lround(std::clamp((*s.video)[c*plane+p],0.0f,1.0f)*255));
+        const bool png=std::filesystem::u8path(d.output).extension()==".png";
+        write(d.output,png?"image/png":"image/x-portable-pixmap",{{"width",num(s.width)},{"height",num(s.height)}},[&](const std::string& p){
+          if(png) write_png(p,rgb.data(),s.width,s.height);
+          else video::write_ppm(p,*s.video,1,s.height,s.width,0);
+        });
+      } else {
+        write(d.output,"video/x-yuv4mpeg",{{"width",num(s.width)},{"height",num(s.height)},
+          {"frames",num(s.frames)},{"fps",num(double(d.fps.numerator)/d.fps.denominator)},
+          {"duration_seconds",num(double(s.frames)*d.fps.denominator/d.fps.numerator)}},
+          [&](const std::string& p){video::write_y4m(p,*s.video,s.frames,s.height,s.width,d.fps);});
+      }
+    }
+    if(s.audio && !s.audio->empty()) {
+      auto p=std::filesystem::u8path(d.output);p.replace_extension(".wav");
+      write(p.u8string(),"audio/wav",{{"sample_rate",num(s.audio_sample_rate)},{"channels",num(s.audio_channels)},
+        {"duration_seconds",num(double(s.audio->size())/s.audio_channels/s.audio_sample_rate)}},
+        [&](const std::string& name){audio::write_wav(name,*s.audio,s.audio_channels,s.audio_sample_rate);});
+    }
+    for(const auto& file:pending) {
+#ifdef _WIN32
+      if(!MoveFileExW(file.temp.c_str(),file.final.c_str(),context.overwrite?MOVEFILE_REPLACE_EXISTING:0))
+        throw CliError("OUTPUT_FAILED","cannot publish artifact: "+file.final.u8string(),6);
+#else
+      if(context.overwrite) std::filesystem::rename(file.temp,file.final);
+      else {std::filesystem::create_hard_link(file.temp,file.final);std::filesystem::remove(file.temp);}
+#endif
+      d.artifacts.push_back(file.metadata);
+    }
+  } catch(...) {for(const auto& f:pending){std::error_code ec;std::filesystem::remove(f.temp,ec);}throw;}
+  return true;
+}
+}

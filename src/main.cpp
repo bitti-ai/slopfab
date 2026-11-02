@@ -1,150 +1,111 @@
-// slopfab - MiniMax H3 video generation in C++/CUDA.
-
-#include <algorithm>
-#include <cctype>
-#include <cinttypes>
-#include <cmath>
+#include "cli/commands.h"
+#include "cli/agent.h"
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <ctime>
-#include <exception>
-#include <filesystem>
-#include <fstream>
-#include <map>
-#include <memory>
-#include <random>
-#include <sstream>
-#include <stdexcept>
-#include <string>
-#include <string_view>
-#include <vector>
-
-// Included directly rather than picked up from slopfab/generate.h, which is
-// behind the CUDA guard below: the flag parsing that names an attention mode
-// is not, so a build with SLOPFAB_ENABLE_CUDA=OFF could not see this type at
-// all. It is a core header and costs a CPU-only build nothing.
-#include "slopfab/attention_mode.h"
-#include "slopfab/dtype.h"
-#include "slopfab/json.h"
-#include "slopfab/dit/checkpoint.h"
-#include "slopfab/dit/step_cache.h"
-#include "slopfab/pipeline.h"
-#include "slopfab/generate.h"
-#include "slopfab/safetensors.h"
-#include "slopfab/safetensors_write.h"
-#include "slopfab/sampler/scheduler.h"
-#include "slopfab/tensor_convert.h"
-#include "slopfab/text/tokenizer.h"
-#include "cli/reference_decode.h"
-
-#include "slopfab/video/y4m.h"
-#include "slopfab/video/y4m_compare.h"
-
-#if SLOPFAB_WITH_VULKAN
-#include "slopfab/vulkan/runtime.h"
-#include "slopfab/vulkan/yuv_converter.h"
-#endif
-
-#if defined(_WIN32)
+#include <set>
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
 #endif
-
-#if SLOPFAB_WITH_CUDA
-#include <chrono>
-
-#include "slopfab/cuda/device.h"
-#include "slopfab/cuda/cublas_dispatch.h"
-#include "slopfab/cuda/deterministic_attention.cuh"
-#include "slopfab/cuda/profile.h"
-#include "slopfab/dit/transformer.h"
-#include "slopfab/generate.h"
-#include "slopfab/vae/vit_decoder.h"
-#endif
-
-#include "cli/commands.h"
 using namespace slopfab::cli;
 
 int main(int argc, char** argv) {
-#if defined(_WIN32)
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+#ifdef _WIN32
+  SetConsoleOutputCP(CP_UTF8); SetConsoleCP(CP_UTF8);
 #endif
-#if SLOPFAB_WITH_CUDA
+  bool machine=false;
+  std::vector<std::string> args;
   try {
-    consume_cuda_version_option(argc, argv);
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "slopfab: %s\n", e.what());
-    return 1;
-  }
-#endif
-
-  if (argc < 2) {
-    print_usage();
-    return 2;
-  }
-
-  const std::string_view command = argv[1];
-
-  // `--help` is honoured for every command here rather than inside each one,
-  // so a command that takes no arguments at all still answers it. Checked
-  // before dispatch, so it never runs the command by accident.
-  if (const CommandHelp* c = find_command(command);
-      c != nullptr && wants_help(argc - 2, argv + 2)) {
-    return print_command_help(*c);
-  }
-
-  try {
-    if (command == "upscale")
-      return cmd_upscale(argc - 2, argv + 2, argv[0]);
-    if (command == "upscale-latents")
-      return cmd_upscale_latents(argc - 2, argv + 2);
-    if (command == "generate")
-      return cmd_generate(argc - 2, argv + 2, argv[0]);
-    if (command == "prepare-lora")
-      return cmd_prepare_lora(argc - 2, argv + 2);
-    if (command == "inspect")
-      return cmd_inspect(argc - 2, argv + 2);
-    if (command == "compare")
-      return cmd_compare(argc - 2, argv + 2);
-    if (command == "compare-y4m")
-      return cmd_compare_y4m(argc - 2, argv + 2);
-    if (command == "devices")
-      return cmd_devices();
-    if (command == "tokenize")
-      return cmd_tokenize(argc - 2, argv + 2);
-    if (command == "encode-text")
-      return cmd_encode_text(argc - 2, argv + 2, argv[0]);
-    if (command == "encode-refmod")
-      return cmd_encode_refmod(argc - 2, argv + 2, argv[0]);
-    if (command == "bundle-refmods")
-      return cmd_bundle_refmods(argc - 2, argv + 2);
-#if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
-    if (command == "decode")
-      return cmd_decode(argc - 2, argv + 2);
-#endif
-    if (command == "version") {
-      std::printf("slopfab %s\n", kVersion);
-      return 0;
-    }
-    if (command == "help" || command == "--help" || command == "-h") {
-      if (argc > 2) {
-        const CommandHelp* c = find_command(argv[2]);
-        if (c != nullptr)
-          return print_command_help(*c);
-        std::fprintf(stderr, "slopfab: unknown command '%s'\n\n", argv[2]);
-        print_usage();
-        return 2;
+    for(int i=1;i<argc;++i) {
+      const std::string a=argv[i];
+      if(a=="--agent") {machine=true;continue;}
+      if(a=="--config" || a=="--jobs-dir") {
+        if(++i==argc)throw CliError("INVALID_REQUEST","missing value for "+a);
+        auto path=std::filesystem::absolute(std::filesystem::u8path(argv[i])).u8string();
+        if(a=="--config")agent().config_path=path;else agent().jobs_path=path;
+        continue;
       }
-      print_usage();
-      return 0;
+      args.push_back(a);
+      // Keep option values opaque: a prompt equal to "--agent" is still a prompt.
+      if(option_takes_value(a) && i+1<argc)
+        args.push_back(argv[++i]);
     }
-    std::fprintf(stderr, "slopfab: unknown command '%s'\n\n", argv[1]);
-    print_usage();
-    return 2;
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "slopfab: %s\n", e.what());
-    return 1;
+    initialize_agent(machine, std::filesystem::absolute(std::filesystem::u8path(argv[0])).u8string());
+    if(args.empty()) {print_usage();return finish_command(0);}
+#if SLOPFAB_WITH_CUDA
+    std::vector<char*> cuda_args{argv[0]};for(auto& a:args)cuda_args.push_back(a.data());cuda_args.push_back(nullptr);
+    int cuda_argc=int(cuda_args.size()-1);consume_cuda_version_option(cuda_argc,cuda_args.data());
+    std::vector<std::string> filtered;for(int i=1;i<cuda_argc;++i)filtered.emplace_back(cuda_args[i]);args=std::move(filtered);
+    if(args.empty()){print_usage();return finish_command(0);}
+#endif
+    const std::string command=args.front();args.erase(args.begin());
+    std::vector<char*> av;for(auto& a:args)av.push_back(a.data());
+    const int ac=int(av.size());
+    if(command=="help" || command=="--help" || command=="-h") {
+      if(args.empty()){print_usage();return finish_command(0);}
+      if(const auto* help=find_command(args[0]))return print_command_help(*help);
+      throw CliError("INVALID_REQUEST","unknown command: "+args[0]);
+    }
+    if(const auto* help=find_command(command);help && wants_help(ac,av.data())) return print_command_help(*help);
+    if(command=="generate" || command=="validate") {
+      if(command=="validate")args.push_back("--dry-run");
+      return finish_command(run_generation_arguments(args));
+    }
+    if(command=="capabilities" || command=="schema" || command=="models" || command=="doctor" || command=="devices")
+      return discovery_command(command,args);
+    if(command=="submit" || command=="status" || command=="wait" || command=="cancel" || command=="worker")
+      return job_command(command,args);
+    if(command=="version") {
+      if(!args.empty())throw CliError("INVALID_REQUEST","version takes no arguments");
+      emit({{"type",str("result")},{"ok",Value(true)},{"version",str(kVersion)}},true);return 0;
+    }
+    // Older diagnostic tools return their text inside the JSON envelope. Their
+    // internal output never leaks onto the machine protocol stream.
+    FILE* capture=nullptr;int saved=-1;
+    if(machine) {
+      capture=std::tmpfile();if(!capture)throw std::runtime_error("cannot capture command result");
+      std::fflush(stdout);
+#ifdef _WIN32
+      saved=_dup(_fileno(stdout));_dup2(_fileno(capture),_fileno(stdout));
+#else
+      saved=dup(fileno(stdout));dup2(fileno(capture),fileno(stdout));
+#endif
+    }
+    struct CaptureRestore {
+      FILE* file;int fd;
+      ~CaptureRestore(){if(file){std::fflush(stdout);
+#ifdef _WIN32
+        _dup2(fd,_fileno(stdout));_close(fd);
+#else
+        dup2(fd,fileno(stdout));close(fd);
+#endif
+        std::fclose(file);}}
+    } restore{capture,saved};
+    int status=0;
+    if(command=="upscale") status=cmd_upscale(ac,av.data(),argv[0]);
+    else if(command=="upscale-latents") status=cmd_upscale_latents(ac,av.data());
+    else if(command=="prepare-lora") status=cmd_prepare_lora(ac,av.data());
+    else if(command=="inspect") status=cmd_inspect(ac,av.data());
+    else if(command=="compare") status=cmd_compare(ac,av.data());
+    else if(command=="compare-y4m") status=cmd_compare_y4m(ac,av.data());
+    else if(command=="tokenize") status=cmd_tokenize(ac,av.data());
+    else if(command=="encode-text") status=cmd_encode_text(ac,av.data(),argv[0]);
+    else if(command=="encode-refmod") status=cmd_encode_refmod(ac,av.data(),argv[0]);
+    else if(command=="bundle-refmods") status=cmd_bundle_refmods(ac,av.data());
+#if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
+    else if(command=="decode") status=cmd_decode(ac,av.data());
+#endif
+    else throw CliError("INVALID_REQUEST","unknown command: "+command+"; run slopfab help");
+    if(capture && status==0) {
+      std::fflush(stdout);std::rewind(capture);std::string text;char bytes[4096];size_t n;
+      while((n=std::fread(bytes,1,sizeof(bytes),capture)))text.append(bytes,n);
+      emit({{"type",str("result")},{"ok",Value(true)},{"text",str(text)}},true);
+    }
+    return finish_command(status);
+  } catch(const std::exception& e) {
+    if(machine && !agent().enabled)initialize_agent(true,argv[0]);
+    return report_exception(e);
   }
 }

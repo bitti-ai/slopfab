@@ -1,6 +1,7 @@
 #include "commands.h"
 #include "bounded_pipeline.h"
-#include "pipe_process.h"
+#include "native_media.h"
+#include "agent.h"
 #include "upscale_options.h"
 #include "upscale_geometry.h"
 #include "slopfab/image.h"
@@ -86,11 +87,11 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     throw std::invalid_argument("input file does not exist: " + input);
   if (std::filesystem::exists(out))
     throw std::invalid_argument("output already exists: " + output);
-  const bool still = out.extension() == ".ppm";
-  if (!still && out.extension() != ".mp4" && out.extension() != ".mkv")
-    throw std::invalid_argument("upscale output must be .ppm, .mp4 or .mkv");
+  const bool still = out.extension() == ".ppm" || out.extension() == ".png";
+  if (!still && out.extension() != ".y4m")
+    throw std::invalid_argument("upscale output must be .png, .ppm or .y4m; convert other formats externally");
   if (!still && !dump.empty())
-    throw std::invalid_argument("--dump requires .ppm output");
+    throw std::invalid_argument("--dump requires image output");
   std::printf("Upscaler: %s, model %s, tile %d\n", upscale_method_name(args.method),
               args.model.c_str(), args.options.tile_size);
   if (dry)
@@ -127,230 +128,30 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     for (size_t p = 0; p < out_plane; ++p)
       for (size_t c = 0; c < 3; ++c)
         rgb[p * 3 + c] = uint8_t(std::lround(up[c * out_plane + p] * 255));
-    std::ofstream file(out, std::ios::binary);
-    file << "P6\n" << dims.second << ' ' << dims.first << "\n255\n";
-    file.write(reinterpret_cast<const char*>(rgb.data()), std::streamsize(rgb.size()));
-    file.close();
-    if (!file)
-      throw std::runtime_error("upscale: cannot write " + output);
+    Delivery delivery(output); delivery.reserve(delivery.output);
+    RunSamples samples; samples.video=&up; samples.frames=1; samples.height=dims.first; samples.width=dims.second;
+    Delivery::samples(samples,&delivery);
     if (!dump.empty())
       write_safetensors(
           dump,
           {{"pixels", {3, 1, dims.first, dims.second}, std::vector<float>(up.begin(), up.end())}});
     return 0;
   }
-  PipeProcess probe({media_tool("ffprobe", executable), "-v", "error", "-select_streams", "v:0",
-                     "-show_entries", kUpscaleVideoEntries,
-                     "-of", "json", in.u8string()},
-                    false);
-  std::string metadata;
-  char buf[4096];
-  size_t n;
-  while ((n = probe.read(buf, sizeof(buf)))) {
-    metadata.append(buf, n);
-    if (metadata.size() > 65536)
-      throw std::runtime_error("excessive ffprobe metadata");
-  }
-  probe.finish();
-  auto info = json::parse(metadata);
-  auto* streams = info.find("streams");
-  if (!streams || streams->as_array().empty())
-    throw std::runtime_error("input has no video stream");
-  const auto& s = streams->as_array()[0];
-  auto* rate = s.find("avg_frame_rate");
-  if (!rate || rate->as_string() == "0/0")
-    rate = s.find("r_frame_rate");
-  if (!rate)
-    throw std::runtime_error("input has no usable frame rate");
-  std::string fps = rate->as_string();
-  double video_start = 0;
-  if (const auto* start = s.find("start_time")) {
-    if (start->as_string() != "N/A")
-      video_start = std::stod(start->as_string());
-  }
-  if (!std::isfinite(video_start))
-    throw std::runtime_error("invalid input video start time");
-  auto slash = fps.find('/');
-  int numerator = integer(fps.substr(0, slash)),
-      denominator = slash == std::string::npos ? 1 : integer(fps.substr(slash + 1));
-  if (numerator <= 0 || denominator <= 0 || double(numerator) / denominator > 1000)
-    throw std::runtime_error("invalid input frame rate");
-  std::printf("Output rate: %s fps (variable-rate inputs are normalized to this rate)\n",
-              fps.c_str());
-  const auto geometry = upscale_video_geometry(s);
-  const int source_width = geometry.width;
-  const int source_height = geometry.height;
-  const auto dims = upscale_dimensions(source_height, source_width, args.method, args.options);
-  const bool seed = args.method == UpscaleMethod::kSeedVr2;
-  const int decode_width = seed ? dims.second : source_width;
-  const int decode_height = seed ? dims.first : source_height;
-  if (dims.first % 2 || dims.second % 2)
-    throw std::invalid_argument("video output needs even dimensions");
-  std::unique_ptr<Upscaler> upscaler;
-  std::atomic<bool> media_stopped{false};
-#if SLOPFAB_WITH_CUDA
-  std::unique_ptr<seedvr2::Restorer> model;
-  seedvr2::Options o;
-  if (seed) {
-    o = seedvr2_options(args.options, source_height, source_width);
-    o.transformer = args.model;
-    model = std::make_unique<seedvr2::Restorer>(o);
-    model->cancelled = [&] {
-      return interrupted != 0 || media_stopped.load();
-    };
-    model->progress = [](const std::string& msg) {
-      std::fprintf(stderr, "  %s\n", msg.c_str());
-    };
-  } else
-#endif
-    upscaler = make_upscaler(args.method, args.model, backend);
-  auto temporary =
-      out.parent_path() / (out.stem().u8string() + ".upscale-part" + out.extension().u8string());
-  if (std::filesystem::exists(temporary))
-    throw std::runtime_error("temporary output already exists: " + temporary.u8string());
-  try {
-    PipeProcess reader({media_tool("ffmpeg", executable), "-nostdin", "-v", "error", "-i",
-                        in.u8string(), "-map", "0:v:0", "-an", "-sn", "-vf",
-                        "scale=" + std::to_string(decode_width) + ":" +
-                            std::to_string(decode_height) + ":flags=lanczos,fps=" + fps,
-                        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"},
-                       false);
-    PipeProcess writer({media_tool("ffmpeg", executable),
-                        "-nostdin",
-                        "-v",
-                        "error",
-                        "-n",
-                        "-copyts",
-                        "-f",
-                        "rawvideo",
-                        "-pix_fmt",
-                        "rgb24",
-                        "-s",
-                        std::to_string(dims.second) + "x" + std::to_string(dims.first),
-                        "-r",
-                        fps,
-                        "-i",
-                        "pipe:0",
-                        "-itsoffset",
-                        std::to_string(-video_start),
-                        "-i",
-                        in.u8string(),
-                        "-map",
-                        "0:v:0",
-                        "-map",
-                        "1:a?",
-                        "-map_metadata",
-                        "1",
-                        "-vf",
-                        // Raw RGB carries no SAR. Real-ESRGAN preserves display
-                        // geometry; SeedVR2's requested output uses square pixels.
-                        "setsar=" + (seed ? std::string("1/1") : geometry.sar()) + ":max=2147483647",
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        "medium",
-                        "-crf",
-                        "18",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-c:a",
-                        "copy",
-                        temporary.u8string()},
-                       true);
-    std::vector<uint8_t> input_bytes(size_t(decode_width) * decode_height * 3);
-    std::vector<uint8_t> output_bytes(size_t(dims.first) * dims.second * 3);
-    auto start = std::chrono::steady_clock::now();
-    auto decode = [&](seedvr2::Frame& frame) {
-      const size_t got = reader.read(input_bytes.data(), input_bytes.size());
-      if (!got) {
-        reader.finish();
-        return false;
-      }
-      if (got != input_bytes.size())
-        throw std::runtime_error("truncated decoded frame");
-      frame.resize(got);
-      for (size_t i = 0; i < got; ++i)
-        frame[i] = input_bytes[i] / 255.0f;
-      return true;
-    };
-    auto encode = [&](const seedvr2::Frame& frame) {
-      if (frame.size() != output_bytes.size())
-        throw std::runtime_error("invalid restored frame size");
-      for (size_t i = 0; i < frame.size(); ++i)
-        output_bytes[i] = uint8_t(std::lround(std::clamp(frame[i], 0.0f, 1.0f) * 255));
-      writer.write(output_bytes.data(), output_bytes.size());
-    };
-    BoundedPipeline<seedvr2::Frame> media(
-        decode, encode,
-        [&] {
-          writer.finish();
-        },
-        [&] {
-          media_stopped.store(true);
-          reader.cancel();
-          writer.cancel();
-        },
-        [&] {
-          if (interrupted)
-            throw UpscaleCancelled();
-        });
-    auto read = [&](seedvr2::Frame& frame) {
-      return media.read(frame);
-    };
-    auto write = [&](const seedvr2::Frame& frame) {
-      media.write(frame);
-    };
-    uint64_t frames = 0;
-    try {
-#if SLOPFAB_WITH_CUDA
-      if (seed) {
-        frames = seedvr2::stream(o, read, write,
-                                 [&](const std::vector<seedvr2::Frame>& batch, uint64_t first) {
-                                   std::fprintf(stderr, "Restoring segment at frame %llu\n",
-                                                static_cast<unsigned long long>(first));
-                                   return model->restore(batch, first);
-                                 });
-      } else
-#endif
-      {
-        seedvr2::Frame frame, restored(output_bytes.size());
-        const size_t plane = size_t(source_width) * source_height;
-        const size_t out_plane = size_t(dims.first) * dims.second;
-        PixelBuffer planar(plane * 3);
-        while (read(frame)) {
-          for (size_t p = 0; p < plane; ++p)
-            for (size_t c = 0; c < 3; ++c)
-              planar[c * plane + p] = frame[p * 3 + c];
-          auto up = upscaler->upscale(planar, 1, source_height, source_width, args.options,
-                                      [&](int, int) {
-                                        return !interrupted && !media_stopped.load();
-                                      });
-          for (size_t p = 0; p < out_plane; ++p)
-            for (size_t c = 0; c < 3; ++c)
-              restored[p * 3 + c] = up[c * out_plane + p];
-          write(restored);
-          ++frames;
-        }
-      }
-      media.finish();
-    } catch (...) {
-      // A worker failure can interrupt model execution through cancelled().
-      // Report its actual media error instead of that secondary cancellation.
-      media.rethrow_failure();
-      throw;
-    }
-    if (!frames)
-      throw std::runtime_error("input contains no decoded frames");
-    std::filesystem::rename(temporary, out);
-    double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    std::printf("Restored %llu frames in %.1f seconds: %s\n",
-                static_cast<unsigned long long>(frames), seconds, output.c_str());
-  } catch (...) {
-    std::error_code ignored;
-    std::filesystem::remove(temporary, ignored);
-    throw;
-  }
+  (void)executable;
+  auto input_video = read_y4m(input);
+  const int frames = static_cast<int>(input_video.frames.size());
+  const size_t plane = size_t(input_video.width) * input_video.height;
+  PixelBuffer pixels(plane * frames * 3);
+  for (int f=0;f<frames;++f) for(size_t p=0;p<plane;++p) for(size_t c=0;c<3;++c)
+    pixels[c*plane*frames+size_t(f)*plane+p]=input_video.frames[f][p*3+c]/255.0f;
+  input_video.frames.clear();
+  auto upscaler=make_upscaler(args.method,args.model,backend);
+  auto up=upscaler->upscale(pixels,frames,input_video.height,input_video.width,args.options,
+    [](int step,int total){return !interrupted && progress(RunStage::kUpscaling,step,total,nullptr);});
+  const auto dims=upscale_dimensions(input_video.height,input_video.width,args.method,args.options);
+  Delivery delivery(output);delivery.reserve(delivery.output);delivery.fps=input_video.fps;
+  RunSamples samples;samples.video=&up;samples.frames=frames;samples.height=dims.first;samples.width=dims.second;
+  Delivery::samples(samples,&delivery);
   return 0;
 #endif
 }
