@@ -73,8 +73,10 @@ Select `--model h3|moss|fibo2|krea2|yue2|minimax_music3`, or let an explicit
 transformer checkpoint determine the family. H3 is the default.
 
 Place compatible checkpoints in `weights/text_encoder/`, `weights/transformer/`
-and `weights/vae/`; adapters conventionally go in `weights/loras/`. The CLI
-finds local conditioner, transformer and VAE files, or accepts explicit
+and `weights/vae/`; adapters conventionally go in `weights/loras/`. Register the
+root with `slopfab settings set weight_paths "D:/models/weights"` (multiple paths
+are supported). The CLI searches configured paths for conditioner, transformer
+and VAE files, or accepts explicit
 `--text-encoder`, `--transformer`, `--vae` and `--audio-vae` paths.
 Quantization is detected from each file, including [H3 W4A8](docs/w4a8.md),
 [W6A8](docs/w6a8.md) and Comfy INT8 ConvRot video VAEs.

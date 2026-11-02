@@ -4,7 +4,9 @@ Run `slopfab` with no arguments for a short introduction. Startup first suggests
 installing the NVIDIA CUDA Toolkit when NVIDIA hardware is present without a
 compatible installation, then installing FFmpeg if it is absent from PATH and
 the executable directory. It shows only the first missing prerequisite; rerun
-after installation to get normal instructions. Explicit help and commands remain
+after installation to get the next instruction. If no weight paths are configured,
+startup asks the agent to request a path from the user and save it with
+`slopfab settings set weight_paths PATH`. Normal instructions resume once configured. Explicit help and commands remain
 accessible. FFmpeg remains an external conversion tool, not a linked dependency. Every command accepts
 `--help`; add `--agent` for machine-readable help and responses. The DLL's C ABI
 is unchanged. CLI requests, jobs, output policy, and configuration are separate
@@ -159,12 +161,33 @@ PNG/PPM/Y4M; its native video reader currently buffers the clip within that boun
 Use `--config FILE`, `SLOPFAB_CONFIG`, or the path shown by `doctor`.
 Defaults are `%LOCALAPPDATA%/slopfab/config.json` on Windows and
 `$XDG_CONFIG_HOME/slopfab/config.json` (otherwise `~/.config/slopfab/config.json`)
-on Linux. All configured paths are relative to the configuration file.
+on Linux. The CLI creates this file automatically with `schema_version: 1` and
+an empty `weight_paths` list. The DLL does not read or create it.
+
+```sh
+slopfab settings get
+slopfab settings set weight_paths "D:/models/slopfab" "E:/other-weights"
+slopfab settings get weight_paths
+slopfab settings remove weight_paths "E:/other-weights"
+slopfab settings remove weight_paths
+slopfab settings set models.local '{"family":"h3","transformer":"D:/models/h3.safetensors"}'
+slopfab settings get models.local
+slopfab settings remove models.local
+```
+
+`set weight_paths` replaces the list; it also accepts a JSON array as one argument.
+Paths may be directories or individual checkpoint files. Paths supplied to this
+command are resolved against the current working directory and saved as absolute
+paths. Relative paths in manually edited configuration resolve against the config
+file. Duplicate paths collapse. `remove weight_paths` without paths clears the
+list. `models` and `presets` support dotted keys and JSON values; `schema_version`
+is read-only. Writes are atomic and concurrent updates are serialized.
+Existing `weights_directory` configuration migrates to `weight_paths` automatically.
 
 ```json
 {
   "schema_version": 1,
-  "weights_directory": "D:/models/slopfab",
+  "weight_paths": ["D:/models/slopfab"],
   "models": {
     "image-default": {
       "family": "krea2",
@@ -186,10 +209,11 @@ on Linux. All configured paths are relative to the configuration file.
 
 Select presets with a JSON request's `preset` field. Explicit request fields
 replace preset fields; nested `options` is replaced as a whole. Names can carry
-versions so callers can pin a recipe. Without configuration, discovery searches
-for `weights/` beside the executable and up to three parent directories, never
-the caller's working directory. Multiple matching checkpoints are an error;
-use aliases or explicit checkpoint paths to disambiguate.
+versions so callers can pin a recipe. Discovery searches each configured weight
+path and its conventional `transformer/`, `text_encoder/`, and `vae/` subdirectories.
+An empty list disables implicit discovery; explicit checkpoint arguments and
+model aliases still work. Multiple matching checkpoints are an error; use aliases
+or explicit checkpoint paths to disambiguate.
 
 ## Persistent jobs
 
