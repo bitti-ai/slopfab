@@ -100,6 +100,7 @@ if(SLOPFAB_ENABLE_CUDA)
       src/krea/vae.cu
       src/fibo/ops.cu
       src/fibo/text.cu
+      src/fibo/render.cpp
       src/fibo/transformer.cu
       src/moss/runtime.cu
       src/music/cuda_ops.cu
@@ -167,6 +168,11 @@ if(SLOPFAB_ENABLE_CUDA)
     )
     target_include_directories(slopfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(slopfab_cuda PUBLIC CUDA::cuda_driver Threads::Threads)
+    # Keep the glyph renderer with its caller in text.cu: putting it in the
+    # earlier generation archive leaves an unresolved symbol on ELF linkers.
+    if(WIN32)
+      target_link_libraries(slopfab_cuda PRIVATE gdi32)
+    endif()
     if(NOT WIN32)
       # Windows resolves CUDA 12/13 cuBLAS in-process. Other platforms retain
       # the toolkit selected at link time until an equivalent loader exists.
