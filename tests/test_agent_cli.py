@@ -108,17 +108,24 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
     done = run("wait", failed, "--timeout", "15")["job"]
     assert done["state"] == "failed" and done["result"]["error"]["code"] == "MODEL_MISSING", done
 
-    # Idle workers release their OS locks on exit. The test-specific workers
-    # must exit before the temporary store can be removed on Windows.
+    # Idle workers release their OS locks on exit. Wait on the actual lock on
+    # POSIX: unlinking an open file succeeds there and does not release flock.
     # Tell this worker to stop through its dedicated store sentinel.
     (root / "jobs" / "stop").touch()
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         try:
-            (root / "jobs" / "worker.lock").unlink()
+            if os.name == "nt":
+                (root / "jobs" / "worker.lock").unlink()
+            else:
+                import fcntl
+                with (root / "jobs" / "worker.lock").open("r+") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
-        except PermissionError:
+        except (PermissionError, BlockingIOError):
             time.sleep(.1)
+    else:
+        raise AssertionError("worker did not release its lock after stopping")
 
     # Public manifests survive worker death. Status detects an abandoned run;
     # queued cancellation and timeout never invoke inference.

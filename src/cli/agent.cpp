@@ -88,7 +88,14 @@ void initialize_agent(bool enabled, const std::string& executable) {
     protocol = _fdopen(_dup(_fileno(stdout)), "wb");
     _dup2(_fileno(stderr), _fileno(stdout));
 #else
-    protocol = fdopen(dup(fileno(stdout)), "w");
+    // A detached worker must not inherit the caller's response pipe: agents
+    // wait for EOF after submit exits, even while the worker stays alive.
+    const int descriptor = fcntl(fileno(stdout), F_DUPFD_CLOEXEC, 3);
+    if (descriptor >= 0) {
+      protocol = fdopen(descriptor, "w");
+      if (!protocol)
+        close(descriptor);
+    }
     dup2(fileno(stderr), fileno(stdout));
 #endif
     if (!protocol)
