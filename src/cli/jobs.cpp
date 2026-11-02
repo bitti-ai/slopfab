@@ -203,6 +203,14 @@ int worker(double idle_seconds) {
       if (status && !agent().terminal)
         status = report_exception(CliError(status == 2 ? "INVALID_REQUEST" : "GENERATION_FAILED",
                                            "generation failed; see worker diagnostics", status));
+    } catch (const CliError& e) {
+      if (e.code == "GPU_BUSY") {
+        status = 7;
+        emit({{"type", str("queued")},
+              {"reason", str(e.what())},
+              {"error", Value(Object{{"code", str("GPU_BUSY")}, {"retryable", Value(true)}})}});
+      } else
+        status = report_exception(e);
     } catch (const std::exception& e) {
       status = report_exception(e);
     }
@@ -251,7 +259,11 @@ int job_command(const std::string& command, const std::vector<std::string>& args
         throw CliError("INVALID_REQUEST", "idle seconds must be in [1,86400]");
     }
     agent().started = std::chrono::steady_clock::now();
-    return worker(idle);
+    const int status = worker(idle);
+    agent().job_id.clear();
+    emit({{"type", str("result")}, {"ok", Value(status == 0)}, {"worker_finished", Value(true)}},
+         true);
+    return status;
   }
   if (command == "submit") {
     std::string key;
@@ -263,8 +275,11 @@ int job_command(const std::string& command, const std::vector<std::string>& args
         key = args[i];
         if (key.empty() || key.size() > 256)
           throw CliError("INVALID_REQUEST", "idempotency key must contain 1..256 bytes");
-      } else
+      } else {
         generation.push_back(args[i]);
+        if (option_takes_value(args[i]) && i + 1 < args.size())
+          generation.push_back(args[++i]);
+      }
     }
     auto prepared = prepare_arguments(generation);
     // Persist normalized arguments and all frontend controls, never a stdin/file

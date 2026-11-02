@@ -211,6 +211,23 @@ std::vector<std::string> request_args(Value request) {
         }
         if (!option_takes_value(flag))
           throw CliError("INVALID_REQUEST", key + " requires a boolean", 2, "options." + key);
+        if (key == "music-settings") {
+          const auto settings = value.is_object() ? value : parse_cli_json(value.as_string());
+          if (request.find("lyrics") && settings.find("lyrics"))
+            throw CliError("INVALID_REQUEST", "lyrics conflicts with options.music-settings.lyrics",
+                           2, "lyrics");
+          if (request.find("duration_seconds") && settings.find("duration"))
+            throw CliError("INVALID_REQUEST",
+                           "duration conflicts with options.music-settings.duration", 2,
+                           "duration_seconds");
+          // Music settings replace a complete object in the legacy parser, so
+          // append top-level lyrics again after applying the advanced settings.
+          args.push_back("--" + key);
+          args.push_back(json::stringify(settings));
+          if (const auto* lyrics = request.find("lyrics"))
+            args.insert(args.end(), {"--lyrics", lyrics->as_string()});
+          return;
+        }
         args.push_back("--" + key);
         args.push_back(value.is_object() ? json::stringify(value) : scalar(value, key));
       };
@@ -440,7 +457,9 @@ Value capabilities() {
     models.push_back(Value(Object{{"family", str(f)},
                                   {"tasks", Value(tasks)},
                                   {"backends", Value(supported)},
-                                  {"reference_edit_required", Value(f == "fibo2")}}));
+                                  {"canvas_multiple", num(model_profile(f).canvas_multiple)},
+                                  {"music_duration_max_seconds",
+                                   f == "yue2" || f == "minimax_music3" ? num(300) : Value()}}));
   }
   return Value(
       Object{{"version", str(kVersion)},

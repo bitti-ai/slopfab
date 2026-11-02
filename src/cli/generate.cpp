@@ -882,6 +882,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   cli_fail(1, "slopfab: generation requires a CUDA or Vulkan build\n");
 #else
 
+  FileLock gpu(runtime_path() / "gpu.lock");
+  if (!gpu.acquired())
+    throw CliError("GPU_BUSY", "another CLI generation is running; retry or submit a job", 7, {},
+                   true);
+
 #if SLOPFAB_WITH_VULKAN
   std::unique_ptr<slopfab::vulkan::Yuv420Converter> output_converter;
   if (output_accelerator == "vulkan") {
@@ -949,10 +954,6 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.output_frame_converter = output_converter.get();
 #endif
 
-  FileLock gpu(runtime_path() / "gpu.lock");
-  if (!gpu.acquired())
-    throw CliError("GPU_BUSY", "another CLI generation is running; retry or submit a job", 7, {},
-                   true);
   static slopfab::GenerationSession session;
   std::vector<std::unique_ptr<Delivery>> deliveries;
   for (int i = 0; i < count; ++i) {
@@ -975,6 +976,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     options.reuse_models = agent().worker || count > 1;
     auto& delivery = *deliveries[generation];
     delivery.fps = {plan.geometry.fps, 1};
+    delivery.converter = options.output_frame_converter;
     options.on_samples = Delivery::samples;
     options.hook_userdata = &delivery;
     options.dump_latents_path =

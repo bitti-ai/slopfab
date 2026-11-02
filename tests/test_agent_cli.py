@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
         assert validate(dict(request, **changes), 2)["error"]["code"] == "INVALID_REQUEST"
     assert run("validate", "--request", "-", "--steps", "3", input=json.dumps(request), code=2)["type"] == "error"
     # Values which resemble options must remain data.
-    for prompt in ("--agent", "--request", "help", "--help"):
+    for prompt in ("--agent", "--request", "help", "--help", "--idempotency-key"):
         assert run("validate", "image", "--prompt", prompt, "--seed", "42")["ok"]
     assert run("validate", "video", "--model", "krea2", "--prompt", "test", code=4)["error"]["code"] == "UNSUPPORTED_CAPABILITY"
     video = {"schema_version": 1, "task": "video", "prompt": "test", "duration_seconds": 2,
@@ -86,6 +86,11 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
     assert Path(done["events_path"]).exists()
     assert run("cancel", job_id)["job"]["state"] == "succeeded"
     assert run("status", "../bad", code=2)["type"] == "error"
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        ids=list(pool.map(lambda _: run("submit", "--request", "-", "--dry-run",
+            "--idempotency-key", "concurrent", input=json.dumps(request))["job"]["job_id"], range(4)))
+    assert len(set(ids))==1
+    assert run("wait",ids[0],"--timeout","15")["job"]["state"]=="succeeded"
 
     # A failed job must have a terminal structured error and not get retried.
     failed = run("submit", "--request", "-", "--dry-run", "--check-ready",
@@ -104,5 +109,20 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
             break
         except PermissionError:
             time.sleep(.1)
+
+    # Public manifests survive worker death. Status detects an abandoned run;
+    # queued cancellation and timeout never invoke inference.
+    interrupted_id="a"*32
+    queued_id="b"*32
+    for identity,state in ((interrupted_id,"running"),(queued_id,"queued")):
+        directory=root/"jobs"/identity
+        directory.mkdir()
+        record=dict(submitted,job_id=identity,state=state,idempotency_key="")
+        (directory/"job.json").write_text(json.dumps(record))
+    assert run("status",interrupted_id)["job"]["state"]=="interrupted"
+    timed=run("wait",queued_id,"--timeout","0",code=8)
+    assert timed["timed_out"] and timed["job"]["state"]=="queued"
+    assert run("cancel",queued_id)["job"]["state"]=="cancelled"
+    assert run("worker","--idle-seconds","1")["worker_finished"]
 
 print("PASS: agent help, discovery, JSON validation, protocol isolation and persistent jobs")

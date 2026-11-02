@@ -16,8 +16,8 @@ struct CommandHelp {
 };
 
 const CommandHelp* find_command(std::string_view);
-bool wants_help(int argc, char** argv);
-bool option_takes_value(std::string_view);
+bool wants_help(int argc, char** argv, std::string_view command = {});
+bool option_takes_value(std::string_view, std::string_view command = {});
 int print_command_help(const CommandHelp&);
 void print_usage(bool list_commands = false);
 void consume_cuda_version_option(int&, char**);

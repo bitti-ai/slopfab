@@ -87,6 +87,7 @@ int run_generation_arguments(const std::vector<std::string>& args);
 struct Delivery {
   std::string output;
   video::FrameRate fps;
+  video::FrameConverter* converter = nullptr;
   Array artifacts;
   std::exception_ptr error;
   std::vector<std::filesystem::path> reservations;

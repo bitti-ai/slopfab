@@ -455,7 +455,9 @@ const CommandHelp* find_command(std::string_view name) {
 
 // True when the argument list asks for help. Checked before any other option,
 // so `--help` works even alongside otherwise invalid arguments.
-bool option_takes_value(std::string_view a) {
+bool option_takes_value(std::string_view a, std::string_view command) {
+  if (command == "decode" && a == "--bench-load")
+    return false;
   if (a.rfind("--", 0) != 0 || a.find('=') != std::string_view::npos)
     return false;
   for (const char* flag : {"--agent",
@@ -477,20 +479,37 @@ bool option_takes_value(std::string_view a) {
                            "--no-chunking",
                            "--list",
                            "--pieces",
+                           "--qwen",
+                           "--verbose",
+                           "--no-tiling",
                            "--h3",
                            "--all",
                            "--stop"})
     if (a == flag)
       return false;
-  return true;
+  if (a == "--cuda-version" || a == "--config" || a == "--jobs-dir")
+    return true;
+  for (const auto& c : kCommands) {
+    for (const char* text : {c.detail, c.usage}) {
+      std::string_view help(text);
+      size_t offset = 0;
+      while ((offset = help.find(a, offset)) != std::string_view::npos) {
+        const size_t end = offset + a.size();
+        if (end == help.size() || help[end] == ' ' || help[end] == '\n' || help[end] == '|')
+          return true;
+        offset = end;
+      }
+    }
+  }
+  return false;
 }
 
-bool wants_help(int argc, char** argv) {
+bool wants_help(int argc, char** argv, std::string_view command) {
   for (int i = 0; i < argc; ++i) {
     const std::string_view a = argv[i];
     if (a == "--help" || a == "-h" || (i == 0 && a == "help"))
       return true;
-    if (option_takes_value(a) && i + 1 < argc)
+    if (option_takes_value(a, command) && i + 1 < argc)
       ++i;
   }
   return false;

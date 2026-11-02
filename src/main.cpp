@@ -37,7 +37,9 @@ int cli_main(int argc, char** argv) {
       }
       args.push_back(a);
       // Keep option values opaque: a prompt equal to "--agent" is still a prompt.
-      if (option_takes_value(a) && i + 1 < argc)
+      if (option_takes_value(a,
+                             args.empty() ? std::string_view{} : std::string_view(args.front())) &&
+          i + 1 < argc)
         args.push_back(argv[++i]);
     }
     initialize_agent(machine,
@@ -77,7 +79,7 @@ int cli_main(int argc, char** argv) {
         return print_command_help(*help);
       throw CliError("INVALID_REQUEST", "unknown command: " + args[0]);
     }
-    if (const auto* help = find_command(command); help && wants_help(ac, av.data()))
+    if (const auto* help = find_command(command); help && wants_help(ac, av.data(), command))
       return print_command_help(*help);
     if (command == "generate" || command == "validate") {
       if (command == "validate")

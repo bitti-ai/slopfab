@@ -93,7 +93,8 @@ if(SLOPFAB_BUILD_TESTS)
     if(Python3_Interpreter_FOUND)
       add_test(NAME upscale_cli COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_upscale_cli.py" "$<TARGET_FILE:slopfab>")
-      set_tests_properties(upscale_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+      set_tests_properties(upscale_cli PROPERTIES LABELS synthetic TIMEOUT 60
+        ENVIRONMENT "SLOPFAB_CONFIG=${CMAKE_CURRENT_BINARY_DIR}/cli-test-config.json")
     endif()
     add_executable(slopfab_upscale_tests tests/harness.cpp tests/test_main.cpp tests/test_upscale.cpp)
     target_link_libraries(slopfab_upscale_tests PRIVATE slopfab_generation)

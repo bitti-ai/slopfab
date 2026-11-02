@@ -291,12 +291,36 @@ std::filesystem::path jobs_path() {
 }
 
 Value read_json(const std::filesystem::path& path) {
+  std::string text;
+#ifdef _WIN32
+  struct File {
+    HANDLE h;
+
+    ~File() {
+      if (h != INVALID_HANDLE_VALUE)
+        CloseHandle(h);
+    }
+  } file{CreateFileW(path.c_str(), GENERIC_READ,
+                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                     FILE_ATTRIBUTE_NORMAL, nullptr)};
+
+  if (file.h == INVALID_HANDLE_VALUE)
+    throw CliError("INPUT_NOT_FOUND", "cannot read " + path.u8string(), 3);
+  LARGE_INTEGER length{};
+  if (!GetFileSizeEx(file.h, &length) || length.QuadPart < 0 || length.QuadPart > 16 * 1024 * 1024)
+    throw CliError("INVALID_REQUEST", "JSON file exceeds 16 MiB");
+  text.resize(size_t(length.QuadPart));
+  DWORD read = 0;
+  if (!ReadFile(file.h, text.data(), DWORD(text.size()), &read, nullptr) || read != text.size())
+    throw CliError("INPUT_NOT_FOUND", "cannot read complete JSON file: " + path.u8string(), 3);
+#else
   std::ifstream f(path, std::ios::binary);
   if (!f)
     throw CliError("INPUT_NOT_FOUND", "cannot read " + path.u8string(), 3);
   if (std::filesystem::file_size(path) > 16 * 1024 * 1024)
     throw CliError("INVALID_REQUEST", "JSON file exceeds 16 MiB");
-  std::string text((std::istreambuf_iterator<char>(f)), {});
+  text.assign(std::istreambuf_iterator<char>(f), {});
+#endif
   if (text.compare(0, 3, "\xef\xbb\xbf") == 0)
     text.erase(0, 3);
   try {
@@ -370,8 +394,19 @@ bool FileLock::acquired() const {
 }
 
 Value plan_json(const GenerateRequest& r, const GeneratePlan& p) {
+  Array warnings, sources;
+  if (int64_t(p.canvas_width) * p.canvas_height > p.geometry.trained_max_pixels)
+    warnings.push_back(
+        str("Requested canvas exceeds the trained area; memory and quality may vary."));
+  for (const auto& source : p.sampling_sources)
+    sources.push_back(str(source));
   return Value(Object{
       {"model", str(request_model_family(r))},
+      {"steps", num(p.num_inference_steps)},
+      {"sampler",
+       str(p.music_flow_sampler.empty() ? sampler::sampler_name(p.sampler) : p.music_flow_sampler)},
+      {"sampling_sources", Value(sources)},
+      {"warnings", Value(warnings)},
       {"seed", str(std::to_string(r.seed))},
       {"width", num(p.canvas_width)},
       {"height", num(p.canvas_height)},
@@ -477,7 +512,7 @@ bool Delivery::samples(RunSamples& s, void* user) {
                {"fps", num(double(d.fps.numerator) / d.fps.denominator)},
                {"duration_seconds", num(double(s.frames) * d.fps.denominator / d.fps.numerator)}},
               [&](const std::string& p) {
-                video::write_y4m(p, *s.video, s.frames, s.height, s.width, d.fps);
+                video::write_y4m(p, *s.video, s.frames, s.height, s.width, d.fps, d.converter);
               });
       }
     }
