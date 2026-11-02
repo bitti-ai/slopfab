@@ -75,9 +75,6 @@ copy /y "%ROOT%\third_party\seedvr2\LICENSE" "%STAGE%\SEEDVR2-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\seedvr2\NOTICE" "%STAGE%\SEEDVR2-NOTICE.txt" >nul
 if errorlevel 1 exit /b 1
-if errorlevel 1 exit /b 1
-
-
 
 powershell -NoLogo -NoProfile -NonInteractive -Command ^
   "Compress-Archive -LiteralPath '%STAGE%' -DestinationPath '%ZIP%' -CompressionLevel Optimal"

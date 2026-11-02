@@ -123,31 +123,11 @@ set `SLOPFAB_ENABLE_VULKAN=OFF`.
 
 ## Media dependencies
 
-`SLOPFAB_WITH_FFMPEG=ON` compiles media support without requiring FFmpeg headers
-or libraries at build time. Image decoding and MP4 output load FFmpeg 8.x shared
-libraries at runtime: `libavcodec.so.62`, `libavformat.so.62`, `libavutil.so.60`
-and `libswscale.so.9`, plus dependencies of the FFmpeg build (such as
-`libswresample.so.6`). A different ABI is rejected with a version diagnostic.
-The distribution's default FFmpeg package may provide an older ABI.
-
-For a separately installed compatible FFmpeg build:
-
-```sh
-export SLOPFAB_FFMPEG_DIR=/opt/ffmpeg-8/lib
-export LD_LIBRARY_PATH="$SLOPFAB_FFMPEG_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PATH="/opt/ffmpeg-8/bin:$PATH"
-```
-
-`LD_LIBRARY_PATH` also makes dependencies of those libraries discoverable. A
-system-wide installation registered with `ldconfig` needs no override. Video
-and audio reference files additionally need `ffmpeg` and `ffprobe` executables
-on `PATH` or beside the slopfab executable; these subprocesses are independent
-of the shared-library ABI requirement.
-
-Use `--raw` for Y4M/WAV output without MP4 encoding. With
-`SLOPFAB_WITH_FFMPEG=OFF`, Linux image input supports PNG, JPEG and PPM through
-the native fallback; video/audio file decoding is disabled. C API callers can supply decoded pixels
-and PCM directly.
+The executable and shared library no longer load FFmpeg libraries or launch
+FFmpeg processes. Linux still-image input uses libpng/libjpeg. Native CLI output
+is PNG/PPM, Y4M video, and WAV audio; native reference input includes Y4M/WAV.
+Use a separately installed FFmpeg yourself for compressed formats. DLL callers
+continue supplying decoded pixels and PCM directly. See [agent CLI](agent-cli.md).
 
 ## Install and package
 
@@ -168,7 +148,7 @@ do not need to support Linux permissions or shared-library symlinks.
 Archives contain `bin/slopfab`, the versioned C API library and SONAME symlinks
 under `lib/`, `include/slopfab/capi.h`, documentation and licenses. The tokenizer
 and Vulkan shaders are compiled in. Model weights, adapters, NVIDIA/Vulkan
-drivers, CUDA libraries, libpng/libjpeg and FFmpeg runtimes are external dependencies. Extract
+drivers, CUDA libraries, libpng/libjpeg runtimes are external dependencies. Extract
 the archive and add its `bin/` directory to `PATH`. C API consumers may load
 `lib/libslopfab.so` by absolute path or install it in their loader search path.
 The installed executable and shared library include relative `$ORIGIN` library

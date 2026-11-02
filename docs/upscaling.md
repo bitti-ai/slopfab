@@ -136,14 +136,10 @@ three times at about 2.1–2.3 seconds/frame and a sampled global CUDA peak of
 passed. The 32-bit activation index limit remains enforced; Vulkan has additional
 device storage/dispatch limits, and allocation failures still report errors.
 
-The video CLI now follows FFmpeg autorotation when choosing decoded dimensions
-and preserves Real-ESRGAN's source sample aspect ratio, including its inversion
-after quarter-turn rotations. Previously, rotation-tagged portrait video could
-be forced into landscape dimensions, and non-square pixels lost their display
-aspect. Tests cover integer/fractional rotations and encoded aspect ratios on
-Windows and Linux. A real-checkpoint CLI test restored a 32x16, SAR 2:1, 90-degree
-source to 64x128, SAR 1:2, with no leftover rotation tag. SeedVR2's explicit target
-dimensions and square-pixel output remain unchanged.
+The CLI now accepts native Y4M video and outputs Y4M without FFmpeg. Apply
+rotation and sample-aspect normalization during external conversion to square
+pixels. Still output supports PNG/PPM. See [agent CLI](agent-cli.md) for native
+format limits; DLL restoration and streaming contracts are unchanged.
 
 Reproduce the motion measurements with:
 

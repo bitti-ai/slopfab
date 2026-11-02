@@ -130,8 +130,11 @@ std::string find_checkpoint(const std::filesystem::path& directory,
     }
   }
   std::sort(matches.begin(), matches.end());
-  if (matches.size() > 1) throw CliError("MODEL_AMBIGUOUS",
-    "multiple matching checkpoints in " + directory.u8string() + "; configure a model alias or explicit paths", 3);
+  if (matches.size() > 1)
+    throw CliError("MODEL_AMBIGUOUS",
+                   "multiple matching checkpoints in " + directory.u8string() +
+                       "; configure a model alias or explicit paths",
+                   3);
   return matches.empty() ? std::string() : matches.front().string();
 }
 
@@ -143,23 +146,34 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   if (weights.empty())
     return;
   if (std::string_view(profile.family) == "yue2") {
-    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights, "yue2_3b");
-    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights / "transformer", "yue2_3b");
+    if (req.transformer_path.empty())
+      req.transformer_path = find_checkpoint(weights, "yue2_3b");
+    if (req.transformer_path.empty())
+      req.transformer_path = find_checkpoint(weights / "transformer", "yue2_3b");
     return;
   }
   if (std::string_view(profile.family) == "minimax_music3") {
-    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights, profile.transformer_hint);
-    if (req.transformer_path.empty()) req.transformer_path = find_checkpoint(weights / "transformer", profile.transformer_hint);
-    if (req.text_encoder_path.empty()) req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
-    if (req.text_encoder_path.empty()) req.text_encoder_path = find_checkpoint(weights, profile.conditioner_hint);
-    if (req.audio_vae_path.empty()) req.audio_vae_path = find_checkpoint(weights, profile.vae_hint);
-    if (req.audio_vae_path.empty()) req.audio_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
+    if (req.transformer_path.empty())
+      req.transformer_path = find_checkpoint(weights, profile.transformer_hint);
+    if (req.transformer_path.empty())
+      req.transformer_path = find_checkpoint(weights / "transformer", profile.transformer_hint);
+    if (req.text_encoder_path.empty())
+      req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
+    if (req.text_encoder_path.empty())
+      req.text_encoder_path = find_checkpoint(weights, profile.conditioner_hint);
+    if (req.audio_vae_path.empty())
+      req.audio_vae_path = find_checkpoint(weights, profile.vae_hint);
+    if (req.audio_vae_path.empty())
+      req.audio_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
     return;
   }
   if (req.text_encoder_path.empty())
     req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
   if (req.transformer_path.empty()) {
-    const std::string_view architecture = (std::string_view(profile.family) == "h3" && req.has_references()) ? "ref2va" : profile.transformer_hint;
+    const std::string_view architecture =
+        (std::string_view(profile.family) == "h3" && req.has_references())
+            ? "ref2va"
+            : profile.transformer_hint;
     req.transformer_path = find_checkpoint(weights / "transformer", architecture);
   }
   if (req.video_vae_path.empty())
@@ -178,24 +192,28 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
 void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_encoder) {
   if (request_model_family(req) == "minimax_music3") {
     if (req.transformer_path.empty() || req.text_encoder_path.empty() || req.audio_vae_path.empty())
-      throw std::runtime_error("MiniMax Music3 requires --transformer, --text-encoder and --audio-vae checkpoints");
+      throw std::runtime_error(
+          "MiniMax Music3 requires --transformer, --text-encoder and --audio-vae checkpoints");
     return;
   }
   if (request_model_family(req) == "yue2") {
-    if (req.transformer_path.empty()) throw std::runtime_error("missing YuE2 bundle: pass --transformer FILE");
+    if (req.transformer_path.empty())
+      throw std::runtime_error("missing YuE2 bundle: pass --transformer FILE");
     return;
   }
   const auto require_model = [](const std::string& path, const char* option,
                                 const char* directory) {
     if (path.empty())
-      throw std::runtime_error(std::string("missing model: place a compatible checkpoint in weights/") +
-                               directory + " or pass " + option + " <file>");
+      throw std::runtime_error(
+          std::string("missing model: place a compatible checkpoint in weights/") + directory +
+          " or pass " + option + " <file>");
   };
   if (need_text_encoder)
     require_model(req.text_encoder_path, "--text-encoder", "text_encoder/");
   require_model(req.transformer_path, "--transformer", "transformer/");
   require_model(req.video_decode_path(), "--vae or --video-decoder", "vae/");
-  if (!req.conditioning_image_paths().empty() || !req.reference_media.empty() || req.image_edit.image)
+  if (!req.conditioning_image_paths().empty() || !req.reference_media.empty() ||
+      req.image_edit.image)
     require_model(req.video_vae_path, "--vae (reference encoder)", "vae/");
   if (!req.still_image)
     require_model(req.audio_vae_path, "--audio-vae", "vae/");

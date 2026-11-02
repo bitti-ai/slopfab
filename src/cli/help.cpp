@@ -100,7 +100,8 @@ const CommandHelp kCommands[] = {
      "  --adapter FILE             adapter to update atomically\n"
      "  --width N                  base transformer hidden width\n"
      "  Requires an embedded grid or a local companion file.\n"},
-    {"generate", "slopfab generate [video|image|music] --prompt TEXT [options]", "text to image, video and audio",
+    {"generate", "slopfab generate [video|image|music] --prompt TEXT [options]",
+     "text to image, video and audio",
      "  --request FILE|-            versioned JSON request; excludes generation flags\n"
      "  --agent                     NDJSON progress and final result; logs on stderr\n"
      "  --duration SECONDS          video/music duration; result reports resolved length\n"
@@ -413,16 +414,33 @@ const CommandHelp kCommands[] = {
      "Input bundles are flattened in order; each member keeps its metadata and dtype.\n"
      "Up to 256 members. Does not encode raw media. No models or GPU are needed.\n"
      "Use generate --refmod to load the bundle; strength/copies apply to all members.\n"},
-    {"capabilities", "slopfab capabilities --agent", "Discover tasks, model families, backends and native formats.", "No weights or GPU initialization. Next: models list, doctor, schema.\n"},
-    {"schema", "slopfab schema --agent", "Get the version-1 generation request JSON Schema.", "Pass a request with generate --request FILE or --request - for stdin.\n"},
-    {"models", "slopfab models list --agent", "List installed model files, configured aliases and presets.", "Use --config FILE or SLOPFAB_CONFIG to select config. Paths in config are relative to that file.\n"},
-    {"doctor", "slopfab doctor --agent", "Check available GPUs and report configuration paths.", "No inference. Next: validate --request FILE --check-ready --agent.\n"},
-    {"validate", "slopfab validate --request FILE --agent", "Resolve and validate a generation without loading GPU weights.", "--check-ready also checks required model files. Validation does not guarantee available VRAM.\nSee schema and generate --help for request fields and options.\n"},
-    {"submit", "slopfab submit --request FILE --idempotency-key KEY --agent", "Queue a persistent generation and start a local worker.", "Same requests as generate. Queue capacity: 32. Retrying a key returns its existing job; changed requests fail.\nUse status JOB_ID, wait JOB_ID --timeout 60, or cancel JOB_ID. --jobs-dir selects a store.\n"},
-    {"status", "slopfab status JOB_ID --agent", "Read persistent job state, result and event-file path.", "States: queued, running, succeeded, failed, cancelled, interrupted.\n"},
-    {"wait", "slopfab wait JOB_ID --timeout 60 --agent", "Wait for a terminal job state.", "Timeout returns exit 8 with timed_out=true. Waiting does not cancel the job.\n"},
-    {"cancel", "slopfab cancel JOB_ID --agent", "Request cooperative cancellation of a queued or running job.", "A running GPU operation may finish before cancellation takes effect. Inspect status afterward.\n"},
-    {"worker", "slopfab worker --idle-seconds 60", "Process the local queue serially and reuse generation sessions.", "Submit starts this automatically. One worker per store. Exits after idle timeout.\nOn restart, abandoned running jobs become interrupted and are never automatically rerun.\n"},
+    {"capabilities", "slopfab capabilities --agent",
+     "Discover tasks, model families, backends and native formats.",
+     "No weights or GPU initialization. Next: models list, doctor, schema.\n"},
+    {"schema", "slopfab schema --agent", "Get the version-1 generation request JSON Schema.",
+     "Pass a request with generate --request FILE or --request - for stdin.\n"},
+    {"models", "slopfab models list --agent",
+     "List installed model files, configured aliases and presets.",
+     "Use --config FILE or SLOPFAB_CONFIG to select config. Paths in config are relative to that file.\n"},
+    {"doctor", "slopfab doctor --agent", "Check available GPUs and report configuration paths.",
+     "No inference. Next: validate --request FILE --check-ready --agent.\n"},
+    {"validate", "slopfab validate --request FILE --agent",
+     "Resolve and validate a generation without loading GPU weights.",
+     "--check-ready also checks required model files. Validation does not guarantee available VRAM.\nSee schema and generate --help for request fields and options.\n"},
+    {"submit", "slopfab submit --request FILE --idempotency-key KEY --agent",
+     "Queue a persistent generation and start a local worker.",
+     "Same requests as generate. Queue capacity: 32. Retrying a key returns its existing job; changed requests fail.\nUse status JOB_ID, wait JOB_ID --timeout 60, or cancel JOB_ID. --jobs-dir selects a store.\n"},
+    {"status", "slopfab status JOB_ID --agent",
+     "Read persistent job state, result and event-file path.",
+     "States: queued, running, succeeded, failed, cancelled, interrupted.\n"},
+    {"wait", "slopfab wait JOB_ID --timeout 60 --agent", "Wait for a terminal job state.",
+     "Timeout returns exit 8 with timed_out=true. Waiting does not cancel the job.\n"},
+    {"cancel", "slopfab cancel JOB_ID --agent",
+     "Request cooperative cancellation of a queued or running job.",
+     "A running GPU operation may finish before cancellation takes effect. Inspect status afterward.\n"},
+    {"worker", "slopfab worker --idle-seconds 60",
+     "Process the local queue serially and reuse generation sessions.",
+     "Submit starts this automatically. One worker per store. Exits after idle timeout.\nOn restart, abandoned running jobs become interrupted and are never automatically rerun.\n"},
     {"devices", "slopfab devices", "list CUDA and Vulkan compute devices", ""},
     {"version", "slopfab version", "print the version and exit", ""},
 };
@@ -438,45 +456,82 @@ const CommandHelp* find_command(std::string_view name) {
 // True when the argument list asks for help. Checked before any other option,
 // so `--help` works even alongside otherwise invalid arguments.
 bool option_takes_value(std::string_view a) {
-  if (a.rfind("--", 0) != 0 || a.find('=') != std::string_view::npos) return false;
-  for (const char* flag : {"--agent", "--help", "--dry-run", "--check-ready", "--overwrite",
-      "--raw", "--motion-cache", "--motion-cache-verbose", "--synthetic-latents", "--keystone-front-only",
-      "--lock-overlap", "--animate", "--preserve-driving-audio", "--latent-upscale", "--latent-upscale-no-chunking",
-      "--upscale-no-color-match", "--no-chunking", "--list", "--pieces", "--h3", "--all", "--stop"})
-    if (a == flag) return false;
+  if (a.rfind("--", 0) != 0 || a.find('=') != std::string_view::npos)
+    return false;
+  for (const char* flag : {"--agent",
+                           "--help",
+                           "--dry-run",
+                           "--check-ready",
+                           "--overwrite",
+                           "--raw",
+                           "--motion-cache",
+                           "--motion-cache-verbose",
+                           "--synthetic-latents",
+                           "--keystone-front-only",
+                           "--lock-overlap",
+                           "--animate",
+                           "--preserve-driving-audio",
+                           "--latent-upscale",
+                           "--latent-upscale-no-chunking",
+                           "--upscale-no-color-match",
+                           "--no-chunking",
+                           "--list",
+                           "--pieces",
+                           "--h3",
+                           "--all",
+                           "--stop"})
+    if (a == flag)
+      return false;
   return true;
 }
+
 bool wants_help(int argc, char** argv) {
   for (int i = 0; i < argc; ++i) {
     const std::string_view a = argv[i];
-    if (a == "--help" || a == "-h" || (i == 0 && a == "help")) return true;
-    if (option_takes_value(a) && i + 1 < argc) ++i;
+    if (a == "--help" || a == "-h" || (i == 0 && a == "help"))
+      return true;
+    if (option_takes_value(a) && i + 1 < argc)
+      ++i;
   }
   return false;
 }
 
 int print_command_help(const CommandHelp& c) {
-  const std::string next = "Add --agent for NDJSON responses and generation progress. Use schema for JSON requests; capabilities for supported tasks; doctor for setup checks.";
+  const std::string next =
+      "Add --agent for NDJSON responses and generation progress. Use schema for JSON requests; capabilities for supported tasks; doctor for setup checks.";
   if (agent().enabled) {
-    emit({{"type",str("help")},{"command",str(c.name)},{"usage",str(c.usage)},
-      {"description",str(c.summary)},{"options",str(c.detail)},{"next",str(next)}},true);
+    emit({{"type", str("help")},
+          {"command", str(c.name)},
+          {"usage", str(c.usage)},
+          {"description", str(c.summary)},
+          {"options", str(c.detail)},
+          {"next", str(next)}},
+         true);
   } else {
-    std::printf("%s\nusage: %s\n\n%s\n%s\n",c.summary,c.usage,c.detail,next.c_str());
+    std::printf("%s\nusage: %s\n\n%s\n%s\n", c.summary, c.usage, c.detail, next.c_str());
   }
   return 0;
 }
-void print_usage() {
+
+void print_usage(bool list_commands) {
   const std::string text =
-    "slopfab generates videos (Y4M + WAV), images (PNG), and music (WAV) locally.\n"
-    "Start: slopfab capabilities --agent; slopfab models list --agent; slopfab doctor --agent.\n"
-    "Generate: slopfab generate video|image|music --prompt TEXT --out FILE --agent.\n"
-    "JSON requests: slopfab schema --agent; slopfab validate --request FILE --agent.\n"
-    "Run requests: slopfab generate --request FILE --agent, or submit for a background job.\n"
-    "More: slopfab help COMMAND. Use external ffmpeg to convert Y4M/WAV to MP4 or other formats.\n";
+      "slopfab generates videos (Y4M + WAV), images (PNG), and music (WAV) locally.\n"
+      "Start: slopfab capabilities --agent; slopfab models list --agent; slopfab doctor --agent.\n"
+      "Generate: slopfab generate video|image|music --prompt TEXT --out FILE --agent.\n"
+      "JSON requests: slopfab schema --agent; slopfab validate --request FILE --agent.\n"
+      "Run requests: slopfab generate --request FILE --agent, or submit for a background job.\n"
+      "More: slopfab help COMMAND. Use external ffmpeg to convert Y4M/WAV to MP4 or other formats.\n";
   if (agent().enabled) {
-    Array commands;for(const auto& c:kCommands)commands.push_back(Value(Object{{"command",str(c.name)},{"description",str(c.summary)}}));
-    emit({{"type",str("help")},{"instructions",str(text)},{"commands",Value(commands)}},true);
-  } else std::fputs(text.c_str(),stdout);
+    Array commands;
+    for (const auto& c : kCommands)
+      commands.push_back(Value(Object{{"command", str(c.name)}, {"description", str(c.summary)}}));
+    emit({{"type", str("help")}, {"instructions", str(text)}, {"commands", Value(commands)}}, true);
+  } else {
+    std::fputs(text.c_str(), stdout);
+    if (list_commands)
+      for (const auto& c : kCommands)
+        std::printf("  %-18s %s\n", c.name, c.summary);
+  }
 }
 
 #if SLOPFAB_WITH_CUDA

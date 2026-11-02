@@ -13,7 +13,7 @@ Native C++ video, image and music generation on CUDA and Vulkan. No Python is re
 - **Memory and speed:** quantized checkpoints, [CUDA offloading](docs/denoising_memory.md), [FastH3 V2](docs/fasth3_v2.md), [OmniRef](docs/omniref.md), [VEDA](docs/veda.md) and optional [MotionCache](docs/motioncache.md). [Viggle-Animate loading](docs/viggle_animate.md) has separate workflow limits.
 - **Decoding and upscaling:** [Sol H3 VAE](docs/sol_h3_vae.md), [H3 latent upscaling](docs/latent_upscaling.md) and [Real-ESRGAN](docs/upscaling.md) on CUDA/Vulkan; [SeedVR2 restoration](docs/seedvr2.md) on CUDA.
 - **Application integration:** asynchronous C API, cancellation, progress, [generation previews](docs/generation_previews.md), [isolated session caches](docs/conditioning_settings.md) and model reuse.
-- **Media and tools:** FFmpeg MP4 output, raw Y4M/WAV, checkpoint inspection, tensor comparison and standalone media/text encoding.
+- **Media and tools:** Native PNG images and Y4M/WAV output, checkpoint inspection, tensor comparison and standalone media/text encoding.
 
 ## Build
 
@@ -46,7 +46,6 @@ Common CMake options (all default to `ON`):
 | Option | Purpose |
 | --- | --- |
 | `SLOPFAB_ENABLE_CUDA` / `SLOPFAB_ENABLE_VULKAN` | Enable either or both inference backends |
-| `SLOPFAB_WITH_FFMPEG` | MP4 output and FFmpeg media input |
 | `SLOPFAB_BUILD_C_API` | Build the shared library when a GPU backend is enabled |
 | `SLOPFAB_EMBED_TOKENIZER` | Embed the tokenizer; override its path with `SLOPFAB_TOKENIZER_FILE` |
 | `SLOPFAB_BUILD_TESTS` | Build tests |
@@ -57,9 +56,8 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 Windows packaging uses `build/` and includes the CLI, DLL, C header, import
-library and FFmpeg runtime under `dist/`. Linux uses
-`bash package.sh --backend vulkan` or `--backend both`, with external GPU/media
-runtimes. Packages exclude model weights and CUDA libraries.
+library under `dist/`. Linux uses
+`bash package.sh --backend vulkan` or `--backend both`, with external GPU runtimes. Packages exclude model weights and CUDA libraries.
 
 ## Models
 
@@ -88,20 +86,27 @@ H3 audio VAE explicitly if discovery chooses an NF4 checkpoint.
 
 ## Usage
 
+See the [agent CLI guide](docs/agent-cli.md) for JSON requests, `--agent` NDJSON
+responses and progress, capability discovery, configuration, and persistent jobs.
+Run `slopfab` for compact instructions, or `slopfab help` to list commands.
+Native outputs are PNG, Y4M, and WAV. Use a separate FFmpeg installation to encode
+MP4 or other compressed formats; neither the executable nor DLL depends on FFmpeg.
+
+
 The Windows executable is `build/Release/slopfab.exe`; the Linux executable is
 `slopfab` inside its chosen build directory. The examples below assume `slopfab` is on your `PATH`.
 
 Generate a video, or a Krea image with ER-SDE and beta scheduling:
 
 ```sh
-slopfab generate --prompt "A cat playing a piano in warm lamplight" --frames 22 --resolution 512x512 --seed 11 --out video.mp4
-slopfab generate --model krea2 --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple.ppm
+slopfab generate --prompt "A cat playing a piano in warm lamplight" --frames 22 --resolution 512x512 --seed 11 --out video.y4m
+slopfab generate --model krea2 --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple.png
 ```
 
 Read a longer prompt from a UTF-8 file, or inspect a request without loading model weights:
 
 ```sh
-slopfab generate --prompt-file prompts/scene.txt --out scene.mp4
+slopfab generate --prompt-file prompts/scene.txt --out scene.y4m
 slopfab generate --prompt "A moonlit forest" --frames 124 --dry-run
 ```
 
@@ -126,7 +131,7 @@ Common generation options:
 Fixed/distilled recipes determine their own grids. For Hyperflow, prepare its
 [companion](docs/loras.md#hyperflow-h3-eight-evaluations), pass `--lora FILE` and omit `--steps`.
 
-Without `--out`, videos are written to timestamped files under `output/`. Use `slopfab generate --help` for the complete option list.
+Without `--out`, videos are written to unique run directories under `output/`. Use `slopfab generate --help` for the complete option list.
 
 Inspect checkpoints and compare tensor archives:
 
@@ -148,4 +153,4 @@ Optional [TAEH3 previews](docs/generation_previews.md) expose small, silent RGB 
 
 MiniMax H3 model weights are licensed separately under their own **MiniMax H3 COMMUNITY LICENSE AGREEMENT**.
 
-Model weights are not distributed in this repository. Bundled third-party components retain their own licenses: [FFmpeg](external/ffmpeg/LICENSE), [SageAttention](third_party/sageattention/LICENSE) and [Vulkan headers](third_party/vulkan/LICENSE.md).
+Model weights are not distributed in this repository. Bundled third-party components retain their own licenses: [SageAttention](third_party/sageattention/LICENSE) and [Vulkan headers](third_party/vulkan/LICENSE.md).

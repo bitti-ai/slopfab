@@ -16,22 +16,19 @@ weights/seedvr2/ema_vae_fp16.safetensors     (vae/)
 with `--upscale-vae`. Custom locations use `--upscale-model FILE --upscale-vae FILE`.
 
 ```sh
-slopfab upscale --input input.mp4 --upscale-method seedvr2 --upscale-resolution 1280x720 --out restored.mp4
+slopfab upscale --input input.y4m --upscale-method seedvr2 --upscale-resolution 1280x720 --out restored.y4m
 ```
 
-The CLI requires `ffmpeg` and `ffprobe`, found beside the executable, in
-`external/ffmpeg/bin`, or on PATH. It streams decoded RGB frames to restoration
-and streams restored frames to H.264 output, copying the input audio streams.
-Use `.mkv` if the source audio codec cannot be copied into MP4. Existing output
-files are refused; a partial file is renamed only after both media processes
-finish successfully. Ctrl+C cancels and removes that partial file.
+The CLI reads native Y4M and writes Y4M, or restores still images to PNG/PPM.
+Convert compressed inputs and encode final outputs with a separate FFmpeg
+installation. Audio remains a separate WAV. Existing outputs are refused and
+completed media is published from a temporary sibling file.
 
 ## Clip length and memory
 
-There is no total-frame or duration limit. Inference is bounded by one temporal
-segment plus its overlapping boundary frame. The CLI also queues at most two
-decoded and two restored frames, plus one active frame per media worker. A
-15-second video does not need to fit on the GPU or in host RAM in full.
+The CLI native reader currently buffers decoded input with a 2 GiB limit, so
+use short clips or process segments externally. The DLL streaming API retains
+its existing bounded-memory behavior and is unchanged.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -44,7 +41,7 @@ decoded and two restored frames, plus one active frame per media worker. A
 For a 32 GB RTX 5090 at 720p, an untiled VAE avoids spatial tile boundaries:
 
 ```sh
-slopfab upscale --input input.mp4 --upscale-method seedvr2 --upscale-resolution 1280x720 --upscale-segment-frames 5 --upscale-tile 0 --out restored.mp4
+slopfab upscale --input input.y4m --upscale-method seedvr2 --upscale-resolution 1280x720 --upscale-segment-frames 5 --upscale-tile 0 --out restored.y4m
 ```
 
 For lower memory, retain the default VAE tile, reduce it to 128, or use
@@ -98,7 +95,7 @@ Without `--upscale-resolution`, SeedVR2 defaults to 4x input dimensions.
 Generation uses the same selector and options:
 
 ```sh
-slopfab generate --prompt "A cat" --resolution 320x192 --upscale-method seedvr2 --upscale-resolution 1280x768 --upscale-tile 256 --out restored.mp4
+slopfab generate --prompt "A cat" --resolution 320x192 --upscale-method seedvr2 --upscale-resolution 1280x768 --upscale-tile 256 --out restored.y4m
 ```
 
 Selecting a method enables upscaling and chooses its default model path;

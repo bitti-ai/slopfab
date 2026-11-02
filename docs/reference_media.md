@@ -2,7 +2,7 @@
 
 Status: **CUDA and Vulkan generation support reference videos, their soundtracks, and
 standalone audio alongside an image or video reference.** The CLI decodes files
-with FFmpeg; DLL callers supply decoded frames and PCM without FFmpeg.
+from native Y4M/WAV files; DLL callers supply decoded frames and PCM.
 Use a Ref2VA transformer, a video VAE with encoder weights, and, for audio
 references, an audio VAE with floating-point encoder weights (the shipped FP32
 audio VAE works; NF4 audio encoder weights are not supported). Vulkan video
@@ -82,18 +82,13 @@ count includes video and audio conditions. Reference videos require a video
 target of at least 22 frames; still-image output with a reference video is rejected.
 
 `src/cli/reference_decode.cpp` belongs to the executable, never the DLL. It
-launches `ffprobe`/`ffmpeg` directly, without a shell. Install both command-line
-tools beside the executable or on PATH; repository builds also search
-`external/ffmpeg/bin` beneath the current directory. The existing muxer DLLs alone
-do not provide these tools. FFmpeg-disabled builds exclude this implementation.
-
-The adapter samples video at 24 fps, preserves native pixel dimensions, and
-preserves mono/stereo audio at its native sample rate. Audio stream start offsets
-are kept; audio preceding the first video frame is trimmed. Codec overshoots are
-clamped to the public PCM range. Inputs must have a known 2–15 second duration;
-trim longer files first. Current bounds are 8192 pixels per axis, 2 GiB decoded
-video and 256 MiB PCM. Rotation metadata is not applied. File-decoded inputs
-then use the same model preprocessing as host-provided inputs.
+reads progressive BT.709 limited-range 8-bit 4:2:0 Y4M video and mono/stereo
+PCM16/24/32 or float32 WAV audio without external processes. Convert compressed
+media externally. Video retains its native frame rate and has no embedded
+soundtrack; supply audio separately when supported. Existing limits remain:
+2?15 seconds, at most 8192 pixels per axis, 2 GiB decoded video and 256 MiB WAV
+chunks. Still images use the platform decoder. Model preprocessing is shared
+with host-provided decoded inputs.
 
 ## Generation path
 

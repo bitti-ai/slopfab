@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <stdexcept>
 
 namespace slopfab::audio {
@@ -137,7 +138,7 @@ void write_wav(const std::string& path, const std::vector<float>& interleaved, i
   put_u32(file, static_cast<uint32_t>(body.size()));
   file.insert(file.end(), body.begin(), body.end());
 
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  std::ofstream out(std::filesystem::u8path(path), std::ios::binary | std::ios::trunc);
   if (!out)
     throw std::runtime_error("wav: cannot open " + path + " for writing");
   out.write(reinterpret_cast<const char*>(file.data()), static_cast<std::streamsize>(file.size()));

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <filesystem>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -172,7 +173,7 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
                              std::to_string(planar_rgb.size()));
   }
 
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  std::ofstream out(std::filesystem::u8path(path), std::ios::binary | std::ios::trunc);
   if (!out)
     throw std::runtime_error("y4m: cannot open " + path + " for writing");
 
@@ -264,7 +265,7 @@ void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frame
   const size_t plane = static_cast<size_t>(frames) * frame_pixels;
   const size_t base = static_cast<size_t>(frame_index) * frame_pixels;
 
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  std::ofstream out(std::filesystem::u8path(path), std::ios::binary | std::ios::trunc);
   if (!out)
     throw std::runtime_error("ppm: cannot open " + path + " for writing");
   out << "P6\n" << width << " " << height << "\n255\n";

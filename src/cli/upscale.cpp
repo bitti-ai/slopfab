@@ -89,7 +89,8 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     throw std::invalid_argument("output already exists: " + output);
   const bool still = out.extension() == ".ppm" || out.extension() == ".png";
   if (!still && out.extension() != ".y4m")
-    throw std::invalid_argument("upscale output must be .png, .ppm or .y4m; convert other formats externally");
+    throw std::invalid_argument(
+        "upscale output must be .png, .ppm or .y4m; convert other formats externally");
   if (!still && !dump.empty())
     throw std::invalid_argument("--dump requires image output");
   std::printf("Upscaler: %s, model %s, tile %d\n", upscale_method_name(args.method),
@@ -128,9 +129,14 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     for (size_t p = 0; p < out_plane; ++p)
       for (size_t c = 0; c < 3; ++c)
         rgb[p * 3 + c] = uint8_t(std::lround(up[c * out_plane + p] * 255));
-    Delivery delivery(output); delivery.reserve(delivery.output);
-    RunSamples samples; samples.video=&up; samples.frames=1; samples.height=dims.first; samples.width=dims.second;
-    Delivery::samples(samples,&delivery);
+    Delivery delivery(output);
+    delivery.reserve(delivery.output);
+    RunSamples samples;
+    samples.video = &up;
+    samples.frames = 1;
+    samples.height = dims.first;
+    samples.width = dims.second;
+    Delivery::samples(samples, &delivery);
     if (!dump.empty())
       write_safetensors(
           dump,
@@ -142,16 +148,28 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
   const int frames = static_cast<int>(input_video.frames.size());
   const size_t plane = size_t(input_video.width) * input_video.height;
   PixelBuffer pixels(plane * frames * 3);
-  for (int f=0;f<frames;++f) for(size_t p=0;p<plane;++p) for(size_t c=0;c<3;++c)
-    pixels[c*plane*frames+size_t(f)*plane+p]=input_video.frames[f][p*3+c]/255.0f;
+  for (int f = 0; f < frames; ++f)
+    for (size_t p = 0; p < plane; ++p)
+      for (size_t c = 0; c < 3; ++c)
+        pixels[c * plane * frames + size_t(f) * plane + p] =
+            input_video.frames[f][p * 3 + c] / 255.0f;
   input_video.frames.clear();
-  auto upscaler=make_upscaler(args.method,args.model,backend);
-  auto up=upscaler->upscale(pixels,frames,input_video.height,input_video.width,args.options,
-    [](int step,int total){return !interrupted && progress(RunStage::kUpscaling,step,total,nullptr);});
-  const auto dims=upscale_dimensions(input_video.height,input_video.width,args.method,args.options);
-  Delivery delivery(output);delivery.reserve(delivery.output);delivery.fps=input_video.fps;
-  RunSamples samples;samples.video=&up;samples.frames=frames;samples.height=dims.first;samples.width=dims.second;
-  Delivery::samples(samples,&delivery);
+  auto upscaler = make_upscaler(args.method, args.model, backend);
+  auto up = upscaler->upscale(
+      pixels, frames, input_video.height, input_video.width, args.options, [](int step, int total) {
+        return !interrupted && progress(RunStage::kUpscaling, step, total, nullptr);
+      });
+  const auto dims =
+      upscale_dimensions(input_video.height, input_video.width, args.method, args.options);
+  Delivery delivery(output);
+  delivery.reserve(delivery.output);
+  delivery.fps = input_video.fps;
+  RunSamples samples;
+  samples.video = &up;
+  samples.frames = frames;
+  samples.height = dims.first;
+  samples.width = dims.second;
+  Delivery::samples(samples, &delivery);
   return 0;
 #endif
 }

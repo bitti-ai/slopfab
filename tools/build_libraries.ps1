@@ -49,7 +49,7 @@ Both folders also contain SHA256SUMS and build-info.txt.
 Defaults: both platforms, 2 jobs, WSL Ubuntu-22.04, Windows build\,
 Linux $HOME/slopfab-build-linux-glibc235. Relative Windows paths are based on the repo.
 Linux paths must be absolute. Existing build configurations are reused;
-other CMake settings such as FFmpeg are retained (new builds use CMake defaults).
+other CMake settings are retained (new builds use CMake defaults).
 
 Windows requires CMake >=3.31, VS 2022 C++ tools, CUDA 12.8 and CUDA 13.0 headers.
 Linux requires glibc <=2.35, WSL, CMake >=3.31, C++ tools, CUDA, libpng-dev/libjpeg-dev,

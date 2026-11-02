@@ -15,220 +15,411 @@
 
 namespace slopfab::cli {
 namespace {
-void keys(const Value& v,std::initializer_list<const char*> allowed,const std::string& field) {
-  if(!v.is_object()) throw CliError("INVALID_REQUEST",field+" must be an object",2,field);
-  for(const auto& item:v.as_object()) {
-    bool found=false;for(auto k:allowed) if(item.first==k) found=true;
-    if(!found) throw CliError("INVALID_REQUEST","unknown field: "+field+"."+item.first,2,field+"."+item.first);
+void keys(const Value& v, std::initializer_list<const char*> allowed, const std::string& field) {
+  if (!v.is_object())
+    throw CliError("INVALID_REQUEST", field + " must be an object", 2, field);
+  for (const auto& item : v.as_object()) {
+    bool found = false;
+    for (auto k : allowed)
+      if (item.first == k)
+        found = true;
+    if (!found)
+      throw CliError("INVALID_REQUEST", "unknown field: " + field + "." + item.first, 2,
+                     field + "." + item.first);
   }
 }
-std::string scalar(const Value& v,const std::string& field) {
-  if(v.is_string()) return v.as_string();
-  if(v.is_number() && std::isfinite(v.as_number())) return json::stringify(v);
-  throw CliError("INVALID_REQUEST",field+" must be a string or finite number",2,field);
+
+std::string scalar(const Value& v, const std::string& field) {
+  if (v.is_string())
+    return v.as_string();
+  if (v.is_number() && std::isfinite(v.as_number()))
+    return json::stringify(v);
+  throw CliError("INVALID_REQUEST", field + " must be a string or finite number", 2, field);
 }
+
 Value config() {
-  const auto path=config_path();
-  if(!std::filesystem::exists(path)) {
-    if(!agent().config_path.empty() || std::getenv("SLOPFAB_CONFIG"))
-      throw CliError("INPUT_NOT_FOUND","config file not found: "+path.u8string(),3);
+  const auto path = config_path();
+  if (!std::filesystem::exists(path)) {
+    if (!agent().config_path.empty() || std::getenv("SLOPFAB_CONFIG"))
+      throw CliError("INPUT_NOT_FOUND", "config file not found: " + path.u8string(), 3);
     return Value(Object{});
   }
-  auto result=read_json(path);
-  keys(result,{"schema_version","models","presets","weights_directory"},"config");
-  if(const auto* version=result.find("schema_version"))
-    if(!version->is_number() || version->as_number()!=1) throw CliError("INVALID_REQUEST","unsupported config schema_version");
+  auto result = read_json(path);
+  keys(result, {"schema_version", "models", "presets", "weights_directory"}, "config");
+  if (const auto* version = result.find("schema_version"))
+    if (!version->is_number() || version->as_number() != 1)
+      throw CliError("INVALID_REQUEST", "unsupported config schema_version");
   return result;
 }
+
 Value read_request(const std::string& path) {
-  if(path!="-") return read_json(std::filesystem::u8path(path));
-  std::string text; char buffer[8192];
-  while(std::cin.read(buffer,sizeof(buffer)) || std::cin.gcount()) {
-    text.append(buffer,size_t(std::cin.gcount()));
-    if(text.size()>16*1024*1024) throw CliError("INVALID_REQUEST","stdin request exceeds 16 MiB");
+  if (path != "-")
+    return read_json(std::filesystem::u8path(path));
+  std::string text;
+  char buffer[8192];
+  while (std::cin.read(buffer, sizeof(buffer)) || std::cin.gcount()) {
+    text.append(buffer, size_t(std::cin.gcount()));
+    if (text.size() > 16 * 1024 * 1024)
+      throw CliError("INVALID_REQUEST", "stdin request exceeds 16 MiB");
   }
-  if(text.compare(0,3,"\xef\xbb\xbf")==0) text.erase(0,3);
-  try{return json::parse(text);}catch(const std::exception& e){throw CliError("INVALID_REQUEST",e.what());}
+  if (text.compare(0, 3, "\xef\xbb\xbf") == 0)
+    text.erase(0, 3);
+  try {
+    return parse_cli_json(text);
+  } catch (const std::exception& e) {
+    throw CliError("INVALID_REQUEST", e.what());
+  }
 }
+
 std::vector<std::string> request_args(Value request) {
-  keys(request,{"schema_version","task","model","preset","prompt","negative_prompt","lyrics","duration_seconds",
-    "resolution","seed","count","output","references","loras","options","deadline_seconds"},"request");
-  auto version=request.find("schema_version");
-  if(!version || !version->is_number() || version->as_number()!=1)
-    throw CliError("INVALID_REQUEST","schema_version must be 1",2,"schema_version");
-  auto object=request.as_object();
-  if(const auto* preset=request.find("preset")) {
-    auto cfg=config();auto presets=cfg.find("presets");auto entry=presets?presets->find(preset->as_string()):nullptr;
-    if(!entry) throw CliError("INVALID_REQUEST","unknown preset: "+preset->as_string(),2,"preset");
-    keys(*entry,{"task","model","prompt","negative_prompt","lyrics","duration_seconds","resolution","seed","count","options","deadline_seconds"},"preset");
-    auto merged=entry->as_object();
-    for(const auto& item:object) merged[item.first]=item.second;
-    object=std::move(merged);request=Value(object);
+  keys(request,
+       {"schema_version", "task", "model", "preset", "prompt", "negative_prompt", "lyrics",
+        "duration_seconds", "resolution", "seed", "count", "output", "references", "loras",
+        "options", "deadline_seconds"},
+       "request");
+  auto version = request.find("schema_version");
+  if (!version || !version->is_number() || version->as_number() != 1)
+    throw CliError("INVALID_REQUEST", "schema_version must be 1", 2, "schema_version");
+  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics"})
+    if (const auto* v = request.find(key))
+      if (!v->is_string())
+        throw CliError("INVALID_REQUEST", std::string(key) + " must be a string", 2, key);
+  for (const char* key : {"duration_seconds", "deadline_seconds", "count"})
+    if (const auto* v = request.find(key))
+      if (!v->is_number() || !std::isfinite(v->as_number()) || v->as_number() <= 0 ||
+          (std::string(key) == "count" &&
+           (std::floor(v->as_number()) != v->as_number() || v->as_number() > 1000000)))
+        throw CliError("INVALID_REQUEST",
+                       std::string(key) + " must be a positive number (count is an integer)", 2,
+                       key);
+  auto object = request.as_object();
+  if (const auto* preset = request.find("preset")) {
+    auto cfg = config();
+    auto presets = cfg.find("presets");
+    auto entry = presets ? presets->find(preset->as_string()) : nullptr;
+    if (!entry)
+      throw CliError("INVALID_REQUEST", "unknown preset: " + preset->as_string(), 2, "preset");
+    keys(*entry,
+         {"task", "model", "prompt", "negative_prompt", "lyrics", "duration_seconds", "resolution",
+          "seed", "count", "options", "deadline_seconds"},
+         "preset");
+    auto merged = entry->as_object();
+    for (const auto& item : object)
+      merged[item.first] = item.second;
+    object = std::move(merged);
+    request = Value(object);
   }
-  auto task=request.find("task");
-  if(!task || !task->is_string() || (task->as_string()!="image" && task->as_string()!="video" && task->as_string()!="music"))
-    throw CliError("INVALID_REQUEST","task must be video, image or music",2,"task");
-  std::vector<std::string> args={task->as_string()};
-  const std::pair<const char*,const char*> simple[]={
-    {"model","--model"},{"prompt","--prompt"},{"negative_prompt","--negative-prompt"},
-    {"lyrics","--lyrics"},{"duration_seconds","--duration"},{"seed","--seed"},
-    {"count","--count"},{"deadline_seconds","--deadline"}};
-  for(const auto& field:simple) if(const auto* v=request.find(field.first)) {
-    if(std::string(field.first)=="seed" && !v->is_string()) throw CliError("INVALID_REQUEST","seed must be a decimal string",2,"seed");
-    args.push_back(field.second);args.push_back(scalar(*v,field.first));
+  auto task = request.find("task");
+  if (!task || !task->is_string() ||
+      (task->as_string() != "image" && task->as_string() != "video" &&
+       task->as_string() != "music"))
+    throw CliError("INVALID_REQUEST", "task must be video, image or music", 2, "task");
+  std::vector<std::string> args = {task->as_string()};
+  const std::pair<const char*, const char*> simple[] = {{"model", "--model"},
+                                                        {"prompt", "--prompt"},
+                                                        {"negative_prompt", "--negative-prompt"},
+                                                        {"lyrics", "--lyrics"},
+                                                        {"duration_seconds", "--duration"},
+                                                        {"seed", "--seed"},
+                                                        {"count", "--count"},
+                                                        {"deadline_seconds", "--deadline"}};
+  for (const auto& field : simple)
+    if (const auto* v = request.find(field.first)) {
+      if (std::string(field.first) == "seed" && !v->is_string())
+        throw CliError("INVALID_REQUEST", "seed must be a decimal string", 2, "seed");
+      args.push_back(field.second);
+      args.push_back(scalar(*v, field.first));
+    }
+  if (const auto* v = request.find("resolution")) {
+    keys(*v, {"width", "height"}, "resolution");
+    if (!v->find("width") || !v->find("height"))
+      throw CliError("INVALID_REQUEST", "resolution requires width and height", 2, "resolution");
+    for (const char* axis : {"width", "height"}) {
+      const auto* n = v->find(axis);
+      if (!n->is_number() || !std::isfinite(n->as_number()) || n->as_number() <= 0 ||
+          std::floor(n->as_number()) != n->as_number())
+        throw CliError("INVALID_REQUEST", "resolution dimensions must be positive integers", 2,
+                       "resolution");
+    }
+    args.insert(args.end(), {"--resolution", scalar(*v->find("width"), "width") + "x" +
+                                                 scalar(*v->find("height"), "height")});
   }
-  if(const auto* v=request.find("resolution")) {
-    keys(*v,{"width","height"},"resolution");
-    if(!v->find("width") || !v->find("height")) throw CliError("INVALID_REQUEST","resolution requires width and height",2,"resolution");
-    args.insert(args.end(),{"--resolution",scalar(*v->find("width"),"width")+"x"+scalar(*v->find("height"),"height")});
+  if (const auto* v = request.find("output")) {
+    keys(*v, {"path", "format", "overwrite"}, "output");
+    if (const auto* path = v->find("path")) {
+      args.insert(args.end(), {"--out", path->as_string()});
+      if (const auto* format = v->find("format"))
+        if (std::filesystem::u8path(path->as_string()).extension() != "." + format->as_string())
+          throw CliError("INVALID_REQUEST", "output path extension must match format", 2,
+                         "output.format");
+    } else if (v->find("format"))
+      throw CliError("INVALID_REQUEST", "output.format requires output.path", 2, "output.path");
+    if (const auto* overwrite = v->find("overwrite"))
+      if (overwrite->as_bool())
+        args.push_back("--overwrite");
   }
-  if(const auto* v=request.find("output")) {
-    keys(*v,{"path","format","overwrite"},"output");
-    if(const auto* path=v->find("path")) {
-      args.insert(args.end(),{"--out",path->as_string()});
-      if(const auto* format=v->find("format"))
-        if(std::filesystem::u8path(path->as_string()).extension()!="."+format->as_string())
-          throw CliError("INVALID_REQUEST","output path extension must match format",2,"output.format");
-    } else if(v->find("format")) throw CliError("INVALID_REQUEST","output.format requires output.path",2,"output.path");
-    if(const auto* overwrite=v->find("overwrite")) if(overwrite->as_bool()) args.push_back("--overwrite");
-  }
-  if(const auto* refs=request.find("references")) for(const auto& ref:refs->as_array()) {
-    keys(ref,{"type","path"},"references");
-    if(!ref.find("type") || !ref.find("path")) throw CliError("INVALID_REQUEST","reference requires type and path");
-    const auto kind=ref.find("type")->as_string();
-    if(kind!="image" && kind!="video" && kind!="audio" && kind!="refmod") throw CliError("INVALID_REQUEST","unknown reference type");
-    args.insert(args.end(),{kind=="refmod"?"--refmod":"--reference-"+kind,ref.find("path")->as_string()});
-  }
-  if(const auto* loras=request.find("loras")) for(const auto& lora:loras->as_array()) {
-    keys(lora,{"path","strength"},"loras");
-    if(!lora.find("path")) throw CliError("INVALID_REQUEST","LoRA requires path");
-    args.insert(args.end(),{"--lora",lora.find("path")->as_string()});
-    if(const auto* strength=lora.find("strength")) args.insert(args.end(),{"--lora-strength",scalar(*strength,"strength")});
-  }
-  if(const auto* opts=request.find("options")) {
-    if(!opts->is_object()) throw CliError("INVALID_REQUEST","options must be an object",2,"options");
-    const std::set<std::string> forbidden={"request","help","agent","config","jobs-dir","preset","model","prompt","negative-prompt","lyrics","duration","music-duration","resolution","seed","count","out","overwrite","deadline","dry-run","check-ready","task","bench-load"};
-    for(const auto& item:opts->as_object()) {
-      const auto& key=item.first;
-      if(key.empty() || key[0]=='-' || forbidden.count(key)) throw CliError("INVALID_REQUEST","use top-level fields instead of options."+key,2,"options."+key);
-      const std::string flag="--"+key;
-      const std::string help=find_command("generate")->detail;
-      const auto location=help.find(flag);
-      if(location==std::string::npos || (location+flag.size()<help.size() &&
-          help[location+flag.size()]!=' ' && help[location+flag.size()]!='\n'))
-        throw CliError("INVALID_REQUEST","unknown option: "+key,2,"options."+key);
-      auto append=[&](const Value& value) {
-        if(value.type()==json::Type::Bool) {
-          if(option_takes_value(flag)) throw CliError("INVALID_REQUEST",key+" requires a value",2,"options."+key);
-          if(value.as_bool()) args.push_back(flag);return;
+  if (const auto* refs = request.find("references"))
+    for (const auto& ref : refs->as_array()) {
+      keys(ref, {"type", "path"}, "references");
+      if (!ref.find("type") || !ref.find("path"))
+        throw CliError("INVALID_REQUEST", "reference requires type and path");
+      const auto kind = ref.find("type")->as_string();
+      if (kind != "image" && kind != "video" && kind != "audio" && kind != "refmod")
+        throw CliError("INVALID_REQUEST", "unknown reference type");
+      args.insert(args.end(), {kind == "refmod" ? "--refmod" : "--reference-" + kind,
+                               ref.find("path")->as_string()});
+    }
+  if (const auto* loras = request.find("loras"))
+    for (const auto& lora : loras->as_array()) {
+      keys(lora, {"path", "strength"}, "loras");
+      if (!lora.find("path"))
+        throw CliError("INVALID_REQUEST", "LoRA requires path");
+      args.insert(args.end(), {"--lora", lora.find("path")->as_string()});
+      if (const auto* strength = lora.find("strength"))
+        args.insert(args.end(), {"--lora-strength", scalar(*strength, "strength")});
+    }
+  if (const auto* opts = request.find("options")) {
+    if (!opts->is_object())
+      throw CliError("INVALID_REQUEST", "options must be an object", 2, "options");
+    const std::set<std::string> forbidden = {"request",    "help",        "agent",
+                                             "config",     "jobs-dir",    "preset",
+                                             "model",      "prompt",      "negative-prompt",
+                                             "lyrics",     "duration",    "music-duration",
+                                             "resolution", "seed",        "count",
+                                             "out",        "overwrite",   "deadline",
+                                             "dry-run",    "check-ready", "task",
+                                             "bench-load"};
+    for (const auto& item : opts->as_object()) {
+      const auto& key = item.first;
+      if (key.empty() || key[0] == '-' || forbidden.count(key))
+        throw CliError("INVALID_REQUEST", "use top-level fields instead of options." + key, 2,
+                       "options." + key);
+      const std::string flag = "--" + key;
+      const std::string help = find_command("generate")->detail;
+      const auto location = help.find(flag);
+      if (location == std::string::npos ||
+          (location + flag.size() < help.size() && help[location + flag.size()] != ' ' &&
+           help[location + flag.size()] != '\n'))
+        throw CliError("INVALID_REQUEST", "unknown option: " + key, 2, "options." + key);
+      auto append = [&](const Value& value) {
+        if (value.type() == json::Type::Bool) {
+          if (option_takes_value(flag))
+            throw CliError("INVALID_REQUEST", key + " requires a value", 2, "options." + key);
+          if (value.as_bool())
+            args.push_back(flag);
+          return;
         }
-        if(!option_takes_value(flag)) throw CliError("INVALID_REQUEST",key+" requires a boolean",2,"options."+key);
-        args.push_back("--"+key);
-        args.push_back(value.is_object()?json::stringify(value):scalar(value,key));
+        if (!option_takes_value(flag))
+          throw CliError("INVALID_REQUEST", key + " requires a boolean", 2, "options." + key);
+        args.push_back("--" + key);
+        args.push_back(value.is_object() ? json::stringify(value) : scalar(value, key));
       };
-      if(item.second.is_array()) for(const auto& v:item.second.as_array()) append(v);else append(item.second);
+      if (item.second.is_array())
+        for (const auto& v : item.second.as_array())
+          append(v);
+      else
+        append(item.second);
     }
   }
   return args;
 }
 }
 
-void resolve_model_alias(GenerateRequest& request,const std::string& name) {
-  auto cfg=config();const auto* models=cfg.find("models");const auto* model=models?models->find(name):nullptr;
-  if(!model) {request.model_family=name;return;}
-  keys(*model,{"family","transformer","text_encoder","vae","audio_vae","tokenizer"},"models."+name);
-  const auto* family=model->find("family");
-  if(!family) throw CliError("INVALID_REQUEST","model alias requires family",2,"models."+name);
-  request.model_family=family->as_string();
-  for(auto field:std::initializer_list<std::pair<const char*,std::string*>>{
-      {"transformer",&request.transformer_path},{"text_encoder",&request.text_encoder_path},
-      {"vae",&request.video_vae_path},{"audio_vae",&request.audio_vae_path},{"tokenizer",&request.tokenizer_path}}) {
-    if(const auto* v=model->find(field.first)) {
-      auto path=std::filesystem::u8path(v->as_string());if(path.is_relative())path=config_path().parent_path()/path;
-      *field.second=std::filesystem::absolute(path).lexically_normal().u8string();
+void resolve_model_alias(GenerateRequest& request, const std::string& name) {
+  auto cfg = config();
+  const auto* models = cfg.find("models");
+  const auto* model = models ? models->find(name) : nullptr;
+  if (!model) {
+    request.model_family = name;
+    return;
+  }
+  keys(*model, {"family", "transformer", "text_encoder", "vae", "audio_vae", "tokenizer"},
+       "models." + name);
+  const auto* family = model->find("family");
+  if (!family)
+    throw CliError("INVALID_REQUEST", "model alias requires family", 2, "models." + name);
+  request.model_family = family->as_string();
+  for (auto field : std::initializer_list<std::pair<const char*, std::string*>>{
+           {"transformer", &request.transformer_path},
+           {"text_encoder", &request.text_encoder_path},
+           {"vae", &request.video_vae_path},
+           {"audio_vae", &request.audio_vae_path},
+           {"tokenizer", &request.tokenizer_path}}) {
+    if (const auto* v = model->find(field.first)) {
+      auto path = std::filesystem::u8path(v->as_string());
+      if (path.is_relative())
+        path = config_path().parent_path() / path;
+      *field.second = std::filesystem::absolute(path).lexically_normal().u8string();
     }
   }
 }
 
 std::vector<std::string> prepare_arguments(const std::vector<std::string>& input) {
-  std::vector<std::string> args=input;
-  size_t request_pos=args.size();
-  for(size_t i=0;i<args.size();++i) {
-    if(args[i]=="--request") {
-      if(request_pos!=args.size() || i+1==args.size()) throw CliError("INVALID_REQUEST","provide one --request FILE or -");
-      request_pos=i;
+  std::vector<std::string> args = input;
+  size_t request_pos = args.size();
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (args[i] == "--request") {
+      if (request_pos != args.size() || i + 1 == args.size())
+        throw CliError("INVALID_REQUEST", "provide one --request FILE or -");
+      request_pos = i;
     }
-    if(option_takes_value(args[i]) && i+1<args.size()) ++i;
+    if (option_takes_value(args[i]) && i + 1 < args.size())
+      ++i;
   }
-  if(request_pos<args.size()) {
+  if (request_pos < args.size()) {
     std::vector<std::string> controls;
-    for(size_t i=0;i<args.size();++i) {
-      if(i==request_pos){++i;continue;}
-      if(args[i]=="--dry-run" || args[i]=="--check-ready") controls.push_back(args[i]);
-      else throw CliError("INVALID_REQUEST","--request cannot be combined with generation flags; put settings in the request");
+    for (size_t i = 0; i < args.size(); ++i) {
+      if (i == request_pos) {
+        ++i;
+        continue;
+      }
+      if (args[i] == "--dry-run" || args[i] == "--check-ready")
+        controls.push_back(args[i]);
+      else
+        throw CliError(
+            "INVALID_REQUEST",
+            "--request cannot be combined with generation flags; put settings in the request");
     }
-    args=request_args(read_request(args[request_pos+1]));args.insert(args.end(),controls.begin(),controls.end());
+    try {
+      args = request_args(read_request(args[request_pos + 1]));
+    } catch (const CliError&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw CliError("INVALID_REQUEST", e.what());
+    }
+    args.insert(args.end(), controls.begin(), controls.end());
   }
-  agent().task.clear();agent().deadline_seconds=0;agent().requested_duration=0;agent().overwrite=false;agent().check_ready=false;
-  if(!args.empty() && (args[0]=="image" || args[0]=="video" || args[0]=="music")) {
-    agent().task=args[0];args.erase(args.begin());
+  agent().task.clear();
+  agent().deadline_seconds = 0;
+  agent().requested_duration = 0;
+  agent().overwrite = false;
+  agent().check_ready = false;
+  if (!args.empty() && (args[0] == "image" || args[0] == "video" || args[0] == "music")) {
+    agent().task = args[0];
+    args.erase(args.begin());
   }
-  bool model=false,frames=false;
+  bool model = false, frames = false;
   std::vector<std::string> result;
   std::set<std::string> singletons;
-  const std::set<std::string> repeats={"--reference-image","--reference-video","--reference-audio","--refmod","--refmod-strength","--refmod-copies","--lora","--lora-strength"};
-  for(size_t i=0;i<args.size();++i) {
-    const auto& a=args[i];
-    if(a.rfind("--",0)==0 && !repeats.count(a) && !singletons.insert(a).second)
-      throw CliError("INVALID_REQUEST","duplicate option: "+a,2,a);
-    auto value=[&](){if(i+1==args.size())throw CliError("INVALID_REQUEST","missing value for "+a,2,a);return args[++i];};
-    if(a=="--overwrite"){agent().overwrite=true;continue;}
-    if(a=="--check-ready"){agent().check_ready=true;continue;}
-    if(a=="--duration" || a=="--deadline") {
-      const auto text=value();size_t used=0;double n=std::stod(text,&used);
-      if(used!=text.size() || !std::isfinite(n) || n<=0 || n>86400) throw CliError("INVALID_REQUEST",a+" must be in (0,86400]",2,a);
-      if(a=="--deadline")agent().deadline_seconds=n;else agent().requested_duration=n;
+  for (size_t i = 0; i < args.size(); ++i) {
+    const auto& a = args[i];
+    if (a.rfind("--", 0) == 0)
+      singletons.insert(a);
+    auto value = [&]() {
+      if (i + 1 == args.size())
+        throw CliError("INVALID_REQUEST", "missing value for " + a, 2, a);
+      return args[++i];
+    };
+    if (a == "--overwrite") {
+      agent().overwrite = true;
       continue;
     }
-    if(a=="--preset") {
-      throw CliError("INVALID_REQUEST","presets are selected with the preset field of a JSON request");
+    if (a == "--check-ready") {
+      agent().check_ready = true;
+      continue;
     }
-    if(a=="--model") model=true;
-    if(a=="--frames") frames=true;
+    if (a == "--duration" || a == "--deadline") {
+      const auto text = value();
+      size_t used = 0;
+      double n = std::stod(text, &used);
+      if (used != text.size() || !std::isfinite(n) || n <= 0 || n > 86400)
+        throw CliError("INVALID_REQUEST", a + " must be in (0,86400]", 2, a);
+      if (a == "--deadline")
+        agent().deadline_seconds = n;
+      else
+        agent().requested_duration = n;
+      continue;
+    }
+    if (a == "--preset") {
+      throw CliError("INVALID_REQUEST",
+                     "presets are selected with the preset field of a JSON request");
+    }
+    if (a == "--model")
+      model = true;
+    if (a == "--frames")
+      frames = true;
     result.push_back(a);
-    if(option_takes_value(a)) result.push_back(value());
+    if (option_takes_value(a))
+      result.push_back(value());
   }
-  if(agent().requested_duration>0 && (frames || singletons.count("--music-duration")))
-    throw CliError("INVALID_REQUEST","duration conflicts with --frames or --music-duration");
-  if(agent().task=="image" && (frames || agent().requested_duration>0 || singletons.count("--music-duration") || singletons.count("--lyrics")))
-    throw CliError("INVALID_REQUEST","image requests do not accept duration, frames or lyrics");
-  if(!model && !agent().task.empty()) {
-    result.insert(result.begin(),{"--model",agent().task=="image"?"krea2":agent().task=="music"?"yue2":"h3"});
+  if (agent().requested_duration > 0 && (frames || singletons.count("--music-duration")))
+    throw CliError("INVALID_REQUEST", "duration conflicts with --frames or --music-duration");
+  if (agent().task == "image" &&
+      (frames || agent().requested_duration > 0 || singletons.count("--music-duration") ||
+       singletons.count("--lyrics")))
+    throw CliError("INVALID_REQUEST", "image requests do not accept duration, frames or lyrics");
+  if (!model && !agent().task.empty()) {
+    result.insert(result.begin(), {"--model", agent().task == "image"   ? "krea2"
+                                              : agent().task == "music" ? "yue2"
+                                                                        : "h3"});
   }
   return result;
 }
 
 Value request_schema() {
   Object properties;
-  auto typed=[](const char* type){return Value(Object{{"type",str(type)}});};
-  properties["schema_version"]=Value(Object{{"const",num(1)}});
-  properties["task"]=Value(Object{{"enum",Value(Array{str("video"),str("image"),str("music")})}});
-  for(const char* key:{"model","preset","prompt","negative_prompt","lyrics"}) properties[key]=typed("string");
-  properties["seed"]=Value(Object{{"type",str("string")},{"pattern",str("^[0-9]+$")},{"description",str("Unsigned 64-bit integer, encoded as a decimal string.")}});
-  for(const char* key:{"duration_seconds","deadline_seconds"}) properties[key]=Value(Object{{"type",str("number")},{"exclusiveMinimum",num(0)},{"maximum",num(86400)}});
-  properties["count"]=Value(Object{{"type",str("integer")},{"minimum",num(1)}});
-  properties["resolution"]=Value(Object{{"type",str("object")},{"additionalProperties",Value(false)},
-    {"required",Value(Array{str("width"),str("height")})},{"properties",Value(Object{{"width",typed("integer")},{"height",typed("integer")}})}});
-  properties["output"]=Value(Object{{"type",str("object")},{"additionalProperties",Value(false)},
-    {"properties",Value(Object{{"path",typed("string")},{"format",Value(Object{{"enum",Value(Array{str("png"),str("ppm"),str("y4m"),str("wav")})}})},{"overwrite",typed("boolean")}})}});
-  properties["references"]=Value(Object{{"type",str("array")},{"items",Value(Object{{"type",str("object")},{"additionalProperties",Value(false)},
-    {"required",Value(Array{str("type"),str("path")})},{"properties",Value(Object{{"type",Value(Object{{"enum",Value(Array{str("image"),str("video"),str("audio"),str("refmod")})}})},{"path",typed("string")}})}})}});
-  properties["loras"]=Value(Object{{"type",str("array")},{"items",Value(Object{{"type",str("object")},{"additionalProperties",Value(false)},
-    {"required",Value(Array{str("path")})},{"properties",Value(Object{{"path",typed("string")},{"strength",typed("number")}})}})}});
-  properties["options"]=Value(Object{{"type",str("object")},{"description",str("Advanced generate options without leading --. Use booleans for switches, arrays for repeated options, objects for JSON settings. Unknown CLI options are rejected. See generate --help.")}});
-  return Value(Object{{"$schema",str("https://json-schema.org/draft/2020-12/schema")},{"type",str("object")},
-    {"additionalProperties",Value(false)},{"required",Value(Array{str("schema_version"),str("task")})},{"properties",Value(properties)}});
+  auto typed = [](const char* type) {
+    return Value(Object{{"type", str(type)}});
+  };
+  properties["schema_version"] = Value(Object{{"const", num(1)}});
+  properties["task"] =
+      Value(Object{{"enum", Value(Array{str("video"), str("image"), str("music")})}});
+  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics"})
+    properties[key] = typed("string");
+  properties["seed"] =
+      Value(Object{{"type", str("string")},
+                   {"pattern", str("^[0-9]+$")},
+                   {"description", str("Unsigned 64-bit integer, encoded as a decimal string.")}});
+  for (const char* key : {"duration_seconds", "deadline_seconds"})
+    properties[key] = Value(
+        Object{{"type", str("number")}, {"exclusiveMinimum", num(0)}, {"maximum", num(86400)}});
+  properties["count"] = Value(Object{{"type", str("integer")}, {"minimum", num(1)}});
+  properties["resolution"] = Value(Object{
+      {"type", str("object")},
+      {"additionalProperties", Value(false)},
+      {"required", Value(Array{str("width"), str("height")})},
+      {"properties", Value(Object{{"width", typed("integer")}, {"height", typed("integer")}})}});
+  properties["output"] = Value(Object{
+      {"type", str("object")},
+      {"additionalProperties", Value(false)},
+      {"properties",
+       Value(Object{{"path", typed("string")},
+                    {"format", Value(Object{{"enum", Value(Array{str("png"), str("ppm"), str("y4m"),
+                                                                 str("wav")})}})},
+                    {"overwrite", typed("boolean")}})}});
+  properties["references"] = Value(
+      Object{{"type", str("array")},
+             {"items",
+              Value(Object{
+                  {"type", str("object")},
+                  {"additionalProperties", Value(false)},
+                  {"required", Value(Array{str("type"), str("path")})},
+                  {"properties",
+                   Value(Object{
+                       {"type", Value(Object{{"enum", Value(Array{str("image"), str("video"),
+                                                                  str("audio"), str("refmod")})}})},
+                       {"path", typed("string")}})}})}});
+  properties["loras"] = Value(Object{
+      {"type", str("array")},
+      {"items", Value(Object{{"type", str("object")},
+                             {"additionalProperties", Value(false)},
+                             {"required", Value(Array{str("path")})},
+                             {"properties", Value(Object{{"path", typed("string")},
+                                                         {"strength", typed("number")}})}})}});
+  properties["options"] = Value(Object{
+      {"type", str("object")},
+      {"description",
+       str("Advanced generate options without leading --. Use booleans for switches, arrays for repeated options, objects for JSON settings. Unknown CLI options are rejected. See generate --help.")}});
+  return Value(
+      Object{{"$schema", str("https://json-schema.org/draft/2020-12/schema")},
+             {"type", str("object")},
+             {"additionalProperties", Value(false)},
+             {"required", Value(Array{str("schema_version")})},
+             {"anyOf", Value(Array{Value(Object{{"required", Value(Array{str("task")})}}),
+                                   Value(Object{{"required", Value(Array{str("preset")})}})})},
+             {"properties", Value(properties)}});
 }
+
 Value capabilities() {
   Array backends;
 #if SLOPFAB_WITH_CUDA
@@ -238,64 +429,123 @@ Value capabilities() {
   backends.push_back(str("vulkan"));
 #endif
   Array models;
-  for(const char* family:{"h3","krea2","moss","fibo2","yue2","minimax_music3"}) {
-    const std::string f=family;
-    Array tasks=f=="h3"?Array{str("video"),str("image")}:Array{str(f=="yue2"||f=="minimax_music3"?"music":"image")};
+  for (const char* family : {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3"}) {
+    const std::string f = family;
+    Array tasks = f == "h3" ? Array{str("video"), str("image")}
+                            : Array{str(f == "yue2" || f == "minimax_music3" ? "music" : "image")};
     Array supported;
-    for(const auto& b:backends) if(b.as_string()=="cuda" || (f!="moss" && f!="fibo2")) supported.push_back(b);
-    models.push_back(Value(Object{{"family",str(f)},{"tasks",Value(tasks)},{"backends",Value(supported)},
-      {"reference_edit_required",Value(f=="fibo2")}}));
+    for (const auto& b : backends)
+      if (b.as_string() == "cuda" || (f != "moss" && f != "fibo2"))
+        supported.push_back(b);
+    models.push_back(Value(Object{{"family", str(f)},
+                                  {"tasks", Value(tasks)},
+                                  {"backends", Value(supported)},
+                                  {"reference_edit_required", Value(f == "fibo2")}}));
   }
-  return Value(Object{{"version",str(kVersion)},{"protocol_version",num(1)},{"backends",Value(backends)},
-    {"models",Value(models)},{"output_formats",Value(Array{str("png"),str("ppm"),str("y4m"),str("wav")})},
-    {"reference_formats",Value(Array{str("platform images"),str("Y4M BT.709 limited 8-bit 4:2:0"),str("WAV PCM16/24/32 or float32")})},
-    {"progress",str("NDJSON; progress events followed by exactly one result or error")},
-    {"execution",str("one generation per local worker; CLI processes share a GPU lock")},
-    {"external_conversion",str("Use a separate ffmpeg installation to encode MP4, MP3 or other formats.")},
-    {"schema_command",str("slopfab schema --agent")}});
+  return Value(
+      Object{{"version", str(kVersion)},
+             {"protocol_version", num(1)},
+             {"backends", Value(backends)},
+             {"models", Value(models)},
+             {"output_formats", Value(Array{str("png"), str("ppm"), str("y4m"), str("wav")})},
+             {"reference_formats",
+              Value(Array{str("platform images"), str("Y4M BT.709 limited 8-bit 4:2:0"),
+                          str("WAV PCM16/24/32 or float32")})},
+             {"progress", str("NDJSON; progress events followed by exactly one result or error")},
+             {"execution", str("one generation per local worker; CLI processes share a GPU lock")},
+             {"external_conversion",
+              str("Use a separate ffmpeg installation to encode MP4, MP3 or other formats.")},
+             {"schema_command", str("slopfab schema --agent")}});
 }
-int discovery_command(const std::string& command,const std::vector<std::string>& args) {
-  if(command=="models" && args!=std::vector<std::string>{"list"}) throw CliError("INVALID_REQUEST","use models list");
-  if(command!="models" && !args.empty()) throw CliError("INVALID_REQUEST","unexpected discovery arguments");
+
+int discovery_command(const std::string& command, const std::vector<std::string>& args) {
+  if (command == "models" && args != std::vector<std::string>{"list"})
+    throw CliError("INVALID_REQUEST", "use models list");
+  if (command != "models" && !args.empty())
+    throw CliError("INVALID_REQUEST", "unexpected discovery arguments");
   Value data;
-  if(command=="schema") data=request_schema();
-  else if(command=="capabilities") data=capabilities();
-  else if(command=="models") {
+  if (command == "schema")
+    data = request_schema();
+  else if (command == "capabilities")
+    data = capabilities();
+  else if (command == "models") {
     Array models;
-    auto cfg=config();std::vector<std::string> names={"h3","krea2","moss","fibo2","yue2","minimax_music3"};
-    if(const auto* aliases=cfg.find("models"))for(const auto& m:aliases->as_object())names.push_back(m.first);
-    for(const auto& name:names) {
-      GenerateRequest r;resolve_model_alias(r,name);discover_generate_checkpoints(r,agent().executable.c_str());
-      bool ready=true;std::string reason;
-      try{check_models_ready(r,true);}catch(const std::exception& e){ready=false;reason=e.what();}
-      models.push_back(Value(Object{{"name",str(name)},{"family",str(request_model_family(r))},{"files_present",Value(ready)},
-        {"reason",str(reason)},{"transformer",str(r.transformer_path)},{"text_encoder",str(r.text_encoder_path)},
-        {"vae",str(r.video_vae_path)},{"audio_vae",str(r.audio_vae_path)}}));
+    auto cfg = config();
+    std::vector<std::string> names = {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3"};
+    if (const auto* aliases = cfg.find("models"))
+      for (const auto& m : aliases->as_object())
+        names.push_back(m.first);
+    for (const auto& name : names) {
+      GenerateRequest r;
+      resolve_model_alias(r, name);
+      bool ready = true;
+      std::string reason;
+      try {
+        discover_generate_checkpoints(r, agent().executable.c_str());
+        check_models_ready(r, true);
+      } catch (const std::exception& e) {
+        ready = false;
+        reason = e.what();
+      }
+      models.push_back(Value(Object{{"name", str(name)},
+                                    {"family", str(request_model_family(r))},
+                                    {"files_present", Value(ready)},
+                                    {"reason", str(reason)},
+                                    {"transformer", str(r.transformer_path)},
+                                    {"text_encoder", str(r.text_encoder_path)},
+                                    {"vae", str(r.video_vae_path)},
+                                    {"audio_vae", str(r.audio_vae_path)}}));
     }
-    data=Value(Object{{"config_path",str(config_path().u8string())},{"models",Value(models)},
-      {"presets",cfg.find("presets")?*cfg.find("presets"):Value(Object{})}});
+    data = Value(Object{{"config_path", str(config_path().u8string())},
+                        {"models", Value(models)},
+                        {"presets", cfg.find("presets") ? *cfg.find("presets") : Value(Object{})}});
   } else {
-    Array devices,diagnostics;
+    Array devices, diagnostics;
 #if SLOPFAB_WITH_CUDA
-    try {for(int i=0;i<slopfab::cuda::device_count();++i) {auto d=slopfab::cuda::query_device(i);
-      devices.push_back(Value(Object{{"backend",str("cuda")},{"index",num(i)},{"name",str(d.name)},
-        {"free_bytes",num(double(d.free_memory))},{"total_bytes",num(double(d.total_memory))}}));}}
-    catch(const std::exception& e){diagnostics.push_back(str(e.what()));}
+    try {
+      for (int i = 0; i < slopfab::cuda::device_count(); ++i) {
+        auto d = slopfab::cuda::query_device(i);
+        devices.push_back(Value(Object{{"backend", str("cuda")},
+                                       {"index", num(i)},
+                                       {"name", str(d.name)},
+                                       {"free_bytes", num(double(d.free_memory))},
+                                       {"total_bytes", num(double(d.total_memory))}}));
+      }
+    } catch (const std::exception& e) {
+      diagnostics.push_back(str(e.what()));
+    }
 #endif
 #if SLOPFAB_WITH_VULKAN
-    try {auto instance=slopfab::vulkan::Instance::create();auto ds=instance.enumerate_devices();
-      for(size_t i=0;i<ds.size();++i)devices.push_back(Value(Object{{"backend",str("vulkan")},{"index",num(double(i))},{"name",str(ds[i].info().name)}}));}
-    catch(const std::exception& e){diagnostics.push_back(str(e.what()));}
+    try {
+      auto instance = slopfab::vulkan::Instance::create();
+      auto ds = instance.enumerate_devices();
+      for (size_t i = 0; i < ds.size(); ++i)
+        devices.push_back(Value(Object{{"backend", str("vulkan")},
+                                       {"index", num(double(i))},
+                                       {"name", str(ds[i].info().name)}}));
+    } catch (const std::exception& e) {
+      diagnostics.push_back(str(e.what()));
+    }
 #endif
-    data=Value(Object{{"gpu_available",Value(!devices.empty())},{"devices",Value(devices)},
-      {"diagnostics",Value(diagnostics)},{"config_path",str(config_path().u8string())},{"jobs_path",str(jobs_path().u8string())},
-      {"ffmpeg_required",Value(false)},{"next",str("Use models list, then validate --request FILE --check-ready.")}});
+    data = Value(
+        Object{{"gpu_available", Value(!devices.empty())},
+               {"devices", Value(devices)},
+               {"diagnostics", Value(diagnostics)},
+               {"config_path", str(config_path().u8string())},
+               {"jobs_path", str(jobs_path().u8string())},
+               {"ffmpeg_required", Value(false)},
+               {"next", str("Use models list, then validate --request FILE --check-ready.")}});
   }
-  emit({{"type",str("result")},{"ok",Value(true)},{"data",data}},true);return 0;
+  emit({{"type", str("result")}, {"ok", Value(true)}, {"data", data}}, true);
+  return 0;
 }
+
 int run_generation_arguments(const std::vector<std::string>& args) {
-  auto prepared=prepare_arguments(args);std::vector<char*> argv;
-  for(auto& a:prepared)argv.push_back(a.data());
-  start_request();return cmd_generate(int(argv.size()),argv.data(),agent().executable.c_str());
+  start_request();
+  auto prepared = prepare_arguments(args);
+  std::vector<char*> argv;
+  for (auto& a : prepared)
+    argv.push_back(a.data());
+  return cmd_generate(int(argv.size()), argv.data(), agent().executable.c_str());
 }
 }

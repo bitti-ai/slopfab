@@ -54,6 +54,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
         assert validate(dict(request, **changes), 2)["error"]["code"] == "INVALID_REQUEST"
     assert validate(dict(request, output={"path": "wrong.mp4"}), 2)["error"]["code"] == "INVALID_REQUEST"
     assert run("validate", "--request", "-", input="{", code=2)["type"] == "error"
+    assert run("validate", "--request", "-", input='{"schema_version":1,"task":"image","task":"music"}', code=2)["error"]["code"] == "INVALID_REQUEST"
+    for changes in ({"prompt": 3}, {"output": []}, {"references": [{"type": "image"}]},
+                    {"resolution": {"width": "512", "height": 512}}, {"prompt": "a\0b"}):
+        assert validate(dict(request, **changes), 2)["error"]["code"] == "INVALID_REQUEST"
     assert run("validate", "--request", "-", "--steps", "3", input=json.dumps(request), code=2)["type"] == "error"
     # Values which resemble options must remain data.
     for prompt in ("--agent", "--request", "help", "--help"):

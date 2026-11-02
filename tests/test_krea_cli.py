@@ -14,13 +14,13 @@ def run(*args, success=True):
 
 text = run("--model", "krea2", "--seed", "42")
 assert "Krea 2" in text and "1024 x 1024" in text and "8 Euler updates" in text
-assert "guidance    0" in text and ".ppm" in text
+assert "guidance    0" in text and ".png" in text
 text = run("--model", "krea2", "--resolution", "512x768", "--steps", "52", "--guidance", "3.5")
 assert "512 x 768" in text and "52 Euler updates" in text and "guidance    3.5" in text
 for args in [
     ("--resolution", "513x512"), ("--guidance", "nan"), ("--guidance", "-1"),
     ("--audio-steps", "8"), ("--frames", "22"), ("--attention", "sage2"),
-    ("--inference-backend", "vulkan", "--vulkan-arithmetic", "exact"), ("--sampler", "ab2"), ("--out", "image.png"),
+    ("--inference-backend", "vulkan", "--vulkan-arithmetic", "exact"), ("--sampler", "ab2"), ("--out", "image.jpg"),
     ("--uncond-skip-layers", "1"),
 ]:
     run("--model", "krea2", *args, success=False)
