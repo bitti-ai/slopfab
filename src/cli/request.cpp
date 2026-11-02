@@ -452,20 +452,24 @@ Value capabilities() {
                                   {"music_duration_max_seconds",
                                    f == "yue2" || f == "minimax_music3" ? num(300) : Value()}}));
   }
-  return Value(
-      Object{{"version", str(kVersion)},
-             {"protocol_version", num(1)},
-             {"backends", Value(backends)},
-             {"models", Value(models)},
-             {"output_formats", Value(Array{str("png"), str("ppm"), str("y4m"), str("wav")})},
-             {"reference_formats",
-              Value(Array{str("platform images"), str("Y4M BT.709 limited 8-bit 4:2:0"),
-                          str("WAV PCM16/24/32 or float32")})},
-             {"progress", str("NDJSON; progress events followed by exactly one result or error")},
-             {"execution", str("one generation per local worker; CLI processes share a GPU lock")},
-             {"external_conversion",
-              str("Use a separate ffmpeg installation to encode MP4, MP3 or other formats.")},
-             {"schema_command", str("slopfab schema")}});
+  return Value(Object{
+      {"version", str(kVersion)},
+      {"protocol_version", num(1)},
+      {"backends", Value(backends)},
+      {"models", Value(models)},
+      {"output_formats", Value(Array{str("png"), str("ppm"), str("y4m"), str("wav")})},
+      {"reference_formats",
+       Value(Array{str("platform images"), str("Y4M BT.709 limited 8-bit 4:2:0"),
+                   str("WAV PCM16/24/32 or float32")})},
+      {"progress", str("NDJSON; progress events followed by exactly one result or error")},
+      {"execution", str("one generation per local worker; CLI processes share a GPU lock")},
+      {"external_conversion",
+       str("Use a separate ffmpeg installation to encode MP4, MP3 or other formats.")},
+      {"mods",
+       Value(Object{{"index_command", str("slopfab mods list")},
+                    {"load_command", str("slopfab mods load NAME")},
+                    {"format", str("mods/NAME/MOD.md: YAML front matter and Markdown prompt")}})},
+      {"schema_command", str("slopfab schema")}});
 }
 
 int discovery_command(const std::string& command, const std::vector<std::string>& args) {

@@ -215,6 +215,15 @@ An empty list disables implicit discovery; explicit checkpoint arguments and
 model aliases still work. Multiple matching checkpoints are an error; use aliases
 or explicit checkpoint paths to disambiguate.
 
+## Mods
+
+Use `slopfab mods list` to retrieve active workflow names and descriptions, then
+`slopfab mods load NAME` to read a selected prompt into agent context. Mods are
+`mods/NAME/MOD.md` files with YAML front matter and a Markdown prompt; they can
+live beside the settings file, beside the executable, or in the working directory.
+`--agent` returns structured metadata and prompt text. See the [mod format and
+sharing guide](mods.md) for setup, activation and error handling.
+
 ## Persistent jobs
 
 ```sh

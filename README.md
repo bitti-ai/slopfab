@@ -90,6 +90,8 @@ H3 audio VAE explicitly if discovery chooses an NF4 checkpoint.
 
 See the [agent CLI guide](docs/agent-cli.md) for JSON requests, `--agent` NDJSON
 responses and progress, capability discovery, configuration, and persistent jobs.
+Use `slopfab mods list` to find [shareable agent workflows](docs/mods.md), and
+`slopfab mods load NAME` to bring one into agent context.
 Run `slopfab` for compact instructions, or `slopfab help` to list commands.
 Native outputs are PNG, Y4M, and WAV. Use a separate FFmpeg installation to encode
 MP4 or other compressed formats; neither the executable nor DLL depends on FFmpeg.

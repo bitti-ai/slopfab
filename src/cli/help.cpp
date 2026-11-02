@@ -416,6 +416,17 @@ const CommandHelp kCommands[] = {
      "Input bundles are flattened in order; each member keeps its metadata and dtype.\n"
      "Up to 256 members. Does not encode raw media. No models or GPU are needed.\n"
      "Use generate --refmod to load the bundle; strength/copies apply to all members.\n"},
+    {"mods", "slopfab mods list [--all] | load NAME",
+     "Find active mods and load their instructions into agent context.",
+     "  mods list                 index active mods (alias: mods index)\n"
+     "  mods list --all           include disabled mods; report invalid files and conflicts\n"
+     "  mods load NAME            return the full prompt and its source directory\n"
+     "Create mods/NAME/MOD.md beside the config, beside the executable, or in the working directory.\n"
+     "Format: YAML between --- lines, then a Markdown prompt. Required: name (folder name), description.\n"
+     "Optional: enabled: true|false (default true), author, version. Names: a-z then a-z, 0-9, - or _.\n"
+     "YAML supports scalar values, quotes, comments and |/> multiline text; no nested mappings.\n"
+     "Loading returns instructions for the calling agent to follow; it does not execute commands.\n"
+     "With --agent, list returns metadata only; load returns metadata, prompt, path and directory.\n"},
     {"settings", "slopfab settings get [KEY] | set KEY VALUE | remove KEY [PATH]",
      "Read or update global settings; changes persist across invocations.",
      "  settings get                         show all settings and the file path\n"
