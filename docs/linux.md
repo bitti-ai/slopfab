@@ -42,7 +42,9 @@ Install CMake 3.24 or newer, a C++17 compiler and a build tool. On Ubuntu:
 
 ```sh
 sudo apt-get update
-sudo apt-get install build-essential cmake ninja-build libpng-dev libjpeg-dev
+sudo apt-get install build-essential ninja-build libpng-dev libjpeg-dev python3-pip binutils
+python3 -m pip install --user cmake==3.31.6
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Supply the matching Qwen tokenizer as `ref/text_encoder/tokenizer.json`, or pass
@@ -174,6 +176,14 @@ search paths so the installation can be relocated.
 
 ## Validation and CI
 
+Release baseline validation on 2026-11-02 used an isolated Ubuntu 22.04
+filesystem with glibc 2.35, GCC 11.4 and CMake 3.31.6. The Vulkan build passed
+17 host tests with three model/GPU integration tests skipped; its installed CLI
+and shared library passed the ELF compatibility check. A CUDA 13.3 + Vulkan
+build for `86;120a`, with the full tokenizer, passed the C API and tokenizer
+tests and the same glibc check. That library was copied into Slopus. CUDA driver
+stubs supported host tests only; this did not validate GPU generation.
+
 Run tests without model weights or a GPU:
 
 ```sh
@@ -229,7 +239,7 @@ CUDA 13.3:
 Run the same Linux commands inside the WSL distribution, for example from
 `/mnt/d/Projects/slopfab`. Keep Linux and Windows build directories separate.
 From Windows, `build.cmd` builds both C API libraries into `dist/windows` and
-`dist/linux`; `build.cmd -Target linux -Distro Ubuntu` builds only the Linux
+`dist/linux`; `build.cmd -Target linux -Distro Ubuntu-22.04` builds only the Linux
 library. Release builds use Ubuntu 22.04 (pass `-Distro Ubuntu-22.04`). The build
 directory defaults to `$HOME/slopfab-build-linux-glibc235` inside WSL and reuses its
 cached CUDA compiler, or discovers `/usr/local/cuda/bin/nvcc` for a new build.
