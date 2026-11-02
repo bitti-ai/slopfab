@@ -180,7 +180,9 @@ search paths so the installation can be relocated.
 The agent CLI update was built on WSL Ubuntu 26.04.1 with GCC 15.2 and CMake
 4.2.3 in both host-only and Vulkan configurations. All 12 host-only and 13 Vulkan
 CLI checks passed, covering settings, mods, background jobs, request validation,
-startup and native delivery. This is development-build validation, separate from
+startup and native delivery. A CUDA 13.3 + Vulkan build for `86;120a` also
+compiled the executable and passed all 12 CLI command suites. Five corresponding
+Windows regression suites passed. This is development-build validation, separate from
 the glibc 2.35 release baseline and from GPU inference qualification.
 
 Release baseline validation on 2026-11-02 used an isolated Ubuntu 22.04
