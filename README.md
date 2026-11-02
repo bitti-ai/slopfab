@@ -10,6 +10,7 @@ Native C++ video, image and music generation on CUDA and Vulkan. No Python is re
 - **Sampling controls:** Euler, AB2, re-noising and **ER-SDE**, beta scheduling, model/LoRA defaults, JSON overrides and experimental independent audio steps. See [sampling settings and compatibility](docs/sampling_settings.md).
 - **Editing and continuity:** [masked editing and outpainting](docs/inpainting.md), [saved-latent continuation, bridging and ending anchors](docs/continuation.md), including persistent Keystone/Capstone context.
 - **Color and tone:** [latent color controls and writable sampling callbacks](docs/lcs.md), with masks, sharpness and reusable VAE calibration.
+- **Low-VRAM H3 text encoding:** [ClipProj](docs/clipproj.md) with a Qwen3-VL-4B/8B student, streaming GPU layers and a CPU projection.
 - **Memory and speed:** quantized checkpoints, [CUDA offloading](docs/denoising_memory.md), [FastH3 V2](docs/fasth3_v2.md), [OmniRef](docs/omniref.md), [VEDA](docs/veda.md) and optional [MotionCache](docs/motioncache.md). [Viggle-Animate loading](docs/viggle_animate.md) has separate workflow limits.
 - **Decoding and upscaling:** [Sol H3 VAE](docs/sol_h3_vae.md), [H3 latent upscaling](docs/latent_upscaling.md) and [Real-ESRGAN](docs/upscaling.md) on CUDA/Vulkan; [SeedVR2 restoration](docs/seedvr2.md) on CUDA.
 - **Application integration:** asynchronous C API, cancellation, progress, [generation previews](docs/generation_previews.md), [isolated session caches](docs/conditioning_settings.md) and model reuse.

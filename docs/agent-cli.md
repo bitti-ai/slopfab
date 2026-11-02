@@ -215,6 +215,11 @@ An empty list disables implicit discovery; explicit checkpoint arguments and
 model aliases still work. Multiple matching checkpoints are an error; use aliases
 or explicit checkpoint paths to disambiguate.
 
+For lower-VRAM H3 text conditioning, model aliases also accept
+`clip_projection`, or use `options.clip-projection` in a JSON request. Pair it
+with a matching Qwen3-VL-4B/8B `text_encoder`. See [ClipProj setup and supported
+scope](clipproj.md). The default 32B path is unchanged.
+
 ## Mods
 
 Use `slopfab mods list` to retrieve active workflow names and descriptions, then

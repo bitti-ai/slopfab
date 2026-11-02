@@ -1,4 +1,6 @@
 #include "commands.h"
+#include "agent.h"
+#include "slopfab/text/clip_projection.h"
 #include "slopfab/refmod.h"
 #include "slopfab/text/export.h"
 #include "slopfab/refmod_export.h"
@@ -200,6 +202,19 @@ int cmd_encode_text(int argc, char** argv, const char* executable) {
   discover_generate_checkpoints(discovery, executable, true);
   request.text_encoder_path = discovery.text_encoder_path;
 #if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
+  // Check files before reserving the GPU. Text export has no need to discover
+  // or reserve a diffusion model, but shares generation's per-user GPU lock.
+  {
+    SafeTensors checkpoint;
+    checkpoint.open(request.text_encoder_path);
+    if (!request.clip_projection_path.empty()) {
+      text::ClipProjection projection(request.clip_projection_path);
+      (void)text::validate_clip_student(checkpoint, projection);
+    }
+  }
+  FileLock gpu(runtime_path() / "gpu.lock");
+  if (!gpu.acquired())
+    throw CliError("GPU_BUSY", "another CLI generation is running; retry text export", 7, {}, true);
   std::printf("encoding text using %s\n", request.text_encoder_path.c_str());
   const int tokens = text::export_prompt_embedding(request, output);
   std::printf("saved prompt_embedding [%d,5120] and text_token_tags to %s\n", tokens,
