@@ -27,7 +27,7 @@ fi
 if [[ $build_dir != /* ]]; then
   printf 'build: --build-dir must be an absolute Linux path\n' >&2; exit 2
 fi
-for tool in cmake ctest c++ python3 readelf; do
+for tool in cmake ctest cc c++ python3 readelf; do
   command -v "$tool" >/dev/null || { printf 'build: install Linux %s\n' "$tool" >&2; exit 1; }
 done
 python3 "$root/tools/check_glibc.py" --check-host
@@ -63,7 +63,7 @@ cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DSLOPFAB_EMBED_TOKENIZER=ON "-DSLOPFAB_TOKENIZER_FILE=$root/ref/text_encoder/tokenizer.json"
 cmake --build "$build_dir" --config Release --parallel "$jobs" \
   --target slopfab slopfab_c slopfab_capi_tests slopfab_embedded_tokenizer_tests slopfab_startup_tests
-ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|clipproj_cli|projects_cli|cli_startup)$'
+ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|clipproj_cli|projects_cli|cli_startup)$'
 
 major=$(awk '/^#define SLOPFAB_CAPI_VERSION_MAJOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')
 minor=$(awk '/^#define SLOPFAB_CAPI_VERSION_MINOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')
@@ -92,6 +92,7 @@ publish "$library" "libslopfab.so.$version"
 publish "$library" "libslopfab.so.$major"
 publish "$library" libslopfab.so
 publish "$root/include/slopfab/capi.h" capi.h
+publish "$root/third_party/quickjs/LICENSE" QUICKJS-LICENSE.txt
 (
   cd -- "$destination"
   sha256sum slopfab "libslopfab.so.$version" "libslopfab.so.$major" libslopfab.so capi.h > SHA256SUMS
@@ -103,7 +104,7 @@ publish "$root/include/slopfab/capi.h" capi.h
   printf 'CUDA targets: sm_86 and sm_120a; full tokenizer embedded\n'
   printf 'Source: %s\nBuild directory: %s\nCUDA compiler: %s\n' "$root" "$build_dir" "$cuda_compiler"
   printf 'Built UTC: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, clipproj_cli, projects_cli, cli_startup\n'
+  printf 'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, clipproj_cli, projects_cli, cli_startup\n'
   printf 'CUDA driver and matching toolkit shared libraries are external dependencies.\n'
 } > "$destination/build-info.txt"
 printf 'build: wrote %s/slopfab and libslopfab.so (ABI %s)\n' "$destination" "$version"

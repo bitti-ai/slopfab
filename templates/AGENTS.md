@@ -1,4 +1,4 @@
-1
+2
 
 # Slopfab media generation
 
@@ -11,6 +11,16 @@ Before writing a generation prompt, retrieve the model/use-case prompting guide
 through `slopfab help prompts`. Declare first/last-frame roles explicitly; ordinary
 identity/style references are not automatically endpoints. Apply the guide to the
 actual brief and inspected media, keeping lyrics separate for music.
+
+For multi-step automation, use embedded JavaScript through `slopfab run FILE.js`
+or `run --eval SOURCE`; put script arguments after `--`. Prefer its `slopfab`
+host API for files, JSON, HTTP downloads and process execution over external
+Python or batch scripts. Use `slopfab.cli(args)` for generation, jobs, projects
+and other CLI operations, and `slopfab.exec([slopfab.tool('ffmpeg'), ...args])`
+for media conversion. `spawn` supports parallel subprocesses. Consult run help
+and scripting capabilities; mods can register additional CLI commands. Scripts
+return JSON data and write diagnostics to stderr. Use `slopfab.path.fileUrl`
+when presenting project review links.
 
 ## Establish the brief
 

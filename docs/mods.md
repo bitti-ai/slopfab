@@ -1,9 +1,9 @@
 # Mods
 
-A mod is a shareable Markdown prompt that tells an agent how to carry out a
-workflow. Install one by copying its folder into a `mods/` directory. Slopfab
-indexes the metadata and returns the prompt on demand; the calling agent follows
-the instructions using its own tools.
+A mod is a shareable Markdown prompt, optionally paired with a JavaScript module
+that registers a new CLI command. Install one by copying its folder into a `mods/`
+directory. Slopfab indexes the metadata and returns the prompt on demand; the
+calling agent can follow its instructions or invoke its executable command.
 
 ```sh
 slopfab mods list
@@ -78,6 +78,8 @@ The metadata schema is deliberately small:
 | `enabled` | Optional unquoted `true` or `false`; defaults to `true`. |
 | `version` | Optional version text. |
 | `author` | Optional attribution text. |
+| `command` | Optional CLI command name, using the same syntax as `name`; requires `script`. Cannot replace a built-in command. |
+| `script` | Entry module path relative to the mod folder; requires `command`. Must resolve to an existing file inside that folder. |
 
 Supported YAML syntax is a flat mapping of scalar values, comments, plain or
 single/double-quoted strings, and literal (`|`) or folded (`>`) block strings
@@ -95,3 +97,52 @@ index; inspect `errors` to detect problems.
 
 Mods and settings commands remain available even when generation dependencies
 or weight paths have not been configured. They do not affect DLL generation.
+
+## Executable commands
+
+Add `command` and `script` to the front matter to register a command immediately:
+
+```markdown
+---
+name: download
+description: List model URLs and download selected files.
+command: download
+script: main.js
+---
+# Downloads
+Run `slopfab download minimaxh3` to list available files.
+```
+
+`main.js` uses the [embedded workflow API](scripting.md), with an optional default
+export receiving arguments. No external JavaScript interpreter is needed.
+`slopfab help`, `capabilities` and `mods list` expose the command.
+`slopfab help download` and `slopfab download --help` show the prompt and entry
+path without executing code. Indexing and `mods load` also never execute code.
+Scripts run only when their command is invoked.
+
+Copy [examples/mods/download](../examples/mods/download/MOD.md) into a discovered
+`mods/download/` folder, including `main.js` and `catalog.json`. From a source
+checkout, this installation can itself use embedded JavaScript:
+
+```sh
+slopfab run --eval 'slopfab.fs.mkdir("mods"); slopfab.fs.copy("examples/mods/download", "mods/download", {recursive:true});'
+slopfab download minimaxh3
+slopfab download minimaxh3 audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors
+```
+
+The last command downloads a large model file. The example catalog links to the
+[Comfy-Org MiniMax-H3 repository](https://huggingface.co/Comfy-Org/MiniMax-H3);
+edit the catalog to add models without recompiling Slopfab. Examples ship in
+release packages but are not activated automatically.
+
+The invocation's working directory remains unchanged; use
+`slopfab.scriptDirectory` to locate companion assets. Use `--` before arguments
+that resemble global Slopfab flags, for example `slopfab download -- --help`
+passes a literal `--help` argument to the script. Executable mods are trusted
+code with the same access as the invoking user. Their entry path cannot escape
+the mod folder, but this is not a sandbox for the code itself.
+
+Disabled mods cannot run. Multiple enabled mods claiming the same command report
+`MOD_COMMAND_AMBIGUOUS` (exit 3 when invoked); no command wins by search order.
+Disable or rename one to resolve the conflict. Invalid metadata is reported by
+`mods list` and never registered. Prompt-only mods continue to work unchanged.

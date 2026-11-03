@@ -56,9 +56,18 @@ slopfab generate music --prompt "Gentle piano" --duration 10 --out piano.wav
 Image defaults to Krea 2, video to H3, and music to YuE2. `--model` selects a
 family or configured alias. H3 also supports `generate image --model h3`.
 Models still require compatible local weights and a supported GPU. No command
-downloads weights. `capabilities` reports compiled support; `doctor` probes
+downloads weights automatically; an installed [executable mod](mods.md#executable-commands)
+can provide a download command. `capabilities` reports compiled support; `doctor` probes
 available devices. `models list` reports files, which does not prove checkpoint
 compatibility or that inference fits in memory.
+
+Use `slopfab run workflow.js -- ARGS` for [embedded JavaScript workflows](scripting.md).
+The `slopfab` host API handles files, HTTP, subprocesses (including FFmpeg), and
+all CLI operations through `slopfab.cli(args)`. `capabilities.data.scripting`
+describes the runtime; `mod_commands` advertises installed command extensions.
+Scripts can return structured results directly without external Python or batch
+scripts. QuickJS is statically linked only into the executable; DLL dependencies
+and the C ABI are unchanged.
 
 ## Requests and validation
 

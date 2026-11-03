@@ -44,7 +44,7 @@ Install CMake 3.24 or newer, a C++17 compiler and a build tool. On Ubuntu:
 
 ```sh
 sudo apt-get update
-sudo apt-get install build-essential ninja-build libpng-dev libjpeg-dev python3-pip binutils
+sudo apt-get install build-essential ninja-build libpng-dev libjpeg-dev libcurl4-openssl-dev python3-pip binutils
 python3 -m pip install --user cmake==3.31.6
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -169,7 +169,9 @@ do not need to support Linux permissions or shared-library symlinks.
 Archives contain `bin/slopfab`, the versioned C API library and SONAME symlinks
 under `lib/`, `include/slopfab/capi.h`, documentation and licenses. The tokenizer
 and Vulkan shaders are compiled in. Model weights, adapters, NVIDIA/Vulkan
-drivers, CUDA libraries, libpng/libjpeg runtimes are external dependencies. Extract
+drivers, CUDA libraries, libpng/libjpeg runtimes are external dependencies. The
+CLI also needs libcurl for workflow HTTP requests (Ubuntu: `libcurl4`); QuickJS
+itself is embedded only in the executable. Extract
 the archive and add its `bin/` directory to `PATH`. C API consumers may load
 `lib/libslopfab.so` by absolute path or install it in their loader search path.
 The installed executable and shared library include relative `$ORIGIN` library

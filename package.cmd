@@ -67,9 +67,17 @@ copy /y "%BUILD%\Release\slopfab_c.lib" "%STAGE%\lib\slopfab_c.lib" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\README.md" "%STAGE%\README.md" >nul
 if errorlevel 1 exit /b 1
+xcopy /e /i /q /y "%ROOT%\docs" "%STAGE%\docs" >nul
+if errorlevel 1 exit /b 1
+xcopy /e /i /q /y "%ROOT%\examples\workflows" "%STAGE%\examples\workflows" >nul
+if errorlevel 1 exit /b 1
+xcopy /e /i /q /y "%ROOT%\examples\mods" "%STAGE%\examples\mods" >nul
+if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\sageattention\LICENSE" "%STAGE%\SAGEATTENTION-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\motioncache\LICENSE" "%STAGE%\MOTIONCACHE-LICENSE.txt" >nul
+if errorlevel 1 exit /b 1
+copy /y "%ROOT%\third_party\quickjs\LICENSE" "%STAGE%\QUICKJS-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\seedvr2\LICENSE" "%STAGE%\SEEDVR2-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1

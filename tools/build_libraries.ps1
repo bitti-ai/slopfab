@@ -52,7 +52,7 @@ Linux paths must be absolute. Existing build configurations are reused;
 other CMake settings are retained (new builds use CMake defaults).
 
 Windows requires CMake >=3.31, VS 2022 C++ tools, CUDA 12.8 and CUDA 13.0 headers.
-Linux requires glibc <=2.35, WSL, CMake >=3.31, C++ tools, CUDA, libpng-dev/libjpeg-dev,
+Linux requires glibc <=2.35, WSL, CMake >=3.31, C/C++ tools, CUDA, libpng-dev/libjpeg-dev/libcurl4-openssl-dev,
 Python 3.10+ and binutils. Install the baseline with wsl --install -d Ubuntu-22.04.
 The tokenizer must exist at ref\text_encoder\tokenizer.json.
 '@
@@ -112,7 +112,7 @@ try {
             '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests',
             '--parallel', "$Jobs")
         Invoke-Checked 'ctest' @('--test-dir', $WindowsBuildDir, '-C', 'Release',
-            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|clipproj_cli|projects_cli|cli_startup)$')
+            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|clipproj_cli|projects_cli|cli_startup)$')
 
         $destination = Join-Path $root 'dist\windows'
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
@@ -120,6 +120,7 @@ try {
         Publish-File (Join-Path $WindowsBuildDir 'Release\slopfab.dll') (Join-Path $destination 'slopfab.dll')
         Publish-File (Join-Path $WindowsBuildDir 'Release\slopfab_c.lib') (Join-Path $destination 'slopfab_c.lib')
         Publish-File (Join-Path $root 'include\slopfab\capi.h') (Join-Path $destination 'capi.h')
+        Publish-File (Join-Path $root 'third_party\quickjs\LICENSE') (Join-Path $destination 'QUICKJS-LICENSE.txt')
         $hashes = foreach ($name in @('slopfab.exe', 'slopfab.dll', 'slopfab_c.lib', 'capi.h')) {
             $digest = (Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256).Hash.ToLowerInvariant()
             "$digest  $name"
@@ -132,7 +133,7 @@ try {
         @("slopfab C API $($version -join '.')", 'Windows x64 Release; CUDA 12.8; Vulkan enabled',
             'CUDA targets: sm_86 and sm_120a; full tokenizer embedded',
             "Source: $root", "Build directory: $WindowsBuildDir", "Built UTC: $([DateTime]::UtcNow.ToString('o'))",
-            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, clipproj_cli, projects_cli, cli_startup') |
+            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, clipproj_cli, projects_cli, cli_startup') |
             Set-Content -LiteralPath (Join-Path $destination 'build-info.txt') -Encoding UTF8
         Write-Host "build: wrote $destination\slopfab.exe and slopfab.dll"
     }
