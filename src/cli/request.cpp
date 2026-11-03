@@ -66,12 +66,12 @@ std::vector<std::string> request_args(Value request) {
   keys(request,
        {"schema_version", "task", "model", "preset", "prompt", "negative_prompt", "lyrics",
         "duration_seconds", "resolution", "seed", "count", "output", "references", "loras",
-        "options", "deadline_seconds"},
+        "options", "deadline_seconds", "project", "project_item", "output_directory"},
        "request");
   auto version = request.find("schema_version");
   if (!version || !version->is_number() || version->as_number() != 1)
     throw CliError("INVALID_REQUEST", "schema_version must be 1", 2, "schema_version");
-  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics"})
+  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics", "project", "project_item", "output_directory"})
     if (const auto* v = request.find(key))
       if (!v->is_string())
         throw CliError("INVALID_REQUEST", std::string(key) + " must be a string", 2, key);
@@ -107,6 +107,9 @@ std::vector<std::string> request_args(Value request) {
     throw CliError("INVALID_REQUEST", "task must be video, image or music", 2, "task");
   std::vector<std::string> args = {task->as_string()};
   const std::pair<const char*, const char*> simple[] = {{"model", "--model"},
+                                                        {"project", "--project"},
+                                                        {"project_item", "--project-item"},
+                                                        {"output_directory", "--output-dir"},
                                                         {"prompt", "--prompt"},
                                                         {"negative_prompt", "--negative-prompt"},
                                                         {"lyrics", "--lyrics"},
@@ -179,7 +182,7 @@ std::vector<std::string> request_args(Value request) {
                                              "resolution", "seed",        "count",
                                              "out",        "overwrite",   "deadline",
                                              "dry-run",    "check-ready", "task",
-                                             "bench-load"};
+                                             "bench-load", "project", "project-item", "output-dir"};
     for (const auto& item : opts->as_object()) {
       const auto& key = item.first;
       if (key.empty() || key[0] == '-' || forbidden.count(key))
@@ -303,6 +306,13 @@ std::vector<std::string> prepare_arguments(const std::vector<std::string>& input
   agent().requested_duration = 0;
   agent().overwrite = false;
   agent().check_ready = false;
+  agent().project.clear();
+  agent().project_output.clear();
+  agent().project_item.clear();
+  agent().project_new_id.clear();
+  agent().project_revision = 0;
+  agent().generation_arguments.clear();
+  for (const auto& argument : args) agent().generation_arguments.push_back(str(argument));
   if (!args.empty() && (args[0] == "image" || args[0] == "video" || args[0] == "music")) {
     agent().task = args[0];
     args.erase(args.begin());
@@ -319,6 +329,13 @@ std::vector<std::string> prepare_arguments(const std::vector<std::string>& input
         throw CliError("INVALID_REQUEST", "missing value for " + a, 2, a);
       return args[++i];
     };
+    if (a == "--project" || a == "--project-item" || a == "--output-dir") {
+      auto& destination = a == "--project" ? agent().project : a == "--project-item" ? agent().project_item : agent().project_output;
+      if (!destination.empty()) throw CliError("INVALID_REQUEST", "repeated " + a);
+      destination = value();
+      if (destination.empty()) throw CliError("INVALID_REQUEST", "empty " + a);
+      continue;
+    }
     if (a == "--overwrite") {
       agent().overwrite = true;
       continue;
@@ -353,6 +370,8 @@ std::vector<std::string> prepare_arguments(const std::vector<std::string>& input
   }
   if (agent().requested_duration > 0 && (frames || singletons.count("--music-duration")))
     throw CliError("INVALID_REQUEST", "duration conflicts with --frames or --music-duration");
+  if (agent().project.empty() && (!agent().project_item.empty() || !agent().project_output.empty()))
+    throw CliError("INVALID_REQUEST", "--project-item and --output-dir require --project");
   if (agent().task == "image" &&
       (frames || agent().requested_duration > 0 || singletons.count("--music-duration") ||
        singletons.count("--lyrics")))
@@ -373,7 +392,7 @@ Value request_schema() {
   properties["schema_version"] = Value(Object{{"const", num(1)}});
   properties["task"] =
       Value(Object{{"enum", Value(Array{str("video"), str("image"), str("music")})}});
-  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics"})
+  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics", "project", "project_item", "output_directory"})
     properties[key] = typed("string");
   properties["seed"] =
       Value(Object{{"type", str("string")},
@@ -474,6 +493,12 @@ Value capabilities() {
        Value(Object{{"index_command", str("slopfab mods list")},
                     {"load_command", str("slopfab mods load NAME")},
                     {"format", str("mods/NAME/MOD.md: YAML front matter and Markdown prompt")}})},
+      {"projects", Value(Object{{"help", str("slopfab help projects")},
+                                 {"create", str("slopfab projects create NAME")},
+                                 {"generate", str("generate --project NAME; --project-item ID replaces an item")},
+                                 {"manifest", str("project.json")},
+                                 {"preview", str("index.html: offline media review and copyable agent prompts")},
+                                 {"naming", str("PROJECT.md and projects show describe exact manifest paths and naming rules")}})},
       {"schema_command", str("slopfab schema")}});
 }
 

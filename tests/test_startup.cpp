@@ -42,6 +42,8 @@ int main() {
                     "missing FFmpeg must show only FFmpeg installation guidance");
           } else {
             require(missing.empty(), "ready installation was blocked");
+            require(text.find("projects create") != std::string::npos,
+                    "startup must encourage projects for generation requests");
             require(std::count(text.begin(), text.end(), '\n') == 4,
                     "startup must have four lines");
             const auto second = text.find('\n') + 1;

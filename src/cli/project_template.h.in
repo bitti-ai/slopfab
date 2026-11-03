@@ -1,0 +1,2 @@
+#pragma once
+inline constexpr const char* kProjectTemplate = R"SLOPFAB_HTML(@SLOPFAB_PROJECT_TEMPLATE@)SLOPFAB_HTML";

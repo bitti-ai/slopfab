@@ -1,4 +1,5 @@
 #include "upscale_options.h"
+#include "projects.h"
 #include "slopfab/model_profile.h"
 // slopfab - MiniMax H3 video generation in C++/CUDA.
 
@@ -772,6 +773,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if ((agent().enabled || agent().worker) && req.prompt.empty() && prompt_embedding.empty() &&
       !synthetic)
     throw CliError("INVALID_REQUEST", "provide prompt or options.prompt-embedding", 2, "prompt");
+  prepare_project_generation(req, saw_out, count);
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;
   if (saw_seed && uint64_t(count - 1) > UINT64_MAX - base_seed)
@@ -1017,6 +1019,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (run.cancelled || cancelled())
         throw_cancelled();
       throw std::runtime_error(run.message);
+    }
+    if (!agent().project.empty()) {
+      result["project_item"] = record_project_generation(req, Value(result));
+      agent().results.back() = Value(result);
     }
     if (agent().enabled || agent().worker)
       emit({{"type", str("artifact")}, {"result", Value(result)}});

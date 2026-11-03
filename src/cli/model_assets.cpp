@@ -76,7 +76,9 @@ uint64_t random_seed() {
 }
 
 std::string timestamped_output_path() {
-  return (std::filesystem::path("output") / unique_id() / "video.y4m").string();
+  const auto settings = load_settings();
+  const auto* output = settings.find("output_directory");
+  return (std::filesystem::u8path(output ? output->as_string() : "output") / unique_id() / "video.y4m").u8string();
 }
 
 std::string counted_output_path(const std::string& base, int index, int count) {

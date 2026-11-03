@@ -66,7 +66,8 @@ Value normalize_settings(const Value& input) {
   auto object = input.as_object();
   for (const auto& field : object)
     if (field.first != "schema_version" && field.first != "weight_paths" &&
-        field.first != "weights_directory" && field.first != "models" && field.first != "presets")
+        field.first != "weights_directory" && field.first != "models" && field.first != "presets" &&
+        field.first != "output_directory")
       throw CliError("INVALID_REQUEST", "unknown setting: " + field.first, 2, field.first);
   if (const auto* version = input.find("schema_version"))
     if (!version->is_number() || version->as_number() != 1)
@@ -88,6 +89,14 @@ Value normalize_settings(const Value& input) {
     paths = Value(Array{*legacy});
   }
   object.erase("weights_directory");
+  if (const auto* output = input.find("output_directory")) {
+    if (!output->is_string() || output->as_string().empty())
+      throw CliError("INVALID_REQUEST", "output_directory must be a nonempty path");
+    auto path = fs::u8path(output->as_string());
+    if (path.is_relative())
+      path = settings_path().parent_path() / path;
+    object["output_directory"] = str(fs::absolute(path).lexically_normal().u8string());
+  }
   object["schema_version"] = num(1);
   object["weight_paths"] = Value(normalize_paths(paths, settings_path().parent_path()));
   return Value(std::move(object));
@@ -198,10 +207,11 @@ int settings_command(const std::vector<std::string>& args) {
          true);
     return 0;
   }
-  if ((parts[0] != "weight_paths" && parts[0] != "models" && parts[0] != "presets") ||
-      (parts[0] == "weight_paths" && parts.size() != 1))
+  if ((parts[0] != "weight_paths" && parts[0] != "models" && parts[0] != "presets" &&
+       parts[0] != "output_directory") ||
+      ((parts[0] == "weight_paths" || parts[0] == "output_directory") && parts.size() != 1))
     throw CliError("INVALID_REQUEST",
-                   "writable settings: weight_paths, models, presets (schema_version is read-only)",
+                   "writable settings: weight_paths, output_directory, models, presets (schema_version is read-only)",
                    2, key);
   auto lock = settings_lock();
   auto settings = load_settings();
@@ -210,7 +220,11 @@ int settings_command(const std::vector<std::string>& args) {
   if (action == "set") {
     if (args.size() < 3)
       throw CliError("INVALID_REQUEST", "settings set requires a value");
-    if (key == "weight_paths") {
+    if (key == "output_directory") {
+      if (args.size() != 3 || args[2].empty())
+        throw CliError("INVALID_REQUEST", "output_directory requires one path");
+      value = str(fs::absolute(fs::u8path(args[2])).lexically_normal().u8string());
+    } else if (key == "weight_paths") {
       if (args.size() == 3 && !args[2].empty() && args[2][0] == '[') {
         try {
           value = parse_cli_json(args[2]);

@@ -40,6 +40,9 @@ struct AgentContext {
   double deadline_seconds = 0, requested_duration = 0;
   std::chrono::steady_clock::time_point started;
   Array results;
+  std::string project, project_output, project_item, project_new_id;
+  Array generation_arguments;
+  int project_revision = 0;
   Value last_event;
 };
 

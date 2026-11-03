@@ -70,6 +70,31 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"projects", "slopfab projects ACTION [NAME] [ITEM_ID] [options]",
+     "Organize generation results in an output folder with an offline review page and copyable agent edit prompts.",
+     "  projects create NAME [--title TEXT]   create project.json, PROJECT.md and index.html\n"
+     "  projects list                        list projects in the output directory\n"
+     "  projects show NAME                   read items, exact filenames, recipes and naming rules\n"
+     "  projects add NAME --file PATH        import and register media; --id ID sets a stable ID\n"
+     "  projects update NAME ID [options]    replace media, preview or metadata; retain older files\n"
+     "  projects remove NAME ID              remove from the active project; retain files/history\n"
+     "  projects restore NAME ID             restore a removed item\n"
+     "  projects render NAME                 rebuild index.html and PROJECT.md from the manifest\n"
+     "  --output-dir DIR                     root directory; default: settings.output_directory or ./output\n"
+     "  --title TEXT --prompt TEXT           item label and generation prompt (add/update)\n"
+     "  --file PATH --preview PATH           source or browser preview; paths relative to working directory\n"
+     "  --request FILE                       save a generation JSON request for regeneration (add/update)\n"
+     "  --kind image|video|music|clip         default inferred from file; only add sets kind\n"
+     "  --parent VIDEO_ID                    required for clips; only add sets parent\n"
+     "  --position N --start SECONDS --end SECONDS   clip order and optional source trim (add/update)\n"
+     "  --if-revision N                      reject stale add/update/remove/restore operations\n"
+     "Use projects for user generation requests. Create a project, then generate with --project NAME.\n"
+     "Read PROJECT.md or projects show before writing files: index.html uses exact manifest paths, not a folder scan.\n"
+     "Imports use assets/ID/vVERSION/source.EXT and preview.EXT; registration regenerates the page.\n"
+     "Use --project-item ID to regenerate an item under its stable ID. Preserve unrelated items.\n"
+     "After clip edits, rebuild the parent video externally and register it with projects update --file.\n"
+     "For Y4M/PPM, create a browser preview with external FFmpeg and register --preview.\n"
+     "Open index.html locally: actions generate prompts to paste into an agent; the page executes no commands.\n"},
     {"upscale-latents", "slopfab upscale-latents --input FILE --out FILE [options]",
      "upscale an existing H3 latent archive without diffusion or decoding",
      "  --model FILE               H3 3D conv v1 checkpoint (default under weights/)\n"
@@ -117,6 +142,9 @@ const CommandHelp kCommands[] = {
      "  --lyrics TEXT               music lyrics; --prompt supplies style/tags\n"
      "  --music-duration SECONDS    music duration ceiling (default 30, maximum 300)\n"
      "  --music-planning MODE       YuE2 full (default), melody or off\n"
+     "  --project NAME              save results in an existing project and refresh its review page\n"
+     "  --project-item ID           regenerate an existing item (count 1); preserve previous versions\n"
+     "  --output-dir DIR            project root override; otherwise use settings.output_directory or ./output\n"
      "  --music-settings JSON       music sampling settings; see docs/music-models.md\n"
      "  YuE2 defaults: CUDA, 32 midpoint steps, stereo 48 kHz .wav output.\n"
      "  MiniMax Music3 defaults: CUDA, 30 Euler steps, stereo 44.1 kHz .wav.\n"
@@ -433,6 +461,7 @@ const CommandHelp kCommands[] = {
      "Read or update global settings; changes persist across invocations.",
      "  settings get                         show all settings and the file path\n"
      "  settings get weight_paths            show configured weight paths\n"
+     "  settings set output_directory PATH   set the output root used by projects\n"
      "  settings set weight_paths PATH [PATH ...]  replace the list; JSON arrays also work\n"
      "  settings remove weight_paths [PATH ...]   remove selected paths, or clear the list\n"
      "  settings set models.NAME JSON        set a model alias\n"
