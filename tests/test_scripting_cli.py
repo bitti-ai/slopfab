@@ -47,6 +47,9 @@ with tempfile.TemporaryDirectory(prefix="slopfab-js-") as directory:
         const bytes = new Uint8Array([0,1,2,255,4]);
         fs.writeBytes('data.bin', bytes.subarray(1,4));
         const read = fs.readBytes('data.bin');
+        fs.writeBytes(path.join('files ü', '日本.bin'), read);
+        if (sf.sha256(path.join('files ü', '日本.bin')) !== sf.sha256('data.bin')) throw Error('Unicode SHA-256 path');
+        fs.remove(path.join('files ü', '日本.bin'));
         const utf = new TextEncoder().encode('å日本🎬');
         if (new TextDecoder().decode(utf) !== 'å日本🎬') throw Error('UTF-8 roundtrip');
         fs.copy('data.bin', 'copied.bin'); fs.rename('copied.bin','renamed.bin'); fs.remove('renamed.bin');
@@ -136,6 +139,15 @@ with tempfile.TemporaryDirectory(prefix="slopfab-js-") as directory:
         assert (root/"download.bin").read_bytes() == payload and not list(root.glob('*.part'))
         js(f"slopfab.http.download({json.dumps(url+'/binary')},'download.bin');",code=6)
         js(f"slopfab.http.request({json.dumps(url+'/binary')},{{maxBytes:10}});",code=6)
+        # Exercise the shipped command with a local payload instead of large model weights.
+        example = Path(__file__).resolve().parents[1]/'examples'/'mods'/'download'
+        installed = root/'mods'/'download'
+        shutil.copytree(example, installed)
+        (installed/'catalog.json').write_text(json.dumps({'fixture':{'files':[
+            {'id':'small','url':url+'/binary'}]}}),encoding='utf-8')
+        downloaded = run('download','fixture','small','models ü/weights.bin')['data']
+        assert downloaded['bytes']==len(payload) and downloaded['sha256']==hashlib.sha256(payload).hexdigest()
+        shutil.rmtree(installed)
     finally:
         server.shutdown(); server.server_close(); thread.join()
 

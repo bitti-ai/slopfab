@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -147,7 +148,7 @@ Sha256Digest sha256_bytes(const void* data, size_t bytes) {
 }
 
 Sha256Digest sha256_file(const std::string& path) {
-  std::ifstream input(path, std::ios::binary);
+  std::ifstream input(std::filesystem::u8path(path), std::ios::binary);
   if (!input)
     throw std::runtime_error("SHA-256 cannot open " + path);
   std::vector<uint8_t> chunk(4u << 20);
