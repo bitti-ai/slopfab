@@ -1,4 +1,4 @@
-3
+4
 
 # Slopfab media generation
 
@@ -21,6 +21,14 @@ for media conversion. `spawn` supports parallel subprocesses. Consult run help
 and scripting capabilities; mods can register additional CLI commands. Scripts
 return JSON data and write diagnostics to stderr. Use `slopfab.path.fileUrl`
 when presenting project review links.
+
+Use **Motions** for vector graphics, titles and animation overlays. JavaScript
+Motion modules return SVG artwork per frame; embedded ThorVG renders PNG stills,
+video or transparent animations. Discover `slopfab help motions`: use `motions
+frame` for PNG/SVG, `motions render` for video, and `--over VIDEO` to composite
+over generated footage. Supply its separate WAV via `--audio` when needed.
+Preserve sources and register exported media/previews in the project. Text needs
+an explicitly loaded TTF/OTF font. Motion rendering is a CLI feature.
 
 ## Establish the brief
 

@@ -112,7 +112,7 @@ try {
             '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests',
             '--parallel', "$Jobs")
         Invoke-Checked 'ctest' @('--test-dir', $WindowsBuildDir, '-C', 'Release',
-            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|clipproj_cli|projects_cli|cli_startup)$')
+            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|clipproj_cli|projects_cli|cli_startup)$')
 
         $destination = Join-Path $root 'dist\windows'
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
@@ -121,6 +121,8 @@ try {
         Publish-File (Join-Path $WindowsBuildDir 'Release\slopfab_c.lib') (Join-Path $destination 'slopfab_c.lib')
         Publish-File (Join-Path $root 'include\slopfab\capi.h') (Join-Path $destination 'capi.h')
         Publish-File (Join-Path $root 'third_party\quickjs\LICENSE') (Join-Path $destination 'QUICKJS-LICENSE.txt')
+        Publish-File (Join-Path $root 'third_party\thorvg\LICENSE') (Join-Path $destination 'THORVG-LICENSE.txt')
+        Publish-File (Join-Path $root 'third_party\thorvg\LODEPNG-LICENSE.txt') (Join-Path $destination 'LODEPNG-LICENSE.txt')
         $hashes = foreach ($name in @('slopfab.exe', 'slopfab.dll', 'slopfab_c.lib', 'capi.h')) {
             $digest = (Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256).Hash.ToLowerInvariant()
             "$digest  $name"
@@ -133,7 +135,7 @@ try {
         @("slopfab C API $($version -join '.')", 'Windows x64 Release; CUDA 12.8; Vulkan enabled',
             'CUDA targets: sm_86 and sm_120a; full tokenizer embedded',
             "Source: $root", "Build directory: $WindowsBuildDir", "Built UTC: $([DateTime]::UtcNow.ToString('o'))",
-            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, clipproj_cli, projects_cli, cli_startup') |
+            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, clipproj_cli, projects_cli, cli_startup') |
             Set-Content -LiteralPath (Join-Path $destination 'build-info.txt') -Encoding UTF8
         Write-Host "build: wrote $destination\slopfab.exe and slopfab.dll"
     }

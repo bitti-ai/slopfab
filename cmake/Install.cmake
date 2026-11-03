@@ -32,9 +32,9 @@ endif()
 install(FILES README.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs
   FILES_MATCHING PATTERN "*.md")
-install(DIRECTORY examples/workflows examples/mods DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples)
+install(DIRECTORY examples/workflows examples/mods examples/motions DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples)
 install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab)
-foreach(dependency IN ITEMS sageattention motioncache vulkan seedvr2 quickjs)
+foreach(dependency IN ITEMS sageattention motioncache vulkan seedvr2 quickjs thorvg)
   if(dependency STREQUAL "vulkan")
     set(license "third_party/${dependency}/LICENSE.md")
   else()
@@ -43,6 +43,7 @@ foreach(dependency IN ITEMS sageattention motioncache vulkan seedvr2 quickjs)
   install(FILES "${license}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab
     RENAME "${dependency}-LICENSE.txt")
 endforeach()
+install(FILES third_party/thorvg/LODEPNG-LICENSE.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab)
 install(FILES third_party/seedvr2/NOTICE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab
   RENAME seedvr2-NOTICE.txt)
 

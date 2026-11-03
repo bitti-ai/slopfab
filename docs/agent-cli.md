@@ -69,6 +69,12 @@ Scripts can return structured results directly without external Python or batch
 scripts. QuickJS is statically linked only into the executable; DLL dependencies
 and the C ABI are unchanged.
 
+`slopfab motions render|frame SCRIPT.js --out FILE` runs JavaScript vector
+animations called [Motions](motions.md), using embedded ThorVG. Export PNG/SVG
+stills, MP4/MOV/WebM video, or use `--over VIDEO` and optional `--audio WAV` to
+layer graphics over generated footage. `capabilities.data.motions` describes
+formats and dependencies. ThorVG is linked only into the executable.
+
 ## Requests and validation
 
 ```json
