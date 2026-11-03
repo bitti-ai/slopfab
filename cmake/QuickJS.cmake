@@ -1,0 +1,15 @@
+enable_language(C)
+add_library(slopfab_quickjs STATIC
+  third_party/quickjs/quickjs.c third_party/quickjs/dtoa.c
+  third_party/quickjs/libregexp.c third_party/quickjs/libunicode.c)
+set_target_properties(slopfab_quickjs PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_include_directories(slopfab_quickjs SYSTEM PUBLIC third_party/quickjs)
+target_compile_definitions(slopfab_quickjs PRIVATE _GNU_SOURCE QUICKJS_NG_BUILD)
+if(MSVC)
+  target_compile_options(slopfab_quickjs PRIVATE /experimental:c11atomics /w)
+  target_compile_definitions(slopfab_quickjs PRIVATE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
+else()
+  target_link_libraries(slopfab_quickjs PUBLIC m ${CMAKE_DL_LIBS})
+endif()
+find_package(Threads REQUIRED)
+target_link_libraries(slopfab_quickjs PUBLIC Threads::Threads)
