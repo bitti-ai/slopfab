@@ -22,6 +22,20 @@ manifest, requested change and any parent video to rebuild. Refresh the page
 after the agent updates the project. Page actions only compose prompts; they
 never execute commands or silently change the manifest.
 
+The main player opens the latest active assembled video, ignoring a previous
+clip URL fragment. The clip strip starts with **FULL VIDEO**; selecting a clip
+plays it in the main view, and FULL VIDEO returns to its current parent version.
+Clip cards decode a paused frame directly from the registered browser-playable
+video, including its start trim. No thumbnail images need to be generated.
+Unsupported/missing videos show a placeholder. Other library assets open in a
+modal with independent playback, generation prompts and edit actions; closing it
+preserves the main selection and playback position.
+
+Media registration records `media_revision` so the latest video can be selected
+even when an older item receives a replacement. Videos with registered clips
+take priority over standalone library videos. Older manifests without this field
+fall back to registration order; every item uses its current registered version.
+
 The **Generation prompts** panel beneath the preview shows the selected item's
 prompt, negative prompt when supplied, and music lyrics. Copy each input directly
 or select an earlier version to inspect its saved text; the media preview and edit

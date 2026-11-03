@@ -1,4 +1,4 @@
-2
+3
 
 # Slopfab media generation
 
@@ -94,5 +94,13 @@ video soundtracks synchronized. After clip changes, rebuild and register the
 parent video and refresh the page. Present the project's `index.html` link as an
 absolute `file://` URL so the user can click it in the terminal, for example
 `file:///D:/Projects/output/my-project/index.html`. Use forward slashes and
-percent-encode spaces and other reserved URL characters in the path. Pasted page prompts
-are edit requests; reconcile them with the latest project state before acting.
+percent-encode spaces and other reserved URL characters in the path.
+
+Keep the page's main player
+defaulted to the latest full assembled video, with FULL VIDEO first in the clip
+list and clip selections playing in that main view. Clip cards show a single
+frame decoded by the browser from their video, without pregenerated thumbnail
+images. Other library assets open in a popup over the page. Preserve the compact
+corner styling and the header brand text `slopfab`.
+Pasted page prompts are edit requests; reconcile them with the latest project
+state before acting.
