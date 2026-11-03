@@ -58,6 +58,19 @@ with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:
     assert "one call-only video latent; front restored before output" in desc
     assert "39 frames (22 hidden overlap)" in desc
     assert "locked video and audio" in desc
+    noisy = (*keystone, "--context-noise", "0.8")
+    assert "strength 0.800000; linear fade; skip first" in run(*noisy)
+    assert "ease fade; include first" in run(*noisy, "--context-noise-fade", "ease", "--context-noise-include-first")
+    assert "locked video and audio" in run(*base, "--context-noise", "0.8")
+    assert "context noise" not in run(*noisy, "--context-noise", "0")
+    assert "inactive until continuation" in run("--context-noise", "0.8")
+    for value in ("-1", "1.1", "nan", "inf", "0.8x"):
+        run(*noisy, "--context-noise", value, success=False)
+    run(*noisy, "--context-noise-fade", "cosine", success=False)
+    for options in [("--skip-every", "2"), ("--synthetic-latents",),
+                    ("--init-latents", archive), ("--continuation-source-noise", ".8"),
+                    ("--end-anchor-latents", archive)]:
+        run(*base, "--context-noise", ".8", *options, success=False)
     assert "front only" in run(*keystone, "--keystone-front-only")
     assert "22 frames (5 hidden overlap)" in run(*keystone, "--overlap-frames", "5")
     assert "locks after 0" in run(*keystone, "--capstone-lock-after", "0", "--audio-steps", "5")

@@ -621,6 +621,36 @@ SLOPFAB_TEST(capi_keystone_snapshot_lifecycle) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_context_noise_lifecycle) {
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_context_noise(nullptr, .8f, 0, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_context_noise(request, .8f, 1, 1) == SLOPFAB_OK);
+  for (float v : {-1.f, 1.1f, std::numeric_limits<float>::quiet_NaN()})
+    CHECK(slopfab_request_set_context_noise(request, v, 0, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_context_noise(request, .8f, 2, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_context_noise(request, .8f, 0, -1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  char* desc = nullptr;
+  CHECK(slopfab_describe_plan(request, &desc) == SLOPFAB_OK);
+  CHECK(desc && std::strstr(desc, "strength 0.800000; ease fade; skip first; inactive"));
+  slopfab_free_string(desc);
+  LatentFixture source;
+  source.write(39);
+  CHECK(slopfab_request_set_continuation_file(request, source.path.string().c_str(), 22) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_keystone_file(request, source.path.string().c_str(), 1, 4) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request, &desc) == SLOPFAB_OK);
+  CHECK(desc && std::strstr(desc, "held video restored before output"));
+  slopfab_free_string(desc);
+  CHECK(slopfab_request_clear_keystone(request) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request, &desc) == SLOPFAB_OK);
+  CHECK(desc && std::strstr(desc, "context noise") && std::strstr(desc, "locked video and audio"));
+  slopfab_free_string(desc);
+  CHECK(slopfab_request_set_context_noise(request, 0, 0, 1) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request, &desc) == SLOPFAB_OK);
+  CHECK(desc && !std::strstr(desc, "context noise"));
+  slopfab_free_string(desc);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_continuation_lock_overlap) {
   LatentFixture fixture;
   fixture.write();

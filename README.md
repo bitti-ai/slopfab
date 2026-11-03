@@ -10,7 +10,7 @@ Native C++ video, image and music generation on CUDA and Vulkan. No Python is re
 - **Reference conditioning:** images, video and audio with Ref2VA; reusable [RefMods, mixed bundles and text embeddings](docs/refmods.md).
 - **LoRA adapters:** stacking, TaoMate (3 evaluations), DMAD (4), and **Hyperflow (8)** with two-time conditioning and an automatically selected schedule. Hyperflow requires a prepared companion; see [LoRA setup](docs/loras.md).
 - **Sampling controls:** Euler, AB2, re-noising and **ER-SDE**, beta scheduling, model/LoRA defaults, JSON overrides and experimental independent audio steps. See [sampling settings and compatibility](docs/sampling_settings.md).
-- **Editing and continuity:** [masked editing and outpainting](docs/inpainting.md), [saved-latent continuation, bridging and ending anchors](docs/continuation.md), including persistent Keystone/Capstone context.
+- **Editing and continuity:** [masked editing and outpainting](docs/inpainting.md), [saved-latent continuation, bridging and ending anchors](docs/continuation.md), including persistent Keystone/Capstone context and optional context noise.
 - **Color and tone:** [latent color controls and writable sampling callbacks](docs/lcs.md), with masks, sharpness and reusable VAE calibration.
 - **Low-VRAM H3 text encoding:** [ClipProj](docs/clipproj.md) with a Qwen3-VL-4B/8B student, streaming GPU layers and a CPU projection.
 - **Memory and speed:** quantized checkpoints, [CUDA offloading](docs/denoising_memory.md), [FastH3 V2](docs/fasth3_v2.md), [OmniRef](docs/omniref.md), [VEDA](docs/veda.md) and optional [MotionCache](docs/motioncache.md). [Viggle-Animate loading](docs/viggle_animate.md) has separate workflow limits.

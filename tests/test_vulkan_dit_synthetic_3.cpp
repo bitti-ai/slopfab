@@ -21,6 +21,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
     return;
   }
   DeviceOptions opts;
+  // Constant-head trajectory tests check numeric results, not driver-qualified
+  // CUDA bit parity. Allow the production portable path on newer drivers.
+  opts.portable_arithmetic = true;
   opts.enable_timeline_semaphore = opts.enable_shader_int64 = true;
   opts.enable_shader_float16 = opts.enable_storage_buffer_16bit = opts.enable_cooperative_matrix =
       true;

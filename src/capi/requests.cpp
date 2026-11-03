@@ -782,6 +782,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_keystone(slopfab_request* r
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_context_noise(
+    slopfab_request* request, float strength, int32_t ease, int32_t skip_first) {
+  if (!request || !std::isfinite(strength) || strength < 0 || strength > 1 ||
+      (ease != 0 && ease != 1) || (skip_first != 0 && skip_first != 1))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "context noise needs strength in [0,1] and flags 0/1");
+  request->request.context_noise = {strength, ease != 0, skip_first != 0};
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor(slopfab_request* request,
                                                           const char* path) {
   if (!request)

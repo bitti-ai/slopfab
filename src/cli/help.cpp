@@ -287,6 +287,9 @@ const CommandHelp kCommands[] = {
      "  --keystone-from <archive> persistent original-clip anchors for continuation (experimental).\n"
      "  --keystone-front-only    omit the rear capstone; default anchors both ends.\n"
      "  --capstone-lock-after <n> video updates before appending rear context (default 4; 0 = immediate).\n"
+     "  --context-noise <s>      noise held video with a fade to the join; [0,1], default 0 (try 0.8).\n"
+     "  --context-noise-fade <f> linear (default) or ease; experimental H3 continuation.\n"
+     "  --context-noise-include-first also noise latent 0 unless it is a Keystone.\n"
      "  --end-anchor <image>        guide the ending toward an image (also with continuation).\n"
      "  --end-anchor-latents <f>    retain an ending archive; --frames adds a lead-in/gap.\n"
      "  --end-anchor-context <n>    locked opening context of ending, 17*k+5 (default 22).\n"
@@ -545,6 +548,7 @@ bool option_takes_value(std::string_view a, std::string_view command) {
                            "--motion-cache-verbose",
                            "--synthetic-latents",
                            "--keystone-front-only",
+                           "--context-noise-include-first",
                            "--lock-overlap",
                            "--animate",
                            "--preserve-driving-audio",

@@ -39,6 +39,51 @@ cumulative 24 fps timeline against the 40 Hz latent clock, rather than rounding
 each extension independently. The sampling window stays bounded, but stored
 latents and full output decoding grow with the cumulative clip length.
 
+## Context noise (experimental, C API 1.49)
+
+H3 continuation can soften held video context during sampling, independently of
+Keystone and Capstone. This implements the context-noise idea credited to
+ethanfel (Lumifel) by [Geiru Context Suite](https://github.com/roycho87/geiru_context_suite),
+adapted to Slopfab's separate guide and target streams.
+
+```sh
+slopfab generate --continue-from previous.safetensors --keystone-from original.safetensors --context-noise 0.8 --capstone-lock-after 4 --frames 119 --steps 9 --prompt "The same subject continues moving in one uninterrupted shot" --out extended.mp4 --save-latents extended.safetensors
+```
+
+`--context-noise` accepts a strength in `[0,1]`; zero is the default and preserves
+the existing sampling path. With it enabled, each held video slice uses a fraction
+of the current video sigma, with the fraction falling toward zero at the join.
+The model receives matching timestep labels. Both the continuation guide and held
+target use the same interpolated values, so a clean duplicate guide cannot undo
+the treatment. Noise is captured once from the seeded target and reused at every
+scheduler boundary. Other reference guides remain unchanged.
+
+- `--context-noise-fade linear` is the default; `ease` squares the ramp.
+- The first slice stays clean by default. `--context-noise-include-first` includes
+  it in the ramp, but a front Keystone always stays clean.
+- The final held slice stays clean. If only one eligible slice remains, it also
+  stays clean; a five-frame overlap with the default skip has no noisy slices.
+- Only held video participates. Regenerated overlap and new video remain free;
+  audio keeps its existing overlap trajectory. All held video is restored before
+  output, including on cancellation and when regenerating part of the overlap.
+- Enabling this also locks overlap. It can be used without Keystone, and remains
+  dormant on the first shot when no continuation is attached.
+
+The setting requires H3 video denoising from fresh noise without approximate
+caches, source initialization, edits, transitions, bridges or ending anchors.
+CUDA and Vulkan share the ramp and timestep logic; Capstone remains clean,
+delayed, and excluded from the output timeline. Synthetic tests check the sampling
+behavior; improved visual stability on long chains still needs a controlled render
+comparison.
+
+```c
+slopfab_request_set_context_noise(request, 0.8f, 0, 1); /* linear, skip first */
+slopfab_request_set_context_noise(request, 0.0f, 0, 1); /* disable */
+```
+
+In C++, use `GenerateRequest::context_noise = {0.8f, false, true}`. This setting
+persists independently when continuation or Keystone is replaced or cleared.
+
 ## Keystone and delayed Capstone (experimental, C API 1.45)
 
 Keep an approved original clip as a persistent appearance reference while the
@@ -86,7 +131,7 @@ references attached to every request when using Ref2VA.
 - **Front only:** `--keystone-front-only` omits the Capstone.
 
 Locked overlap uses `(1-sigma)*reference + sigma*initial_noise`, with the same
-captured noise at every step. The appended Capstone stays clean, with a clean
+captured noise at every step, unless context noise is enabled as above. The appended Capstone stays clean, with a clean
 model timestep. Keystone modifies video only; audio context comes from the
 advancing continuation, not from the original anchor clip.
 

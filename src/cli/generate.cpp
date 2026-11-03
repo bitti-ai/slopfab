@@ -436,6 +436,20 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       keystone_from = next("--keystone-from");
       if (keystone_from.empty())
         throw std::invalid_argument("--keystone-from requires an archive path");
+    } else if (arg == "--context-noise") {
+      const std::string value = next("--context-noise");
+      size_t used = 0;
+      req.context_noise.strength = std::stof(value, &used);
+      if (used != value.size())
+        throw std::invalid_argument("--context-noise requires a strength in [0,1]");
+      req.context_noise.validate();
+    } else if (arg == "--context-noise-fade") {
+      const std::string value = next("--context-noise-fade");
+      if (value != "linear" && value != "ease")
+        throw std::invalid_argument("--context-noise-fade requires linear or ease");
+      req.context_noise.ease = value == "ease";
+    } else if (arg == "--context-noise-include-first") {
+      req.context_noise.skip_first = false;
     } else if (arg == "--keystone-front-only") {
       req.keystone.capstone = false;
       saw_keystone_settings = true;

@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 48
+#define SLOPFAB_CAPI_VERSION_MINOR 49
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
@@ -1004,6 +1004,17 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_keystone_generation(
     slopfab_request* request, const slopfab_generation* source,
     int32_t capstone, int32_t lock_after_steps);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_keystone(slopfab_request* request);
+
+/* Since 1.49: experimental H3 continuation context noise, independent of Keystone.
+ * strength is [0,1], 0 disables (default); try 0.8. ease=0 uses a linear fade,
+ * ease=1 a squared fade. skip_first=1 leaves the first held slice clean.
+ * Keystone always stays clean; noise fades to zero at the join. Held video is
+ * restored before output; audio is unchanged. Enables overlap locking and is
+ * dormant without continuation, so the same request can generate the first shot.
+ * Requires fresh-noise denoising without caches, edits, transitions, source
+ * initialization or ending anchors. Both flags must be 0 or 1. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_context_noise(
+    slopfab_request* request, float strength, int32_t ease, int32_t skip_first);
 
 /* Since 1.41. Experimental: initialize newly generated video from the source's
  * final latent slice mixed with noise, with a matching partial video schedule.
