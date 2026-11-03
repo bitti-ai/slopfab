@@ -13,8 +13,11 @@ is unchanged. CLI requests, jobs, output policy, and configuration are separate
 from DLL generation.
 
 The first `--agent` invocation in a working directory creates `AGENTS.md` if
-that file does not already exist. Its compact instructions cover Slopfab for
-image/video/music requests, projects, filename rules, previews and edits. The
+that file does not already exist. Its compact instructions establish the creative
+brief (including prompt-review versus immediate execution, aspect ratio,
+resolution and duration), suggest scene-appropriate
+generation/continuation practices, and cover projects, filenames, previews and
+edits. Command syntax is discovered through CLI help. The
 same text appears once in the first JSON response as
 `agent_context: {path, instructions}`; the requested command still runs normally.
 Subsequent launches do not rewrite or repeat it. Existing files (even empty
