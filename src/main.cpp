@@ -4,6 +4,7 @@
 #include "cli/settings.h"
 #include "cli/mods.h"
 #include "cli/projects.h"
+#include "cli/prompting.h"
 #include <cstdio>
 #include <set>
 #ifdef _WIN32
@@ -89,6 +90,8 @@ int cli_main(int argc, char** argv) {
       return print_command_help(*help);
     if (command == "mods")
       return mods_command(args);
+    if (command == "prompts")
+      return prompts_command(args);
     if (command == "projects")
       return projects_command(args);
     if (command == "settings")

@@ -10,6 +10,10 @@ configure_file(src/cli/project_template.h.in generated/project_template.h @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/templates/AGENTS.md")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/templates/AGENTS.md" SLOPFAB_AGENT_INSTRUCTIONS)
 configure_file(src/cli/agent_instructions_template.h.in generated/agent_instructions_template.h @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resources/prompting.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/resources/prompting.json" SLOPFAB_PROMPTING_CATALOG)
+string(REPLACE "\n" "\n)SLOPFAB_GUIDES\"\nR\"SLOPFAB_GUIDES(" SLOPFAB_PROMPTING_CATALOG "${SLOPFAB_PROMPTING_CATALOG}")
+configure_file(src/cli/prompting_catalog.h.in generated/prompting_catalog.h @ONLY)
 
 # The CLI and C API use the same in-process CUDA core. On Windows cuBLAS is
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
@@ -17,6 +21,7 @@ configure_file(src/cli/agent_instructions_template.h.in generated/agent_instruct
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 target_sources(slopfab PRIVATE src/cli/projects.cpp)
 target_sources(slopfab PRIVATE src/cli/agent_instructions.cpp)
+target_sources(slopfab PRIVATE src/cli/prompting.cpp)
 target_include_directories(slopfab PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_sources(slopfab PRIVATE src/cli/reference_decode.cpp)
 target_sources(slopfab PRIVATE src/cli/assets.cpp)

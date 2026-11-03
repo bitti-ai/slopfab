@@ -1,0 +1,4 @@
+#pragma once
+namespace slopfab::cli {
+inline constexpr char kPromptingCatalog[] = R"SLOPFAB_GUIDES(@SLOPFAB_PROMPTING_CATALOG@)SLOPFAB_GUIDES";
+}

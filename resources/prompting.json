@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "reviewed": "2026-11-03",
+  "notice": "Slopfab-authored summaries and examples, based on the linked primary sources and the local implementation. Templates are model input, not shell commands. No hosted prompt enhancer is called.",
+  "workflow": "Establish aspect ratio, resolution, duration, references, audio and prompt-review versus immediate-execution preference. Inspect the actual supplied media before describing it. Load the matching guide, write the final prompt, validate the generation request and use its resolved geometry/timing. Preserve the user's words and approved choices; do not silently rewrite or execute a prompt requiring review.",
+  "models": {
+    "h3": {
+      "name": "MiniMax H3",
+      "guidance": "For base video modes, keep these fields in order: integrated_multimodal_description, overall_soundscape, non_diegetic_music. Organize visible actions and synchronized sound under [Shot N]. The first shot has no cut timestamp; later cuts use increasing MM:SS.mmm times. Describe camera movement concretely. Keep speaker IDs (S1), (S2) stable; dialogue uses <d>[Language] exact words</d>. Preserve dialogue and visible quoted text. Voiceover must not imply moving lips. Keep ambience separate from dialogue; describe audience-only music separately. Use N/A for music when absent, and for soundscape only for complete silence. Alignment timestamps use the effective duration with two decimals. FL2VA normally follows one continuous trajectory; L2VA approaches its image only at the end.",
+      "slopfab_support": "Prompt modes describe reference roles, not checkpoint filenames. --reference-image is an ordinary Ref2VA reference, not a dedicated first-frame constraint. --end-anchor supplies an ending image. Use a compatible Ref2VA checkpoint for ordinary references, including a first-image plus ending-image workflow. FL2VA checkpoints support text generation and Slopfab's ending/latent-continuation paths, but ordinary --reference-image inputs are rejected. ClipProj currently supports text-only conditioning; image/video inputs require the ordinary conditioner. Prompts do not add missing runtime capabilities or guarantee exact pixels.",
+      "sources": [
+        "https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/base-en.txt",
+        "https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/ref-en.txt"
+      ],
+      "implementation": ["docs/continuation.md", "src/pipeline.cpp", "src/generate.cpp"]
+    },
+    "krea2": {
+      "name": "Krea 2",
+      "guidance": "Start with the subject and an intentional visual style. For exploration, a short idea can leave useful aesthetic freedom; for a settled brief, specify framing, materials, palette, lighting and any exact visible text. Change one important creative variable per comparison. Use descriptive text rather than H3 audiovisual fields.",
+      "slopfab_support": "Slopfab currently exposes text-to-image Krea 2, not the hosted product's style-reference or moodboard controls. Do not request reference images, masked edits or negative-prompt conditioning here. Use the chosen local Turbo/RAW settings; changing the caption does not select a checkpoint variant.",
+      "sources": ["https://www.krea.ai/blog/krea-2-deep-dive-walkthrough", "https://github.com/krea-ai/krea-2"],
+      "implementation": ["docs/krea2.md"]
+    },
+    "moss": {
+      "name": "MOSS Image SFT",
+      "guidance": "Use a descriptive caption for ordinary images: subject, composition, spatial relationships, materials, light and style. English is a useful default, but preserve requested visible text in its original language. Spell out text placement and line breaks. For explicit spatial design, use a JSON layout with summary.caption and items, bbox_format yxyx, and bbox_coord_space abs_centralized. Coordinates are integer pixels relative to the canvas center: subtract W/2 from x and H/2 from y; boxes must match the actual generation canvas.",
+      "slopfab_support": "MOSS is text-to-image in Slopfab. Layout JSON is positive prompt text, not a mask or image-editing API. A separate negative prompt is supported; use targeted exclusions only when needed. Model defaults remain in CLI help rather than being implied by the prompt.",
+      "sources": ["https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT", "https://github.com/OpenMOSS/MOSS-Image/blob/main/USERGUIDE.md"],
+      "implementation": ["docs/moss.md", "src/core/model_profile.cpp"]
+    },
+    "fibo2": {
+      "name": "Fibo 2.0 Edit Turbo",
+      "guidance": "For editing, describe the requested change and what should remain. For precise composition, provide an edit_instruction plus a structured_caption of the desired result. Describe objects, placement, background, lighting and medium; text_render contains exact text to appear. Assign a clear role to each supplied image. Avoid conflating the source appearance with the desired result.",
+      "slopfab_support": "The supported checkpoint is Edit Turbo. Upstream recommends Dev for text-to-image; Slopfab accepts zero-reference Turbo generation as a local capability, without claiming it is the recommended upstream text-to-image model. Slopfab's structured form requires edit_instruction and structured_caption; do not send a bare caption object expecting the same parsing. Up to four ordinary reference images are supported; masked editing uses one source. Nonempty text_render glyph conditioning currently requires Windows. No negative prompt, video or rectangular outpainting is supported.",
+      "sources": ["https://huggingface.co/briaai/Fibo-2.0-edit-turbo", "https://huggingface.co/docs/diffusers/main/api/pipelines/bria_fibo2"],
+      "implementation": ["docs/fibo2.md", "src/fibo/plan.cpp", "src/fibo/render.cpp"]
+    },
+    "yue2": {
+      "name": "YuE2",
+      "guidance": "Keep the style caption and lyrics separate. Describe genre, groove, vocal delivery, instrumentation and progression in the caption; put the words to sing in lyrics, arranged into sections. Preserve supplied lyrics and their language. Full planning includes melody and chords; melody planning omits chord planning; off skips symbolic planning. These are execution choices, not text tokens to paste into the song.",
+      "slopfab_support": "Use prompt for style and lyrics for the lyric input. Slopfab supports full/melody/off planning, but not the upstream cover workflow, external ABC-score input, reference audio or score editing. Empty lyrics alone is not a reliable instrumental instruction: explicitly ask for instrumental music in the caption. Duration is a ceiling; the model may finish earlier. Loop seams and exact tempo require listening/editing, not just a caption.",
+      "sources": ["https://huggingface.co/m-a-p/YuE2-3B"],
+      "implementation": ["docs/music-models.md"]
+    },
+    "minimax_music3": {
+      "name": "MiniMax Music3",
+      "guidance": "A short music description is usable. For detailed control, write Global Metadata, Vocal Details and Arrangement in that order. Describe the musical identity, vocal configuration and how instruments enter, change or leave across sections. Keep actual lyrics in the separate lyrics input. Carry musical instructions from lyric-section tags into the corresponding arrangement section. Preserve instrumental requests and explicit exclusions. Do not invent exact BPM, key or vocal traits when the user has not established them. Musical controls are generative guidance, not timing guarantees.",
+      "slopfab_support": "Map the caption to prompt and song text to lyrics, not to service-specific instructions/input fields. Lyrics section tags may include [Verse], [Chorus] and [Outro]. Slopfab preserves the local decoder's native WAV output; hosted service sample-rate descriptions do not override it. No audio-reference/cover input or symbolic planning is exposed for this model. A five-minute request is a maximum, not a promise to sing every supplied line.",
+      "sources": ["https://huggingface.co/MiniMaxAI/MiniMax-Music3", "https://github.com/MiniMax-AI/MiniMax-Music3/blob/main/skills/music-caption-rewriter/SKILL.md"],
+      "implementation": ["docs/music-models.md"]
+    }
+  },
+  "guides": [
+    {
+      "model": "h3", "use_case": "t2va", "title": "Video from text, without frame references",
+      "guidance": "Build an observable audiovisual sequence from the brief. No image-alignment prelude is needed. Do not invent reference labels for absent files.",
+      "prompt_template": "integrated_multimodal_description: [Shot 1] {{visual_action_camera_and_dialogue}}\n\noverall_soundscape: {{ambience_and_physical_sounds}}\n\nnon_diegetic_music: {{score_or_N/A}}",
+      "example": {"prompt": "integrated_multimodal_description: [Shot 1] A watercolor animation shows a paper boat drifting past reeds in a shallow stream. The camera tracks slowly beside it; a small ripple turns the boat toward a patch of sunlight.\n\noverall_soundscape: Water trickles between stones and reeds brush against the paper hull.\n\nnon_diegetic_music: N/A"}
+    },
+    {
+      "model": "h3", "use_case": "i2va", "title": "First-frame reference: develop forward from the image",
+      "guidance": "Inspect the opening image. Describe its actual state before the next action. Preserve its subjects and composition. Map the declared first frame to Picture 1; this is an intended prompt role, not a hard pixel lock.",
+      "binding": "Use --reference-image FIRST with compatible Ref2VA weights. Slopfab has no --first-frame generation flag; that name belongs only to prompts select. Ordinary reference conditioning does not guarantee an exact first frame.",
+      "prompt_template": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\nintegrated_multimodal_description: [Shot 1] {{observed_opening_then_action}}\n\noverall_soundscape: {{ambience_and_physical_sounds}}\n\nnon_diegetic_music: {{score_or_N/A}}",
+      "example": {"prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\nintegrated_multimodal_description: [Shot 1] The opening matches the supplied still of a folded paper boat beside the reeds. A ripple lifts its bow and carries it into the stream as the camera slowly tracks right.\n\noverall_soundscape: Gentle water movement and a soft scrape of paper on wet stone.\n\nnon_diegetic_music: N/A", "assumption": "Example image depicts the described paper boat; replace with observations of the user's image."}
+    },
+    {
+      "model": "h3", "use_case": "fl2va", "title": "First and last frames: connect both endpoint states",
+      "guidance": "Inspect both images and describe a feasible transition between them. Keep one shot unless cuts were requested. Picture 1 is the opening and Picture 2 is the final state; the latter must not appear immediately.",
+      "binding": "Use --reference-image FIRST and --end-anchor LAST with compatible Ref2VA weights; the ending is temporally anchored, while the ordinary opening reference is guided by the prompt. Do not choose FL2VA weights merely because the prompt mode is named FL2VA. Do not attach LAST twice as both a generic reference and an end anchor.",
+      "prompt_template": "How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot {{last_shot}}) aligns with the {{duration}}-second mark of the target video.\n\nintegrated_multimodal_description: [Shot 1] {{opening_state_intermediate_changes_final_state}}\n\noverall_soundscape: {{ambience_and_physical_sounds}}\n\nnon_diegetic_music: {{score_or_N/A}}",
+      "example": {"prompt": "How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) aligns with the 5.88-second mark of the target video.\n\nintegrated_multimodal_description: [Shot 1] In one steady tabletop shot, hands gradually unfold the closed blue paper lantern shown in the opening image. Its ribs spread evenly and the handle rises, reaching the fully opened lantern in the ending image.\n\noverall_soundscape: Crisp paper folds and light fingertip taps on the wooden table.\n\nnon_diegetic_music: N/A", "assumption": "Two matching lantern states and a validated 5.88-second sampling window; replace all of these for the actual request."}
+    },
+    {
+      "model": "h3", "use_case": "l2va", "title": "Last-frame reference: arrive at the image at the end",
+      "guidance": "Infer a plausible earlier state and progressively converge to the supplied image. A lone last-frame image is Picture 1, not Picture 2. Do not treat it as an opening reference.",
+      "binding": "Use --end-anchor LAST, without a generic duplicate. This works with compatible FL2VA or Ref2VA weights and the ordinary image-capable conditioner. Use the resolved sampling-window duration, not a guessed length.",
+      "prompt_template": "How the reference pictures align with the target video — <Picture 1> (from [Shot {{last_shot}}]) aligns with the {{duration}}-second mark of the target video.\n\nintegrated_multimodal_description: [Shot 1] {{preceding_state_action_convergence_to_last_image}}\n\noverall_soundscape: {{ambience_and_physical_sounds}}\n\nnon_diegetic_music: {{score_or_N/A}}",
+      "example": {"prompt": "How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the 5.88-second mark of the target video.\n\nintegrated_multimodal_description: [Shot 1] A hand brings a small brass compass into view and sets it on a folded map. The camera settles into the overhead composition of the supplied ending image as the compass needle comes to rest.\n\noverall_soundscape: A light metallic click and the rustle of paper.\n\nnon_diegetic_music: N/A", "assumption": "Ending image shows a compass on a map; substitute the actual observed scene and validated duration."}
+    },
+    {
+      "model": "h3", "use_case": "ref2va", "title": "Identity, style, video or audio references",
+      "guidance": "Use six sections in order. Define stable Subject, Picture, Video and Audio labels only for assets and roles actually used. Summarize the task, explain retained versus changed properties, then describe each shot in playback order. A subject/style image is not automatically a first frame. Reference audio is not necessarily copied audio.",
+      "binding": "Use compatible Ref2VA weights. Keep image/video/audio labels consistent with supplied input order and Slopfab conditioning; inspect plans when mixed references or refmods are used. Reference-audio requests require a visual reference. Do not claim audio reuse unless the execution path actually preserves the signal.",
+      "prompt_template": "subject_definitions: {{stable_labels_and_asset_roles}}\n\nsummary: [{{actual_task_types}}] {{target_and_reference_relationships}}\n\nretention_analysis: {{what_is_preserved_and_what_changes}}\n\ndetailed_description: [Shot 1] {{observable_action_camera_and_sound}}\n\noverall_soundscape: {{ambience_and_physical_sounds}}\n\nnon_diegetic_music: {{score_or_N/A}}",
+      "example": {"prompt": "subject_definitions: <Subject 1> uses the shape and blue enamel finish of the kettle in input image 1.\n\nsummary: [reference generation] A studio product shot presents <Subject 1> on a pale stone shelf.\n\nretention_analysis: Retain the handle, spout and enamel color; replace the source background with the stone shelf.\n\ndetailed_description: [Shot 1] Soft side light moves across <Subject 1> as the camera makes a slow, shallow arc around the shelf.\n\noverall_soundscape: Quiet room ambience.\n\nnon_diegetic_music: N/A"}
+    },
+    {
+      "model": "h3", "use_case": "continuation", "title": "Long single shots, latent endings and bridges",
+      "guidance": "Describe the next action from the actual current state and maintain the approved identity, lighting and camera trajectory. Continue from the latest saved archive; retain the original for Keystone/Capstone appearance anchors when compatible. Use overlap locking for continuity. Capstone is not a destination-frame instruction. Ending anchors and Keystone cannot be combined in Slopfab. For bridges, describe the gap between the two existing clips. Review full joined output and sound at boundaries; do not concatenate cumulative renders.",
+      "binding": "This is Slopfab-specific workflow guidance. Timestamp the sampling window, not the full cumulative result or only the newly added frames. A latent archive is not a Picture label. Add image-alignment text only for actual image inputs, after verifying their ordering. Use help generate for compatible locking and endpoint controls.",
+      "prompt_template": "integrated_multimodal_description: [Shot 1] {{current_state_then_next_continuous_action}}\n\noverall_soundscape: {{continuing_ambience_and_synchronized_sounds}}\n\nnon_diegetic_music: {{continuing_score_or_N/A}}",
+      "example": {"prompt": "integrated_multimodal_description: [Shot 1] The same cyclist continues along the riverside path in one uninterrupted tracking shot. The camera maintains its distance and height as the path curves gently beneath a stone bridge.\n\noverall_soundscape: Tire noise and the bicycle chain remain continuous; the river grows quieter under the bridge.\n\nnon_diegetic_music: N/A"}
+    },
+    {
+      "model": "h3", "use_case": "image", "title": "H3 still image",
+      "guidance": "Slopfab's still-image mode needs a static visual brief: subject, position, materials, environment, framing and light. Do not describe a multi-shot timeline or request audio from a single image. H3 video prompt schemas are not a requirement for this local still-image use case.",
+      "prompt_template": "{{subject_and_relationships}}; {{framing_background_light_and_style}}; {{exact_visible_text_if_any}}",
+      "example": {"prompt": "A small copper kettle on a pale stone shelf, close framing with empty space above, soft morning side light and subtle brushed-metal texture."}
+    },
+    {
+      "model": "h3", "use_case": "edit", "title": "H3 local image edit or outpaint",
+      "guidance": "State the desired content in the changed area and the appearance that must remain consistent outside it. The execution mask/rectangle determines edit scope; prompt prose alone does not enforce a protected region. Match source perspective and lighting. Describe newly exposed surroundings for outpainting.",
+      "prompt_template": "{{desired_edited_scene}}. Preserve {{approved_unaffected_details}}. Match {{source_perspective_and_light}}.",
+      "example": {"prompt": "Replace the blank label with a small blue botanical illustration. Preserve the jar shape, table and reflections. Match the soft light falling from the left."}
+    },
+    {
+      "model": "krea2", "use_case": "image", "title": "Text-to-image exploration or a precise visual brief",
+      "guidance": "Separate what is depicted from its aesthetic treatment. State nonnegotiable composition details first. If the user wants exploration, compare a few distinct styles before expanding the chosen direction.",
+      "prompt_template": "{{subject_and_setting}}. {{composition_medium_palette_light_and_materials}}. {{exact_visible_text_if_needed}}.",
+      "example": {"prompt": "A red wool scarf draped over a pale blue chair. Intimate editorial photograph, off-center framing, overcast window light, visible woven fibers, subdued colors and fine film grain."}
+    },
+    {
+      "model": "moss", "use_case": "image", "title": "Descriptive image caption and typography",
+      "guidance": "Write the desired picture, including spatial relationships and exact readable text. Put line breaks where the design needs them. Keep negative exclusions in negative_prompt rather than mixing them with the positive caption.",
+      "prompt_template": "{{scene_composition_and_visual_style}}. {{objects_and_positions}}. Visible text: \"{{exact_text}}\"; {{text_placement_and_line_breaks}}.",
+      "example": {"prompt": "A clean cream-colored stationery poster. A navy ink drawing of a fountain pen occupies the lower right, leaving generous empty space above. The large heading reads \"WRITE\nSOMETHING\" on two centered lines, with simple dark-blue lettering."}
+    },
+    {
+      "model": "moss", "use_case": "layout", "title": "Explicit spatial layout in JSON",
+      "guidance": "Compose valid JSON, not fenced Markdown inside the generation prompt. Place boxes in the chosen canvas's centered pixel coordinates. For 1024x1024, both axes run from -512 to +512. Recalculate boxes whenever resolution changes. This is generative layout control, not guaranteed pixel placement.",
+      "prompt_template": "{\"summary\":{\"caption\":\"{{overall_scene}}\"},\"items\":[{\"label\":\"text\",\"caption\":\"{{text_appearance}}\",\"text\":\"{{exact_text}}\",\"bbox\":[{{y_min}},{{x_min}},{{y_max}},{{x_max}}]}],\"bbox_format\":\"yxyx\",\"bbox_coord_space\":\"abs_centralized\"}",
+      "example": {"prompt": "{\"summary\":{\"caption\":\"A cream book cover with a small green leaf beneath the heading.\"},\"items\":[{\"label\":\"text\",\"caption\":\"Centered dark-green serif heading.\",\"text\":\"FIELD NOTES\",\"bbox\":[-400,-420,-220,420]},{\"label\":\"object\",\"caption\":\"A single hand-painted green leaf.\",\"bbox\":[-100,-160,240,160]}],\"bbox_format\":\"yxyx\",\"bbox_coord_space\":\"abs_centralized\"}", "resolution": {"width":1024,"height":1024}}
+    },
+    {
+      "model": "fibo2", "use_case": "image", "title": "Zero-reference generation with the locally supported checkpoint",
+      "guidance": "Prefer a structured description of the final image for precise briefs. Keep the edit_instruction wrapper because Slopfab parses structured_caption through it, even with zero references. Treat Turbo generation as an implementation capability, not upstream Dev equivalence.",
+      "prompt_template": "{\"edit_instruction\":\"Generate {{brief}}\",\"structured_caption\":{\"short_description\":\"{{desired_scene}}\",\"background_setting\":\"{{background}}\",\"style_medium\":\"{{medium}}\"}}",
+      "example": {"prompt": "{\"edit_instruction\":\"Generate a still life of a glass pitcher.\",\"structured_caption\":{\"short_description\":\"A clear glass pitcher holding three sprigs of rosemary on a linen-covered table.\",\"background_setting\":\"A soft gray studio backdrop.\",\"lighting\":{\"conditions\":\"diffused daylight\",\"direction\":\"from the left\"},\"style_medium\":\"photograph\"}}"}
+    },
+    {
+      "model": "fibo2", "use_case": "edit", "title": "Instruction-based or masked image editing",
+      "guidance": "Use one unambiguous edit instruction. Add structured_caption when the desired result needs a precise description. Use the execution mask/rectangle for locality; retain original framing unless the user asks otherwise.",
+      "prompt_template": "{\"edit_instruction\":\"{{requested_change_and_preservation_constraints}}\",\"structured_caption\":{\"short_description\":\"{{complete_result_description}}\"}}",
+      "example": {"prompt": "{\"edit_instruction\":\"Change only the umbrella fabric to deep green. Preserve its shape, the person's face and the rainy street.\",\"structured_caption\":{\"short_description\":\"The same person stands on the wet street holding a deep-green umbrella.\"}}"}
+    },
+    {
+      "model": "fibo2", "use_case": "multi-reference", "title": "Combine roles from two to four image references",
+      "guidance": "Identify image_1, image_2 and so on in supplied order. Say which image supplies the scene, object, identity or style, and describe the resulting composition. Do not invent image_N entries in the structured prompt; Slopfab inserts the image tokens.",
+      "binding": "Use an ordinary ordered --reference-image list. Do not combine this with a masked single-source edit.",
+      "prompt_template": "{\"edit_instruction\":\"{{role_of_each_image_and_requested_combination}}\",\"structured_caption\":{\"short_description\":\"{{result}}\"}}",
+      "example": {"prompt": "{\"edit_instruction\":\"Place the ceramic bowl from image_2 on the empty table in image_1. Preserve the room and match its window light.\",\"structured_caption\":{\"short_description\":\"The original dining room with the referenced ceramic bowl centered on its table.\"}}"}
+    },
+    {
+      "model": "yue2", "use_case": "song", "title": "Style caption with separately supplied lyrics",
+      "guidance": "Establish whether vocals are wanted; this general guide does not infer that from missing lyrics. For a song, fit the lyric sections to the requested length, preserve their wording, and describe vocal treatment in the style caption. Plan an instrumental break or ending explicitly when requested.",
+      "prompt_template": "{{genre_groove_instruments_vocal_delivery_and_arrangement}}",
+      "lyrics_template": "[Verse]\n{{user_verse}}\n\n[Chorus]\n{{user_chorus}}",
+      "example": {"prompt": "An intimate acoustic folk song with a relaxed lead vocal, fingerpicked nylon guitar and a low bowed bass. Begin sparsely, add soft brushed percussion for the chorus, and end with a short guitar cadence.", "lyrics": "[Verse]\nWe leave a lantern by the door\nIts little light falls on the floor\n\n[Chorus]\nFollow the glow, follow it home\nThere is a place for you to come"}
+    },
+    {
+      "model": "yue2", "use_case": "instrumental", "title": "Instrumental cue or background track",
+      "guidance": "Explicitly request no singing or spoken voice and leave lyrics empty. Identify the lead instrument, accompaniment, rhythmic density and ending. Planning off is available for a direct route; choose it deliberately rather than inserting planning instructions into the caption.",
+      "prompt_template": "Instrumental, no vocals or speech. {{style_lead_accompaniment_rhythm_development_and_ending}}",
+      "example": {"prompt": "Instrumental, no vocals or speech. A quiet felt-piano cue with slow repeating notes, a warm cello underneath and a restrained rise in intensity. Resolve gently with space for the final notes to decay.", "lyrics": ""}
+    },
+    {
+      "model": "minimax_music3", "use_case": "song", "title": "Structured song caption and independent lyrics",
+      "guidance": "Clarify vocal intent first. For songs, describe verse/chorus transitions and vocal texture without placing sung words in the caption. Reflect section-local musical tags in Arrangement while leaving lyrics separate.",
+      "prompt_template": "### Global Metadata\n{{genre_tempo_energy_and_production}}\n\n### Vocal Details\n{{lead_delivery_and_backing_vocals}}\n\n### Arrangement\n{{section_by_section_changes_and_ending}}",
+      "lyrics_template": "[Verse]\n{{user_verse}}\n\n[Chorus]\n{{user_chorus}}",
+      "example": {"prompt": "### Global Metadata\nA relaxed soul-pop song with a gently syncopated groove and close, warm production.\n\n### Vocal Details\nOne soft, conversational lead, with a small harmony stack entering only in the chorus.\n\n### Arrangement\nThe verse starts with electric piano and bass. Brushed drums join at the chorus; the final phrase returns to piano alone.", "lyrics": "[Verse]\nA cup of tea beside the rain\nA quiet hour is ours again\n\n[Chorus]\nLet the city hurry by\nWe have time beneath this sky"}
+    },
+    {
+      "model": "minimax_music3", "use_case": "instrumental", "title": "Structured instrumental score",
+      "guidance": "Keep the Vocal Details section and explicitly declare instrumental music there. Name the instrument carrying the melody. Describe entrances, development and an ending rather than a static equipment list; leave lyrics empty.",
+      "prompt_template": "### Global Metadata\n{{style_tempo_production}}\n\n### Vocal Details\nInstrumental; no vocals or speech. {{lead_instrument_role}}\n\n### Arrangement\n{{musical_development_and_ending}}",
+      "example": {"prompt": "### Global Metadata\nA spacious, slow chamber-music cue with a clear acoustic recording.\n\n### Vocal Details\nInstrumental; no vocals or speech. A solo clarinet carries the melody.\n\n### Arrangement\nBegin with clarinet alone, introduce muted strings beneath its second phrase, then let the strings fall away for a short final clarinet cadence.", "lyrics": ""}
+    }
+  ]
+}

@@ -70,6 +70,25 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"prompts", "slopfab prompts list|get|select [options]",
+     "Retrieve offline model-specific prompting guidance, templates and examples before writing generation prompts.",
+     "  prompts list [--model NAME]          index supported models and use cases\n"
+     "  prompts get MODEL USE_CASE           load a guide; e.g. h3 fl2va, moss layout, minimax_music3 song\n"
+     "  prompts select --model NAME [options] select by intent and return a guide with reference bindings\n"
+     "  --task video|image|music             default: model's primary task\n"
+     "  --first-frame FILE --last-frame FILE intended endpoints; select I2VA, L2VA or FL2VA\n"
+     "  --reference-image FILE               ordinary identity/style/content reference; repeatable\n"
+     "  --reference-video FILE --reference-audio FILE   ordinary H3 references; repeatable\n"
+     "  --edit-image FILE                    source for local image editing\n"
+     "  --layout                            MOSS spatial-layout JSON guide\n"
+     "  --instrumental                      music without vocals; otherwise clarify vocal intent\n"
+     "  --continuation                      H3 long-shot/latent continuation guide\n"
+     "  --duration SECONDS --shots N         video template timing; validated sampling window, default 1 shot\n"
+     "Model names: h3, krea2, moss, fibo2, yue2, minimax_music3; configured aliases also work.\n"
+     "These selectors retrieve context only; they neither read files nor generate media.\n"
+     "--first-frame and --last-frame belong to prompts select, not generate. Follow the guide's binding instructions.\n"
+     "Ordinary references do not imply first frames. Mixed endpoint/reference roles require explicit Ref2VA mapping.\n"
+     "Guides include local capability limits, source links and original examples; fill placeholders for the actual brief.\n"},
     {"projects", "slopfab projects ACTION [NAME] [ITEM_ID] [options]",
      "Organize generation results in an output folder with an offline review page and copyable agent edit prompts.",
      "  projects create NAME [--title TEXT]   create project.json, PROJECT.md and index.html\n"
@@ -510,6 +529,8 @@ const CommandHelp* find_command(std::string_view name) {
 // True when the argument list asks for help. Checked before any other option,
 // so `--help` works even alongside otherwise invalid arguments.
 bool option_takes_value(std::string_view a, std::string_view command) {
+  if (command == "prompts" && (a == "--layout" || a == "--instrumental" || a == "--continuation"))
+    return false;
   if (command == "decode" && a == "--bench-load")
     return false;
   if (a.rfind("--", 0) != 0 || a.find('=') != std::string_view::npos)

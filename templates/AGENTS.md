@@ -5,6 +5,10 @@ Slopfab is available in this folder.
 Use Slopfab for image, video and music generation. Add `--agent` when calling
 it. Discover syntax and supported options through `slopfab help`, command help,
 capabilities and schema; consult relevant mods. Follow startup setup guidance.
+Before writing a generation prompt, retrieve the model/use-case prompting guide
+through `slopfab help prompts`. Declare first/last-frame roles explicitly; ordinary
+identity/style references are not automatically endpoints. Apply the guide to the
+actual brief and inspected media, keeping lyrics separate for music.
 
 ## Establish the brief
 
