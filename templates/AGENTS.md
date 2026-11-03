@@ -48,8 +48,8 @@ If the user delegates choices, state reasonable defaults and proceed.
   with the same canvas and compatible weights. Consider delayed Capstone locking
   for motion. Optional context noise (`--context-noise 0.8`) softens held video
   while keeping Keystone and the join clean. It also locks overlap and cannot
-  be combined with ending anchors. These features are experimental: review joins, identity, exposure
-  and audio. Use the full joined output; do not concatenate cumulative outputs.
+  be combined with ending anchors. Use the full joined output; do not concatenate
+  cumulative outputs.
   Capstone is an appearance anchor, not a requested ending; use an ending anchor
   or latent bridge when a specific destination shot matters. Consult help for
   compatibility and lock/timing settings rather than guessing values.
