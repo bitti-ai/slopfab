@@ -4,6 +4,7 @@
 #include "cli/settings.h"
 #include "cli/mods.h"
 #include "cli/script.h"
+#include "cli/motions.h"
 #include "cli/projects.h"
 #include "cli/prompting.h"
 #include <cstdio>
@@ -99,6 +100,8 @@ int cli_main(int argc, char** argv) {
       return mods_command(args);
     if (command == "run")
       return script_command(args);
+    if (command == "motions")
+      return motions_command(args);
     if (command == "prompts")
       return prompts_command(args);
     if (command == "projects")

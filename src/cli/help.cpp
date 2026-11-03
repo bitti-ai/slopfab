@@ -70,6 +70,23 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"motions", "slopfab motions render|frame FILE.js --out FILE [options]",
+     "Render JavaScript vector Motions with ThorVG; export video or overlay existing video.",
+     "  render FILE.js --out VIDEO.mp4|.mov|.webm   render animation; MOV/WebM preserve alpha\n"
+     "  frame FILE.js --out IMAGE.png|.svg         render a still; --time SECONDS selects time\n"
+     "  --over VIDEO                composite over video; preserve base duration and audio\n"
+     "  --audio AUDIO               supply/replace audio (e.g. generated WAV alongside Y4M)\n"
+     "  --width N --height N        canvas size (default 1280x720 or script definition)\n"
+     "  --fps N --duration SECONDS  timeline (default 30 fps, 5 seconds or script definition)\n"
+     "  --x N --y N                 overlay placement (default 0,0)\n"
+     "  --overwrite                 replace an existing output atomically\n"
+     "  --memory-mb N --timeout-ms N JavaScript limits, as with run\n"
+     "  --ffmpeg PATH               external video encoder override\n"
+     "Module: export default {width,height,fps,duration,frame:ctx=>SVG_STRING};\n"
+     "or export a factory receiving script arguments after --. Import {motions} from 'slopfab'.\n"
+     "motions.svg(w,h,body), element(tag,attrs,children), text(text,attrs), font(name,path),\n"
+     "and render(options,frame) are available to workflows. ctx: frame,time,progress,width,height,fps,frames.\n"
+     "PNG/SVG need no FFmpeg. Video export requires FFmpeg. See docs/motions.md.\n"},
     {"run", "slopfab run FILE.js [-- ARGS...] | run --eval SOURCE",
      "Run an embedded QuickJS workflow with filesystem, HTTP, process and CLI APIs.",
      "  run FILE.js -- ARGS...       run an ES module; optional default export is called with args\n"

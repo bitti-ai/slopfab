@@ -42,7 +42,8 @@ void read(std::istream& in, void* p, size_t n) {
 }
 }
 
-void write_png(const std::string& path, const uint8_t* rgb, int width, int height) {
+static void write_png_channels(const std::string& path, const uint8_t* rgb, int width, int height,
+                               int channels) {
   if (!rgb || width <= 0 || height <= 0 || uint64_t(width) * height > (1ull << 28))
     throw std::invalid_argument("invalid PNG dimensions");
   std::ofstream out(std::filesystem::u8path(path), std::ios::binary);
@@ -51,15 +52,15 @@ void write_png(const std::string& path, const uint8_t* rgb, int width, int heigh
   std::vector<uint8_t> header;
   be32(header, width);
   be32(header, height);
-  header.insert(header.end(), {8, 2, 0, 0, 0});
+  header.insert(header.end(), {8, uint8_t(channels == 4 ? 6 : 2), 0, 0, 0});
   chunk(out, "IHDR", header);
   // zlib stream with stored DEFLATE blocks. No external codec or runtime.
   // Each row is emitted separately to bound scratch memory.
   uint32_t a = 1, b = 0;
   bool first = true;
   for (int y = 0; y < height; ++y) {
-    std::vector<uint8_t> row(size_t(width) * 3 + 1);
-    std::memcpy(row.data() + 1, rgb + size_t(y) * width * 3, size_t(width) * 3);
+    std::vector<uint8_t> row(size_t(width) * channels + 1);
+    std::memcpy(row.data() + 1, rgb + size_t(y) * width * channels, size_t(width) * channels);
     for (auto byte : row) {
       a = (a + byte) % 65521;
       b = (b + a) % 65521;
@@ -85,6 +86,14 @@ void write_png(const std::string& path, const uint8_t* rgb, int width, int heigh
   out.close();
   if (!out)
     throw std::runtime_error("cannot write PNG: " + path);
+}
+
+void write_png(const std::string& path, const uint8_t* rgb, int width, int height) {
+  write_png_channels(path, rgb, width, height, 3);
+}
+
+void write_png_rgba(const std::string& path, const uint8_t* rgba, int width, int height) {
+  write_png_channels(path, rgba, width, height, 4);
 }
 
 NativeVideo read_y4m(const std::string& path) {

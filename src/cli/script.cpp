@@ -1,4 +1,5 @@
 #include "script.h"
+#include "motions.h"
 #include "script_host.h"
 #include "script_bootstrap.h"
 #include "commands.h"
@@ -110,12 +111,16 @@ struct Runtime {
   uint64_t timeout;
   std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
   ScriptProcesses processes;
+  Motions motions;
   Value result;
   bool has_result = false;
   std::map<void*, std::string> rejections;
 
   Runtime(size_t memory_mb, uint64_t timeout_ms)
       : timeout(timeout_ms), processes([this] {
+          check();
+        }),
+        motions([this] {
           check();
         }) {
     rt = JS_NewRuntime();
@@ -189,6 +194,8 @@ struct Runtime {
 
 Value host_call(Runtime& r, const std::string& op, const Array& args) {
   r.check();
+  if (op.rfind("motions.", 0) == 0)
+    return r.motions.call(op.substr(8), args);
   const auto s = [&](size_t i) -> const std::string& {
     return args.at(i).as_string();
   };
@@ -426,7 +433,7 @@ JSModuleDef* load_module(JSContext* ctx, const char* name, void*) {
     const auto source =
         std::string(name) == "slopfab"
             ? std::string(
-                  "export default globalThis.slopfab; export const {fs,path,http,exec,spawn,cli,env,sleep,sha256,tool,args}=globalThis.slopfab;")
+                  "export default globalThis.slopfab; export const {fs,path,http,exec,spawn,cli,env,sleep,sha256,tool,args,motions}=globalThis.slopfab;")
             : read_file(path_arg(name));
     Owned compiled(ctx, JS_Eval(ctx, source.data(), source.size(), name,
                                 JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY));

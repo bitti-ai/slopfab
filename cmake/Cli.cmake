@@ -1,5 +1,6 @@
 # --- cli --------------------------------------------------------------------
 include(cmake/QuickJS.cmake)
+include(cmake/ThorVG.cmake)
 
 set(SLOPFAB_CLI_SOURCES src/main.cpp src/cli/startup.cpp src/cli/settings.cpp src/cli/mods.cpp src/cli/agent.cpp src/cli/request.cpp src/cli/jobs.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/templates/project.html")
@@ -21,7 +22,8 @@ configure_file(src/cli/prompting_catalog.h.in generated/prompting_catalog.h @ONL
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 target_sources(slopfab PRIVATE src/cli/script.cpp src/cli/script_process.cpp src/cli/script_http.cpp src/cli/pipe_process.cpp)
-target_link_libraries(slopfab PRIVATE slopfab_quickjs)
+target_sources(slopfab PRIVATE src/cli/motions.cpp)
+target_link_libraries(slopfab PRIVATE slopfab_quickjs slopfab_thorvg)
 if(WIN32)
   target_link_libraries(slopfab PRIVATE winhttp)
   if(MSVC)

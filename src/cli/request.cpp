@@ -487,6 +487,10 @@ Value capabilities() {
   return Value(Object{
       {"version", str(kVersion)},
       {"protocol_version", num(1)},
+      {"motions", Value(Object{{"renderer",str("ThorVG 1.1.3")}, {"runtime",str("embedded JavaScript")},
+        {"command",str("slopfab motions render|frame FILE.js --out FILE")},
+        {"formats",Value(Array{str("svg"),str("png"),str("mp4"),str("mov"),str("webm")})},
+        {"overlay",Value(true)}, {"video_encoder",str("external FFmpeg")}, {"cli_only",Value(true)}})},
       {"scripting", Value(Object{{"engine",str("QuickJS-NG 0.18.0")}, {"api_version",num(1)},
           {"command",str("slopfab run FILE.js -- ARGS")},
           {"apis",Value(Array{str("filesystem"),str("binary files"),str("paths"),str("processes"),

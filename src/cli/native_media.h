@@ -7,6 +7,7 @@
 namespace slopfab::cli {
 // Native, dependency-free PNG encoding. Pixels are interleaved RGB8.
 void write_png(const std::string& path, const uint8_t* rgb, int width, int height);
+void write_png_rgba(const std::string& path, const uint8_t* rgba, int width, int height);
 
 struct NativeVideo {
   int width = 0, height = 0;

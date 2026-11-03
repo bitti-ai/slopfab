@@ -11,8 +11,7 @@ endforeach()
 # The portable rasterizer works on all supported CPUs, without forcing AVX2.
 list(FILTER thorvg_sources EXCLUDE REGEX "tvgSwRasterSimd.cpp$")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/thorvg")
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/thorvg/config.h"
-  "#pragma once\n#define THORVG_VERSION_STRING \"1.1.3\"\n#define THORVG_CPU_ENGINE_SUPPORT 1\n#define THORVG_SVG_LOADER_SUPPORT 1\n#define THORVG_SFNT_LOADER_SUPPORT 1\n#define THORVG_TTF_LOADER_SUPPORT 1\n#define THORVG_OTF_LOADER_SUPPORT 1\n#define THORVG_PNG_LOADER_SUPPORT 1\n#define THORVG_FILE_IO_SUPPORT 1\n")
+configure_file(cmake/thorvg_config.h.in generated/thorvg/config.h COPYONLY)
 add_library(slopfab_thorvg STATIC ${thorvg_sources})
 target_include_directories(slopfab_thorvg SYSTEM PUBLIC "${thorvg_root}/inc")
 target_include_directories(slopfab_thorvg PRIVATE ${thorvg_includes} "${CMAKE_CURRENT_BINARY_DIR}/generated/thorvg")

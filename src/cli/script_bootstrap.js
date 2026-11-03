@@ -49,7 +49,45 @@
       return JSON.parse(response.body);
     }
   };
-  globalThis.slopfab = Object.freeze({...__slopfabInfo, fs, path, http, exec, spawn, cli,
+  const escapeXML = value => String(value).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+  const element = (name, attributes = {}, children = '') => {
+    if (!/^[A-Za-z][\w:-]*$/.test(name)) throw new TypeError('Invalid SVG element name');
+    const attrs = Object.entries(attributes).map(([key, value]) => {
+      if (!/^[A-Za-z_][\w:.-]*$/.test(key)) throw new TypeError('Invalid SVG attribute name');
+      return ` ${key}="${escapeXML(value)}"`;
+    }).join('');
+    return `<${name}${attrs}>${Array.isArray(children) ? children.join('') : children}</${name}>`;
+  };
+  const motions = Object.freeze({
+    escape: escapeXML, element,
+    svg: (width, height, body) => element('svg', {xmlns:'http://www.w3.org/2000/svg',
+      width, height, viewBox:`0 0 ${width} ${height}`}, body),
+    text: (text, attributes = {}) => element('text', attributes, escapeXML(text)),
+    font: (name, file) => host('motions.font', name, file),
+    render: async (options, frame = options.frame) => {
+      if (typeof frame !== 'function') throw new TypeError('Motion needs frame(context)');
+      const still = /\.(png|svg)$/i.test(options.output || '');
+      const at = options.time ?? 0;
+      if (!Number.isFinite(at) || at < 0) throw new TypeError('Motion time must be nonnegative');
+      const session = host('motions.start', options);
+      try {
+        for (let i = 0; i < session.frames; ++i) {
+          const time = still ? at : i / session.fps;
+          const context = {...session, frame:still ? Math.round(time*session.fps) : i, time,
+            progress:still ? Math.min(time/session.duration,1) : session.frames > 1 ? i/(session.frames-1) : 0};
+          const svg = await frame(context);
+          if (typeof svg !== 'string') throw new TypeError('Motion frame must return SVG markup');
+          host('motions.frame', session.id, svg);
+        }
+        return host('motions.finish', session.id);
+      } catch (error) {
+        try { host('motions.cancel', session.id); } catch {}
+        throw error;
+      }
+    }
+  });
+  globalThis.slopfab = Object.freeze({...__slopfabInfo, fs, path, http, exec, spawn, cli, motions,
     cwd: () => host('cwd'),
     chdir: dir => host('chdir', dir),
     env: Object.freeze({get: key => host('env.get', key), set: (key, value) => host('env.set', key, value)}),
