@@ -1,3 +1,5 @@
+1
+
 # Slopfab media generation
 
 Slopfab is available in this folder.
@@ -79,5 +81,8 @@ too. The page uses exact manifest paths, not a folder scan. Preserve stable IDs,
 previous versions, unrelated items and saved latents needed for continuation.
 Use external FFmpeg for browser-friendly previews of native Y4M/PPM, keeping
 video soundtracks synchronized. After clip changes, rebuild and register the
-parent video, refresh the page, and give the user its path. Pasted page prompts
+parent video and refresh the page. Present the project's `index.html` link as an
+absolute `file://` URL so the user can click it in the terminal, for example
+`file:///D:/Projects/output/my-project/index.html`. Use forward slashes and
+percent-encode spaces and other reserved URL characters in the path. Pasted page prompts
 are edit requests; reconcile them with the latest project state before acting.

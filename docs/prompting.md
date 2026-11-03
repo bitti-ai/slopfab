@@ -48,8 +48,9 @@ generation. A bare `prompts` lists the catalog; `help prompts` describes selecto
    rewrite prompts or apply templates inside `generate`.
 
 The generated `AGENTS.md`, startup help and `capabilities` advertise the catalog.
-Existing `AGENTS.md` files remain untouched; agents in those directories can
-discover guides through normal help and capabilities.
+Agent launches upgrade older `AGENTS.md` versions from the embedded template;
+equal or newer versions stay untouched. Guides are also available through normal
+help and capabilities.
 
 ## H3 frame roles and local execution
 

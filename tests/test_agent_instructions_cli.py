@@ -1,4 +1,4 @@
-"""One-time AGENTS.md creation and context delivery, without models or a GPU."""
+"""Versioned AGENTS.md creation/upgrades and context delivery, without models or a GPU."""
 import concurrent.futures
 import json
 from pathlib import Path
@@ -9,6 +9,9 @@ import tempfile
 exe = str(Path(sys.argv[1]).resolve())
 template = Path(__file__).resolve().parents[1] / "templates" / "AGENTS.md"
 expected = template.read_text(encoding="utf-8")
+version = int(expected.splitlines()[0])
+assert version > 0 and expected[0].isdigit()
+assert "`file://` URL" in expected and "index.html" in expected
 
 with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
     root = Path(temporary)
@@ -36,14 +39,33 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
         assert all("agent_context" not in event for event in run(fresh, "--agent", command))
     assert (fresh / "AGENTS.md").stat().st_mtime_ns == original_time
 
-    # Existing instructions, including intentionally empty ones, are preserved.
-    for n, content in enumerate((b"User instructions\r\nKeep these.\r\n", b"")):
+    # Older and unversioned files are replaced, including legacy generated files.
+    for n, content in enumerate((b"User instructions\r\nKeep these.\r\n", b"",
+                                 b"# Slopfab media generation\nOld bundled instructions.\n",
+                                 f"{version - 1}\r\nOld version\r\n".encode())):
         existing = root / f"existing-{n}"
         existing.mkdir()
         (existing / "AGENTS.md").write_bytes(content)
+        run(existing, "version")
+        assert (existing / "AGENTS.md").read_bytes() == content, "non-agent launch upgraded instructions"
         events = run(existing, "--agent", "help")
+        assert events[0]["agent_context"]["instructions"] == expected
+        assert (existing / "AGENTS.md").read_bytes() == expected.encode("utf-8")
+        assert all("agent_context" not in event for event in run(existing, "--agent", "help"))
+        assert not list(existing.glob("AGENTS.md.*.tmp"))
+
+    # Versions compare numerically; equal/newer content and timestamps stay intact.
+    for n, existing_version in enumerate((str(version), f"000{version}", str(version + 1),
+                                           str(version + 10), "9" * 80)):
+        preserved = root / f"preserved-{n}"
+        preserved.mkdir()
+        content = f"{existing_version}\r\nCustom instructions at this version.\r\n".encode()
+        file = preserved / "AGENTS.md"
+        file.write_bytes(content)
+        timestamp = file.stat().st_mtime_ns
+        events = run(preserved, "--agent", "help")
         assert all("agent_context" not in event for event in events)
-        assert (existing / "AGENTS.md").read_bytes() == content
+        assert file.read_bytes() == content and file.stat().st_mtime_ns == timestamp
 
     # The first invocation may be a failing command or a generation dry run.
     failed = root / "failed"
@@ -64,6 +86,12 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
         responses = list(pool.map(lambda _: run(simultaneous, "--agent", "version"), range(6)))
     assert sum("agent_context" in event for events in responses for event in events) == 1
     assert (simultaneous / "AGENTS.md").read_bytes() == expected.encode("utf-8")
+    (simultaneous / "AGENTS.md").write_text(f"{version - 1}\nOld instructions\n", encoding="utf-8")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        responses = list(pool.map(lambda _: run(simultaneous, "--agent", "version"), range(6)))
+    assert sum("agent_context" in event for events in responses for event in events) == 1
+    assert (simultaneous / "AGENTS.md").read_bytes() == expected.encode("utf-8")
+    assert not list(simultaneous.glob("AGENTS.md.*.tmp"))
 
     # Do not follow even a dangling AGENTS.md symlink to create another file.
     linked = root / "linked"
@@ -76,5 +104,9 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
     else:
         assert all("agent_context" not in event for event in run(linked, "--agent", "version"))
         assert not target.exists()
+        target.write_text("0\nKeep the linked file.\n", encoding="utf-8")
+        assert all("agent_context" not in event for event in run(linked, "--agent", "version"))
+        assert target.read_text(encoding="utf-8") == "0\nKeep the linked file.\n"
+        assert (linked / "AGENTS.md").is_symlink()
 
-print("PASS: one-time AGENTS.md context, existing-file preservation, per-folder setup and concurrent launches")
+print("PASS: versioned AGENTS.md upgrades, current/future preservation, per-folder context and concurrent launches")
