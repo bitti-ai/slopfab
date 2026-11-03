@@ -1,5 +1,6 @@
 #include "cli/commands.h"
 #include "cli/agent.h"
+#include "cli/agent_instructions.h"
 #include "cli/settings.h"
 #include "cli/mods.h"
 #include "cli/projects.h"
@@ -47,6 +48,7 @@ int cli_main(int argc, char** argv) {
     }
     initialize_agent(machine,
                      std::filesystem::absolute(std::filesystem::u8path(argv[0])).u8string());
+    ensure_agent_instructions();
     ensure_settings();
     if (args.empty()) {
       print_usage();

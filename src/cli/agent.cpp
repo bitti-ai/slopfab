@@ -106,6 +106,10 @@ void initialize_agent(bool enabled, const std::string& executable) {
 
 void emit(Object event, bool terminal) {
   std::lock_guard<std::mutex> lock(output_mutex);
+  if (context.enabled && !context.startup_context.is_null()) {
+    event["agent_context"] = context.startup_context;
+    context.startup_context = Value();
+  }
   event["schema_version"] = num(1);
   if (!context.job_id.empty())
     event["job_id"] = str(context.job_id);

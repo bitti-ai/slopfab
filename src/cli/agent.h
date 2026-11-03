@@ -45,6 +45,7 @@ struct AgentContext {
   int project_revision = 0;
   int project_manifest_revision = 0;
   Value last_event;
+  Value startup_context;
 };
 
 AgentContext& agent();

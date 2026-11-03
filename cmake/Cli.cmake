@@ -7,12 +7,16 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/templates/project.html" SLOPFAB_PROJECT_T
 # but use adjacent raw string literals for its individual lines.
 string(REPLACE "\n" "\n)SLOPFAB_HTML\"\nR\"SLOPFAB_HTML(" SLOPFAB_PROJECT_TEMPLATE "${SLOPFAB_PROJECT_TEMPLATE}")
 configure_file(src/cli/project_template.h.in generated/project_template.h @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/templates/AGENTS.md")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/templates/AGENTS.md" SLOPFAB_AGENT_INSTRUCTIONS)
+configure_file(src/cli/agent_instructions_template.h.in generated/agent_instructions_template.h @ONLY)
 
 # The CLI and C API use the same in-process CUDA core. On Windows cuBLAS is
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 target_sources(slopfab PRIVATE src/cli/projects.cpp)
+target_sources(slopfab PRIVATE src/cli/agent_instructions.cpp)
 target_include_directories(slopfab PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_sources(slopfab PRIVATE src/cli/reference_decode.cpp)
 target_sources(slopfab PRIVATE src/cli/assets.cpp)

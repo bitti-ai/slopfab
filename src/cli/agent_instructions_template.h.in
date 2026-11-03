@@ -1,0 +1,2 @@
+#pragma once
+inline constexpr const char* kAgentInstructions = R"SLOPFAB_AGENTS(@SLOPFAB_AGENT_INSTRUCTIONS@)SLOPFAB_AGENTS";

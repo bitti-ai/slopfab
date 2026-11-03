@@ -10,6 +10,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME agent_instructions_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_agent_instructions_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(agent_instructions_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME projects_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_projects_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(projects_cli PROPERTIES LABELS synthetic TIMEOUT 90)

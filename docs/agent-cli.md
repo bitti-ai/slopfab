@@ -12,6 +12,16 @@ accessible. FFmpeg remains an external conversion tool, not a linked dependency.
 is unchanged. CLI requests, jobs, output policy, and configuration are separate
 from DLL generation.
 
+The first `--agent` invocation in a working directory creates `AGENTS.md` if
+that file does not already exist. Its compact instructions cover Slopfab for
+image/video/music requests, projects, filename rules, previews and edits. The
+same text appears once in the first JSON response as
+`agent_context: {path, instructions}`; the requested command still runs normally.
+Subsequent launches do not rewrite or repeat it. Existing files (even empty
+ones) and symlinks are preserved. This is per working directory, independent
+of the global config, and does not run for ordinary non-agent launches or
+background workers. The embedded source is [templates/AGENTS.md](../templates/AGENTS.md).
+
 For generation requests, start with `slopfab projects create NAME` and pass
 `--project NAME` to generation. Projects provide an offline review page with
 copyable agent edit prompts, saved recipes, clip relationships and explicit
