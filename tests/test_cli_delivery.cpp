@@ -97,6 +97,8 @@ int main() {
       GenerateRequest request;
       request.out_path = "image.png";
       request.prompt = "Project image";
+      request.negative_prompt = "Unwanted lettering";
+      request.music.lyrics = "Original lyrics\nSecond line";
       agent().generation_arguments = {str("image"), str("--prompt"), str(request.prompt)};
       samples.audio = nullptr;
       auto generate = [&]() {
@@ -115,6 +117,8 @@ int main() {
       const auto id = first.find("id")->as_string();
       require(first.find("version")->as_number() == 1, "project registration version mismatch");
       agent().project_item = id;
+      request.prompt = "Revised project image";
+      request.music.lyrics.clear();
       auto second = generate();
       require(second.find("version")->as_number() == 2, "project regeneration version mismatch");
       require(request.out_path != original && std::filesystem::exists(original),
@@ -126,6 +130,15 @@ int main() {
               "project regeneration lost stable ID/history");
       require(item.find("generation")->find("plan")->find("seed")->as_string() == "42",
               "project recipe lost resolved seed");
+      const auto& prompts = *item.find("generation")->find("prompts");
+      require(prompts.find("prompt")->as_string() == "Revised project image" &&
+                  prompts.find("negative_prompt")->as_string() == "Unwanted lettering" &&
+                  prompts.find("lyrics")->as_string().empty(),
+              "project recipe did not snapshot resolved prompt inputs");
+      const auto& previous = *item.find("history")->as_array()[0].find("generation")->find("prompts");
+      require(previous.find("prompt")->as_string() == "Project image" &&
+                  previous.find("lyrics")->as_string() == "Original lyrics\nSecond line",
+              "project history lost previous prompt inputs");
       require(std::filesystem::exists(directory / "index.html"), "project page was not generated");
       // An edit after planning must not be replaced by a late generation.
       prepare_project_generation(request, false, 1);

@@ -22,6 +22,15 @@ manifest, requested change and any parent video to rebuild. Refresh the page
 after the agent updates the project. Page actions only compose prompts; they
 never execute commands or silently change the manifest.
 
+The **Generation prompts** panel beneath the preview shows the selected item's
+prompt, negative prompt when supplied, and music lyrics. Copy each input directly
+or select an earlier version to inspect its saved text; the media preview and edit
+actions continue to target the current item. New generations save resolved text
+in `generation.prompts`, including prompt files and request/music settings. Older
+items fall back to their recorded prompt and saved request, labeled accordingly.
+Missing text is never reconstructed from a file that may have changed. Rebuild
+existing pages with `slopfab projects render NAME` to use the updated view.
+
 Use `--agent` for JSON responses and generation progress. Project management
 does not require model weights or a GPU. The DLL and generation engine have no
 project dependency.

@@ -524,6 +524,9 @@ Value record_project_generation(const GenerateRequest& request, const Value& res
   if (index)
     id += "-" + std::to_string(index + 1);
   Object recipe{{"arguments", Value(agent().generation_arguments)},
+                {"prompts", Value(Object{{"prompt", str(request.prompt)},
+                                          {"negative_prompt", str(request.negative_prompt)},
+                                          {"lyrics", str(request.music.lyrics)}})},
                 {"working_directory", str(fs::current_path().u8string())},
                 {"plan", *result.find("plan")},
                 {"artifacts", *result.find("artifacts")}};

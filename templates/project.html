@@ -407,12 +407,40 @@
       .tiny {
         font-size: 11px;
       }
-      .prompt-text {
+      .generation-prompts {
+        margin-top: 22px;
+        padding: 22px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 15px;
+        min-width: 0;
+      }
+      .generation-prompts .section-row {
+        flex-wrap: wrap;
+      }
+      .prompt-version {
+        width: auto !important;
+        max-width: 100%;
+      }
+      .prompt-card + .prompt-card {
+        margin-top: 20px;
+      }
+      .prompt-card .section-row {
+        margin-bottom: 8px;
+      }
+      .prompt-body {
+        display: block;
+        font: inherit;
+        font-size: 13px;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
-        color: #c5cccb !important;
-        max-height: 140px;
-        overflow: auto;
+        line-height: 1.7;
+        min-height: 140px;
+      }
+      .prompt-status {
+        display: block;
+        min-height: 1.5em;
+        margin-top: 10px;
       }
       .asset-details {
         margin-top: 14px;
@@ -765,7 +793,9 @@
     <header>
       <div class="brand">
         <span class="logo" aria-hidden="true">s.</span>slopfab
-        <span class="muted" style="font-weight: 400; margin-left: 10px">/ projects</span>
+        <span class="muted" style="font-weight: 400; margin-left: 10px"
+          >/ projects</span
+        >
       </div>
       <div class="header-right">
         <span class="pill"><span class="dot"></span>Local project</span
@@ -794,18 +824,45 @@
               <span id="item-badge" class="badge"></span>
             </div>
           </section>
-          <section id="sequence" class="sequence hidden" aria-label="Video clips">
+          <section
+            id="sequence"
+            class="sequence hidden"
+            aria-label="Video clips"
+          >
             <div class="section-row">
               <h3>Clips in this video</h3>
               <span class="tiny muted">Select a clip to review or edit</span>
             </div>
             <div id="sequence-list" class="sequence-list"></div>
           </section>
+          <section
+            class="generation-prompts"
+            aria-labelledby="generation-prompts-title"
+          >
+            <div class="section-row">
+              <h3 id="generation-prompts-title">Generation prompts</h3>
+              <select
+                id="prompt-version"
+                class="action prompt-version"
+                aria-label="Prompt version"
+              ></select>
+            </div>
+            <p id="prompt-source" class="tiny muted"></p>
+            <div id="prompt-fields"></div>
+            <span
+              id="generation-copy-status"
+              class="prompt-status tiny muted"
+              role="status"
+            ></span>
+          </section>
         </div>
         <aside class="inspector">
           <div class="eyebrow">Make it yours</div>
           <h2>Continue with your agent</h2>
-          <p>Choose an action, add direction, then copy the prompt into your agent.</p>
+          <p>
+            Choose an action, add direction, then copy the prompt into your
+            agent.
+          </p>
           <label class="label" for="action">Action</label
           ><select id="action" class="action"></select
           ><label class="label" for="notes"
@@ -818,11 +875,10 @@
             Create agent prompt <span aria-hidden="true">↗</span>
           </button>
           <p class="tiny">
-            Nothing runs here. Your agent makes the changes; refresh this page afterward.
+            Nothing runs here. Your agent makes the changes; refresh this page
+            afterward.
           </p>
           <hr class="separator" />
-          <div class="eyebrow">Original direction</div>
-          <p id="original" class="prompt-text"></p>
           <details class="asset-details">
             <summary>Files &amp; generation details</summary>
             <pre id="details"></pre>
@@ -847,20 +903,33 @@
         <ul id="rules"></ul>
         <p>
           Read <a href="PROJECT.md">PROJECT.md</a> for the workflow or
-          <a href="project.json">project.json</a> for exact filenames and generation recipes.
+          <a href="project.json">project.json</a> for exact filenames and
+          generation recipes.
         </p>
         <pre id="location" class="rules"></pre>
       </details>
       <footer>
         <span>Made with slopfab · Your files stay on your machine.</span
-        ><span>This page is a snapshot. Refresh after your agent updates the project.</span>
+        ><span
+          >This page is a snapshot. Refresh after your agent updates the
+          project.</span
+        >
       </footer>
     </main>
     <dialog id="prompt-dialog" aria-labelledby="dialog-title">
       <h2 id="dialog-title">Ready for your agent</h2>
       <p class="muted">Copy this prompt and paste it into your conversation.</p>
-      <textarea id="agent-prompt" aria-label="Prompt to copy" readonly></textarea>
-      <div id="copy-status" class="status" role="status" aria-live="polite"></div>
+      <textarea
+        id="agent-prompt"
+        aria-label="Prompt to copy"
+        readonly
+      ></textarea>
+      <div
+        id="copy-status"
+        class="status"
+        role="status"
+        aria-live="polite"
+      ></div>
       <div class="buttons">
         <button id="close-dialog" class="secondary">Close</button
         ><button id="copy-prompt" class="primary">Copy prompt</button>
@@ -871,7 +940,9 @@
     </script>
     <script>
       "use strict";
-      const project = JSON.parse(document.getElementById("project-data").textContent);
+      const project = JSON.parse(
+        document.getElementById("project-data").textContent,
+      );
       const $ = (id) => document.getElementById(id);
       const el = (tag, cls, text) => {
         const n = document.createElement(tag);
@@ -881,7 +952,121 @@
       };
       const active = (i) => !i.removed;
       const available = (i) =>
-        active(i) && (!i.parent || project.items.some((p) => p.id === i.parent && active(p)));
+        active(i) &&
+        (!i.parent ||
+          project.items.some((p) => p.id === i.parent && active(p)));
+      function showGenerationPrompts(item) {
+        const versions = $("prompt-version");
+        versions.replaceChildren();
+        versions.disabled = !item;
+        const snapshots = item
+          ? [item, ...(item.history || []).slice().reverse()]
+          : [];
+        snapshots.forEach((snapshot, index) =>
+          versions.append(
+            new Option(
+              `Version ${snapshot.version}${index === 0 ? " · Current" : " · Previous"}`,
+              String(index),
+            ),
+          ),
+        );
+        const show = () => {
+          const snapshot = snapshots[Number(versions.value)];
+          $("prompt-fields").replaceChildren();
+          $("generation-copy-status").textContent = "";
+          if (!snapshot) {
+            $("prompt-source").textContent =
+              "Select an item to see its recorded prompts.";
+            return;
+          }
+          const saved = snapshot.generation && snapshot.generation.prompts;
+          const request = snapshot.request || {};
+          const text = (value) => (typeof value === "string" ? value : "");
+          // A resolved snapshot is authoritative, including explicitly empty inputs.
+          const fields = saved || {
+            prompt:
+              typeof snapshot.prompt === "string"
+                ? snapshot.prompt
+                : request.prompt,
+            negative_prompt: request.negative_prompt,
+            lyrics: request.lyrics,
+          };
+          $("prompt-source").textContent =
+            (saved
+              ? "Exact text saved at generation time."
+              : "Recorded direction / saved request. Resolved generation text was not saved for this version.") +
+            (Number(versions.value) > 0
+              ? " Preview and edit actions still use the current item."
+              : "");
+          const labels = [
+            ["prompt", "Prompt"],
+            ["negative_prompt", "Negative prompt"],
+            ["lyrics", "Lyrics"],
+          ];
+          labels.forEach(([key, label]) => {
+            const value = text(fields[key]);
+            if (
+              !value &&
+              key !== "prompt" &&
+              !(key === "lyrics" && snapshot.kind === "music")
+            )
+              return;
+            const card = el("div", "prompt-card");
+            const header = el("div", "section-row");
+            header.append(el("strong", "tiny", label));
+            card.append(header);
+            if (value) {
+              const body = el("textarea", "prompt-body");
+              body.readOnly = true;
+              body.value = value;
+              body.setAttribute("aria-label", `Used ${label.toLowerCase()}`);
+              body.spellcheck = false;
+              const copy = el(
+                "button",
+                "secondary tiny",
+                `Copy ${label.toLowerCase()}`,
+              );
+              copy.type = "button";
+              copy.onclick = async () => {
+                try {
+                  if (!navigator.clipboard) throw Error();
+                  await navigator.clipboard.writeText(value);
+                  $("generation-copy-status").textContent = `${label} copied.`;
+                } catch (error) {
+                  body.focus();
+                  body.select();
+                  let copied = false;
+                  try {
+                    copied = document.execCommand("copy");
+                  } catch (ignore) {}
+                  $("generation-copy-status").textContent = copied
+                    ? `${label} copied.`
+                    : `${label} selected. Press Ctrl+C (Command+C on Mac) to copy.`;
+                }
+              };
+              header.append(copy);
+              card.append(body);
+              $("prompt-fields").append(card);
+              body.style.height = `${Math.min(360, Math.max(140, body.scrollHeight + 2))}px`;
+            } else {
+              card.append(
+                el(
+                  "p",
+                  "tiny muted",
+                  key === "lyrics" && typeof fields.lyrics === "string"
+                    ? "No lyrics supplied."
+                    : key === "lyrics"
+                      ? "No lyrics recorded."
+                      : "No generation prompt recorded.",
+                ),
+              );
+              $("prompt-fields").append(card);
+            }
+          });
+        };
+        versions.onchange = show;
+        show();
+      }
       let selected = null,
         filter = "all",
         media = null;
@@ -898,7 +1083,9 @@
         return path.split("/").map(encodeURIComponent).join("/");
       };
       const previewable = (path) =>
-        /\.(png|jpe?g|webp|gif|mp4|webm|wav|mp3|ogg|flac|m4a)$/i.test(path || "");
+        /\.(png|jpe?g|webp|gif|mp4|webm|wav|mp3|ogg|flac|m4a)$/i.test(
+          path || "",
+        );
       const time = (n) => {
         if (!Number.isFinite(n)) return "0:00";
         n = Math.max(0, Math.floor(n));
@@ -913,7 +1100,10 @@
           full: "M3 3h7v2H5v5H3zM14 3h7v7h-2V5h-5zM3 14h2v5h5v2H3zM19 14h2v7h-7v-2h5z",
         };
         button.replaceChildren();
-        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        const svg = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "svg",
+        );
         svg.setAttribute("viewBox", "0 0 24 24");
         svg.setAttribute("aria-hidden", "true");
         const path = document.createElementNS(svg.namespaceURI, "path");
@@ -930,7 +1120,10 @@
         m.setAttribute("playsinline", "");
         if (audio) {
           const cover = el("div", "audio-cover");
-          cover.append(el("div", "disc"), el("div", "eyebrow", "Audio preview"));
+          cover.append(
+            el("div", "disc"),
+            el("div", "eyebrow", "Audio preview"),
+          );
           $("stage").append(cover);
         }
         $("stage").append(m);
@@ -968,20 +1161,29 @@
         });
         const bounds = () => {
           const duration = Number.isFinite(m.duration) ? m.duration : 0;
-          return [Math.min(item.start || 0, duration), Math.min(item.end || duration, duration)];
+          return [
+            Math.min(item.start || 0, duration),
+            Math.min(item.end || duration, duration),
+          ];
         };
         const update = () => {
           const [start, end] = bounds();
           const length = Math.max(0, end - start);
           clock.textContent = `${time(m.currentTime - start)} / ${time(length)}`;
-          seek.value = length ? String(Math.round((1000 * (m.currentTime - start)) / length)) : "0";
+          seek.value = length
+            ? String(Math.round((1000 * (m.currentTime - start)) / length))
+            : "0";
           seek.disabled = !length;
-          seek.setAttribute("aria-valuetext", `${time(m.currentTime - start)} of ${time(length)}`);
+          seek.setAttribute(
+            "aria-valuetext",
+            `${time(m.currentTime - start)} of ${time(length)}`,
+          );
         };
         const toggle = async () => {
           if (m.paused) {
             const [start, end] = bounds();
-            if (m.currentTime < start || m.currentTime >= end) m.currentTime = start;
+            if (m.currentTime < start || m.currentTime >= end)
+              m.currentTime = start;
             try {
               await m.play();
             } catch (e) {
@@ -1064,23 +1266,28 @@
           media = null;
         }
         selected = item;
+        showGenerationPrompts(item);
         $("stage").replaceChildren();
         $("warning").classList.add("hidden");
         $("action").replaceChildren();
         $("notes").value = "";
         if (!item) {
           $("item-title").textContent = "Your next idea starts here";
-          $("item-subtitle").textContent = "Generate media into this project to begin.";
+          $("item-subtitle").textContent =
+            "Generate media into this project to begin.";
           $("item-badge").textContent = "Empty project";
           const p = el("div", "placeholder");
           p.append(
             el("div", "symbol", "✦"),
             el("h2", "", "A place for what you make"),
-            el("p", "", "Images, video clips and music, together in one project."),
+            el(
+              "p",
+              "",
+              "Images, video clips and music, together in one project.",
+            ),
           );
           $("stage").append(p);
           $("action").append(new Option("Generate new content", "new"));
-          $("original").textContent = "No media yet.";
           $("details").textContent = "";
           $("sequence").classList.add("hidden");
           drawLibrary();
@@ -1117,9 +1324,13 @@
           $("stage").append(p);
         }
         if (item.needs_rebuild)
-          showWarning("Clips have changed. This assembled video needs rebuilding.");
+          showWarning(
+            "Clips have changed. This assembled video needs rebuilding.",
+          );
         if (item.removed)
-          showWarning("This item is removed from the active project. Its files are retained.");
+          showWarning(
+            "This item is removed from the active project. Its files are retained.",
+          );
         const actions = item.removed
           ? [["restore", "Restore item"]]
           : [
@@ -1130,9 +1341,9 @@
             ];
         if (item.kind === "video" && !item.removed)
           actions.splice(2, 0, ["rebuild", "Rebuild video from clips"]);
-        actions.forEach(([value, label]) => $("action").append(new Option(label, value)));
-        $("original").textContent =
-          item.prompt || (item.request && item.request.prompt) || "No generation prompt recorded.";
+        actions.forEach(([value, label]) =>
+          $("action").append(new Option(label, value)),
+        );
         $("details").textContent = JSON.stringify(
           {
             file: item.file,
@@ -1147,19 +1358,26 @@
         );
         const parent = item.kind === "video" ? item.id : item.parent;
         const clips = project.items
-          .filter((i) => i.kind === "clip" && i.parent === parent && available(i))
+          .filter(
+            (i) => i.kind === "clip" && i.parent === parent && available(i),
+          )
           .sort((a, b) => (a.position || 0) - (b.position || 0));
         $("sequence").classList.toggle("hidden", !clips.length);
         $("sequence-list").replaceChildren();
         clips.forEach((clip, n) => {
-          const b = el("button", `clip${clip.id === item.id ? " selected" : ""}`);
+          const b = el(
+            "button",
+            `clip${clip.id === item.id ? " selected" : ""}`,
+          );
           b.append(
             el("span", "number", `CLIP ${String(n + 1).padStart(2, "0")}`),
             el("strong", "", clip.title || clip.id),
             el(
               "span",
               "",
-              clip.end ? `${time(clip.start || 0)} – ${time(clip.end)}` : `Version ${clip.version}`,
+              clip.end
+                ? `${time(clip.start || 0)} – ${time(clip.end)}`
+                : `Version ${clip.version}`,
             ),
           );
           b.onclick = () => choose(clip);
@@ -1170,16 +1388,26 @@
       function drawLibrary() {
         const showRemoved = $("show-removed").checked;
         const items = project.items.filter(
-          (i) => (showRemoved || available(i)) && (filter === "all" || i.kind === filter),
+          (i) =>
+            (showRemoved || available(i)) &&
+            (filter === "all" || i.kind === filter),
         );
         $("grid").replaceChildren();
-        $("asset-count").textContent = `${project.items.filter(available).length} active items`;
+        $("asset-count").textContent =
+          `${project.items.filter(available).length} active items`;
         if (!items.length)
           $("grid").append(
-            el("div", "empty", "Nothing here yet. New generations will appear here."),
+            el(
+              "div",
+              "empty",
+              "Nothing here yet. New generations will appear here.",
+            ),
           );
         items.forEach((item) => {
-          const b = el("button", `card${selected && item.id === selected.id ? " selected" : ""}`);
+          const b = el(
+            "button",
+            `card${selected && item.id === selected.id ? " selected" : ""}`,
+          );
           b.setAttribute("aria-label", `Review ${item.title || item.id}`);
           const thumb = el("div", "thumb");
           const path = item.preview || item.file;
@@ -1191,7 +1419,11 @@
             thumb.append(img);
           } else thumb.append(el("span", "symbol", symbols[item.kind]));
           thumb.append(
-            el("span", "thumb-label", item.removed ? "REMOVED" : item.kind.toUpperCase()),
+            el(
+              "span",
+              "thumb-label",
+              item.removed ? "REMOVED" : item.kind.toUpperCase(),
+            ),
           );
           const info = el("div", "card-info");
           info.append(
@@ -1227,7 +1459,11 @@
         if (item)
           text += `Target: ${JSON.stringify(item.id)} (${item.kind}, version ${item.version})\nSource: ${JSON.stringify(item.file)}${item.parent ? `\nParent video: ${JSON.stringify(item.parent)}` : ""}\n\n`;
         text += instructions[action] + "\n";
-        if (item && item.parent && ["regenerate", "edit", "remove", "restore"].includes(action))
+        if (
+          item &&
+          item.parent &&
+          ["regenerate", "edit", "remove", "restore"].includes(action)
+        )
           text +=
             "Then rebuild the parent video from its remaining active clips in position order, using external FFmpeg if needed, and register the updated assembled video.\n";
         const notes = $("notes").value.trim();
@@ -1249,7 +1485,10 @@
           el(
             "strong",
             "",
-            String(project.items.filter((i) => i.kind === kind && available(i)).length),
+            String(
+              project.items.filter((i) => i.kind === kind && available(i))
+                .length,
+            ),
           ),
           document.createTextNode(label),
         );
@@ -1262,7 +1501,11 @@
         ["image", "Images"],
         ["music", "Music"],
       ].forEach(([value, label]) => {
-        const b = el("button", "tab" + (value === "all" ? " active" : ""), label);
+        const b = el(
+          "button",
+          "tab" + (value === "all" ? " active" : ""),
+          label,
+        );
         b.setAttribute("role", "tab");
         b.setAttribute("aria-selected", String(value === "all"));
         b.onclick = () => {
@@ -1275,7 +1518,9 @@
         };
         document.querySelector(".tabs").append(b);
       });
-      Object.values(project.naming_rules).forEach((rule) => $("rules").append(el("li", "", rule)));
+      Object.values(project.naming_rules).forEach((rule) =>
+        $("rules").append(el("li", "", rule)),
+      );
       $("location").textContent = project.directory;
       $("show-removed").onchange = drawLibrary;
       $("prepare").onclick = () => {
@@ -1306,7 +1551,11 @@
       try {
         hash = decodeURIComponent(location.hash.slice(1));
       } catch (ignore) {}
-      choose(project.items.find((i) => i.id === hash) || project.items.find(available) || null);
+      choose(
+        project.items.find((i) => i.id === hash) ||
+          project.items.find(available) ||
+          null,
+      );
     </script>
   </body>
 </html>

@@ -6,22 +6,35 @@ const { pathToFileURL } = require("url");
 const path = require("path");
 const assert = require("assert/strict");
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.argv[4], headless: true });
+  const browser = await chromium.launch({
+    executablePath: process.argv[4],
+    headless: true,
+  });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+    const page = await browser.newPage({
+      viewport: { width: 1440, height: 1100 },
+    });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(pathToFileURL(path.resolve(process.argv[3])).href);
-    await page.getByRole("button", { name: "Review Final film", exact: true }).click();
-    await page.waitForFunction(() => document.querySelector("video")?.readyState >= 1);
+    await page
+      .getByRole("button", { name: "Review Final film", exact: true })
+      .click();
+    await page.waitForFunction(
+      () => document.querySelector("video")?.readyState >= 1,
+    );
     const player = page.locator("video");
     await page.getByRole("button", { name: "Play", exact: true }).click();
-    await page.waitForFunction(() => document.querySelector("video").currentTime > 0.15);
+    await page.waitForFunction(
+      () => document.querySelector("video").currentTime > 0.15,
+    );
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     assert(await player.evaluate((m) => m.paused));
     await page.getByRole("slider", { name: "Playback position" }).fill("500");
     assert(Math.abs((await player.evaluate((m) => m.currentTime)) - 2) < 0.25);
-    await page.getByRole("combobox", { name: "Playback speed" }).selectOption("1.5");
+    await page
+      .getByRole("combobox", { name: "Playback speed" })
+      .selectOption("1.5");
     assert.equal(await player.evaluate((m) => m.playbackRate), 1.5);
     await page.getByRole("button", { name: "Mute", exact: true }).click();
     assert(await player.evaluate((m) => m.muted));
@@ -29,31 +42,55 @@ const assert = require("assert/strict");
       path: path.join(path.dirname(process.argv[3]), "desktop-review.png"),
       fullPage: true,
     });
-    await page.getByRole("button", { name: "Review Opening shot", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Review Opening shot", exact: true })
+      .click();
     await page.getByLabel("Action", { exact: true }).selectOption("remove");
     await page
       .getByLabel("Your direction", { exact: false })
       .fill("Keep the music continuous across the cut.");
     await page.getByRole("button", { name: "Create agent prompt" }).click();
-    const prompt = await page.getByLabel("Prompt to copy", { exact: true }).inputValue();
+    const prompt = await page
+      .getByLabel("Prompt to copy", { exact: true })
+      .inputValue();
     assert(prompt.includes("clip-a") && prompt.includes("Remove this item"));
     assert(
-      prompt.includes("rebuild the parent video") && prompt.includes("Keep the music continuous"),
+      prompt.includes("rebuild the parent video") &&
+        prompt.includes("Keep the music continuous"),
     );
-    assert(prompt.includes("project.json") && prompt.includes("exact manifest paths"));
+    assert(
+      prompt.includes("project.json") &&
+        prompt.includes("exact manifest paths"),
+    );
     // Force the file:// clipboard fallback, which must leave a selectable prompt.
     await page.evaluate(() =>
-      Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true }),
+      Object.defineProperty(navigator, "clipboard", {
+        value: undefined,
+        configurable: true,
+      }),
     );
-    await page.getByRole("button", { name: "Copy prompt", exact: true }).click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Copy prompt", exact: true })
+      .click();
     assert((await page.locator("#copy-status").textContent()).length > 0);
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    await page.getByRole("button", { name: "Review Cover image", exact: true }).click();
-    await page.waitForFunction(() => document.querySelector("#stage img")?.naturalWidth > 0);
-    await page.getByRole("button", { name: "Review Night score", exact: true }).click();
-    await page.waitForFunction(() => document.querySelector("audio")?.readyState >= 1);
+    await page
+      .getByRole("button", { name: "Review Cover image", exact: true })
+      .click();
+    await page.waitForFunction(
+      () => document.querySelector("#stage img")?.naturalWidth > 0,
+    );
+    await page
+      .getByRole("button", { name: "Review Night score", exact: true })
+      .click();
+    await page.waitForFunction(
+      () => document.querySelector("audio")?.readyState >= 1,
+    );
     await page.getByRole("button", { name: "Play", exact: true }).click();
-    await page.waitForFunction(() => document.querySelector("audio").currentTime > 0.15);
+    await page.waitForFunction(
+      () => document.querySelector("audio").currentTime > 0.15,
+    );
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     await page.getByRole("tab", { name: "Clips", exact: true }).click();
     assert.equal(await page.locator("#grid .card").count(), 2);
@@ -62,9 +99,162 @@ const assert = require("assert/strict");
       path: path.join(path.dirname(process.argv[3]), "mobile-review.png"),
       fullPage: true,
     });
-    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    assert(await page.locator('.player-controls').evaluate(n =>
-      n.getBoundingClientRect().right <= n.parentElement.getBoundingClientRect().right + 1));
+    assert(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    );
+    assert(
+      await page
+        .locator(".player-controls")
+        .evaluate(
+          (n) =>
+            n.getBoundingClientRect().right <=
+            n.parentElement.getBoundingClientRect().right + 1,
+        ),
+    );
+    // Resolved inputs take precedence over metadata/old requests, including empty lyrics.
+    const exactPrompt =
+      "integrated_multimodal_description: [Shot 1] A lantern.\n\n" +
+      "overall_soundscape: N/A\n\nnon_diegetic_music: N/A\n" +
+      "<script>window.injected=1</script> — 夜 " +
+      "long-text-".repeat(100);
+    await page.evaluate((prompt) => {
+      const item = project.items.find((i) => i.kind === "music");
+      item.version = 3;
+      item.prompt = "Outdated direction";
+      item.request = {
+        prompt: "Outdated request",
+        lyrics: "Old lyrics",
+        negative_prompt: "Old exclusion",
+      };
+      item.generation = {
+        prompts: { prompt, negative_prompt: "No harsh percussion", lyrics: "" },
+      };
+      item.history = [
+        {
+          version: 1,
+          kind: "music",
+          prompt: "Earlier direction",
+          request: { lyrics: "[Verse]\nEarlier words" },
+        },
+        {
+          version: 2,
+          kind: "music",
+          generation: {
+            prompts: {
+              prompt: "Previous caption",
+              negative_prompt: "",
+              lyrics: "[Verse]\nSaved exact words",
+            },
+          },
+        },
+      ];
+      choose(item);
+      window.copiedText = null;
+      Object.defineProperty(navigator, "clipboard", {
+        value: {
+          writeText: async (text) => {
+            window.copiedText = text;
+          },
+        },
+        configurable: true,
+      });
+    }, exactPrompt);
+    assert.equal(
+      await page.getByLabel("Used prompt", { exact: true }).inputValue(),
+      exactPrompt,
+    );
+    assert.equal(
+      await page.getByLabel("Used negative prompt").inputValue(),
+      "No harsh percussion",
+    );
+    assert.equal(await page.getByLabel("Used lyrics").count(), 0);
+    assert(
+      (await page.locator("#prompt-fields").textContent()).includes(
+        "No lyrics supplied.",
+      ),
+    );
+    assert(
+      (await page.locator("#prompt-source").textContent()).includes(
+        "Exact text",
+      ),
+    );
+    assert.equal(await page.locator("#prompt-fields script").count(), 0);
+    await page
+      .locator("#prompt-fields")
+      .getByRole("button", { name: "Copy prompt", exact: true })
+      .click();
+    assert.equal(await page.evaluate(() => window.copiedText), exactPrompt);
+    const currentTitle = await page.locator("#item-title").textContent();
+    await page.getByLabel("Prompt version").selectOption("1");
+    assert.equal(
+      await page.getByLabel("Used prompt", { exact: true }).inputValue(),
+      "Previous caption",
+    );
+    assert.equal(
+      await page.getByLabel("Used lyrics").inputValue(),
+      "[Verse]\nSaved exact words",
+    );
+    assert.equal(await page.getByLabel("Used negative prompt").count(), 0);
+    assert.equal(await page.locator("#item-title").textContent(), currentTitle);
+    assert(
+      (await page.locator("#prompt-source").textContent()).includes(
+        "current item",
+      ),
+    );
+    await page.getByLabel("Prompt version").selectOption("2");
+    assert.equal(
+      await page.getByLabel("Used prompt", { exact: true }).inputValue(),
+      "Earlier direction",
+    );
+    assert.equal(
+      await page.getByLabel("Used lyrics").inputValue(),
+      "[Verse]\nEarlier words",
+    );
+    assert(
+      (await page.locator("#prompt-source").textContent()).includes(
+        "Resolved generation text was not saved",
+      ),
+    );
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        value: undefined,
+        configurable: true,
+      });
+      document.execCommand = () => false;
+    });
+    await page
+      .getByRole("button", { name: "Copy lyrics", exact: true })
+      .click();
+    assert(
+      (await page.locator("#generation-copy-status").textContent()).includes(
+        "Press Ctrl+C",
+      ),
+    );
+    assert(
+      await page
+        .getByLabel("Used lyrics")
+        .evaluate((n) => n.selectionEnd - n.selectionStart === n.value.length),
+    );
+    await page.getByLabel("Prompt version").selectOption("0");
+    assert(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    );
+    await page.screenshot({
+      path: path.join(path.dirname(process.argv[3]), "mobile-prompts.png"),
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.screenshot({
+      path: path.join(path.dirname(process.argv[3]), "desktop-prompts.png"),
+      fullPage: true,
+    });
+    await page.evaluate(() => choose(null));
+    assert.equal(await page.locator("#prompt-fields textarea").count(), 0);
+    assert(await page.getByLabel("Prompt version").isDisabled());
     // Malicious metadata is text, never executable markup.
     await page.evaluate(() => {
       project.items[0].title = '<img src=x onerror="window.injected=1">';
@@ -74,7 +264,7 @@ const assert = require("assert/strict");
     assert.equal(await page.evaluate(() => window.injected), undefined);
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: offline video/audio/image previews, controls, clip prompts, clipboard fallback, escaping and mobile layout",
+      "PASS: offline previews, controls, prompts/lyrics/history, exact copying, fallback, escaping and mobile layout",
     );
   } finally {
     await browser.close();
