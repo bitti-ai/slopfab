@@ -30,6 +30,13 @@ For generation requests, start with `slopfab projects create NAME` and pass
 copyable agent edit prompts, saved recipes, clip relationships and explicit
 filename rules. See [projects](projects.md) or `slopfab help projects`.
 
+Before writing prompts, retrieve the matching [model prompting guide](prompting.md)
+with `slopfab prompts list` and `slopfab prompts get MODEL USE_CASE`.
+`prompts select` chooses by reference roles, including H3 first/last frames, image
+edits/layouts and instrumental music. Guides are embedded and work offline without
+weights or a GPU. They return templates, examples, local limits and source links;
+generation continues to use exactly the prompt supplied by the caller.
+
 ```sh
 slopfab capabilities
 slopfab models list
