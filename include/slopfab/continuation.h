@@ -54,9 +54,18 @@ struct LatentPrefixConstraint {
   std::vector<float> original;
   std::vector<float> noise;
   std::vector<LatentAnchorConstraint> anchors;
+  // Optional per-value noise multipliers for the held prefix/suffix.
+  std::vector<float> noise_scale;
 
   void capture_noise(const float* rows, size_t count);
   void apply(float* rows, size_t count, float sigma, int completed_steps = 0) const;
+};
+
+struct ContextNoise {
+  float strength = 0; // Disabled by default; Geiru's suggested starting value is 0.8.
+  bool ease = false;
+  bool skip_first = true;
+  void validate() const;
 };
 
 struct ContinuationConstraint {
@@ -65,6 +74,15 @@ struct ContinuationConstraint {
   // Neither changes the scheduler's shapes or the output timeline.
   std::vector<float> video_restore_prefix, capstone;
   int capstone_start_step = 0;
+  std::vector<float> context_noise_scales; // One per held video latent.
+  void set_context_noise(const ContextNoise& config, int rows_per_frame, int video_dim = 96);
+  // The final video guide is the continuation guide. Match its values and
+  // times to the held target, leaving preceding references and audio intact.
+  // A null buffer updates only times (Vulkan copies the rows on device).
+  void prepare_context_call(float* video_rows, size_t count,
+                            const dit::SequenceLayout& layout, const dit::PackedIndices& indices,
+                            dit::RowTimesteps& times, float sigma, float sigma_next,
+                            int video_dim = 96) const;
   void restore_video(std::vector<float>& rows) const;
 };
 

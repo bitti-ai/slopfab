@@ -2,6 +2,7 @@
 #include "latent_fixture.h"
 #include "slopfab/continuation.h"
 #include "slopfab/dit/packing.h"
+#include "slopfab/dit/hyperflow.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/reference_conditioning.h"
 #include "slopfab/safetensors_write.h"
@@ -57,6 +58,86 @@ template <class F> bool rejects(F fn) {
   }
   return false;
 }
+}
+
+SLOPFAB_TEST(context_noise_ramp_guides_and_restoration) {
+  using namespace slopfab;
+  LatentFixture fixture;
+  fixture.write(73);
+  auto source = LatentClip::load(fixture.path.string());
+  auto previous = *source;
+  for (auto& v : previous.video_rows) v += 100;
+  const size_t slice = 192;
+  for (bool keystone : {false, true}) for (bool ease : {false, true}) for (bool skip : {false, true}) {
+    const auto plan = plan_continuation(previous, 39, 17, 0, 17);
+    auto c = keystone ? make_keystone_constraint(previous, plan, Keystone{source, true, 1})
+                      : make_continuation_constraint(previous, plan);
+    auto disabled = c;
+    disabled.set_context_noise({}, 2);
+    CHECK(disabled.video.noise_scale.empty() && disabled.context_noise_scales.empty());
+    CHECK(disabled.video_restore_prefix == c.video_restore_prefix);
+    const auto original = c.video.original;
+    c.set_context_noise({.8f, ease, skip}, 2);
+    CHECK(c.context_noise_scales.size() == 7); // Held only; regenerated overlap remains free.
+    CHECK(c.context_noise_scales.back() == 0);
+    CHECK(c.context_noise_scales.front() == (keystone || skip ? 0 : .8f));
+    CHECK(c.capstone == disabled.capstone && c.audio.original == disabled.audio.original);
+    const size_t first = skip ? 1 : 0;
+    const float w = float(6 - 3) / float(6 - first);
+    CHECK_NEAR(c.context_noise_scales[3], .8f * (ease ? w*w : w), 1e-7);
+    auto packed = dit::build_ref2va_packed_sequence({1, 2, 1},
+        {{dit::ReferenceKind::kImage, 1, 2, 4, 0},
+         {dit::ReferenceKind::kVideo, 7, 2, 4, plan.held_audio_latents, true}},
+        dit::video_latent_num_frames(plan.window_frames), 2, 4, plan.window_audio_latents);
+    std::vector<float> target(c.video.target_values_per_channel, -.5f);
+    c.video.capture_noise(target.data(), target.size());
+    for (float sigma : {1.f, .4f, 0.f}) {
+      c.video.apply(target.data(), target.size(), sigma);
+      for (size_t f = 0; f < 7; ++f) {
+        const float s = sigma * c.context_noise_scales[f];
+        CHECK_NEAR(target[f*slice], (1-s) * original[f*slice] - .5f*s, 1e-5);
+      }
+      CHECK(target[7*slice] == -.5f);
+      for (bool hyperflow : {false, true}) {
+        auto times = hyperflow ? dit::build_hyperflow_timesteps(packed.layout, packed.indices,
+            1-sigma, 1-sigma/2, .3f, .6f) : dit::build_row_timesteps(packed.layout, packed.indices,
+            1-sigma, .3f, .999f, 1.f);
+        auto before = times;
+        std::vector<float> all(size_t(packed.layout.num_condition_video)*96, 123.f);
+        const size_t cv = all.size();
+        all.insert(all.end(), target.begin(), target.end());
+        c.prepare_context_call(all.data(), all.size(), packed.layout, packed.indices, times, sigma, sigma/2);
+        CHECK(all.front() == 123.f); // Ordinary image reference untouched.
+        CHECK(std::equal(target.begin(), target.end(), all.begin()+cv));
+        CHECK(std::equal(target.begin(), target.begin()+7*slice, all.begin()+slice));
+        for (size_t r = 0; r < packed.indices.tags.size(); ++r) {
+          CHECK(times.adaln[r] == times.indices[r]*3 + std::max(packed.indices.tags[r], 0));
+        }
+        for (size_t f = 0; f < 7; ++f) {
+          const auto t = times.indices[packed.indices.video[packed.layout.num_condition_video+f*2]];
+          CHECK_NEAR(times.unique[t], 1-sigma*c.context_noise_scales[f], 1e-7);
+          CHECK(times.indices[packed.indices.video[2+f*2]] == t);
+          if (hyperflow) CHECK_NEAR(times.endpoints[t], 1-sigma/2*c.context_noise_scales[f], 1e-7);
+        }
+        for (int r : packed.indices.audio)
+          CHECK(times.unique[times.indices[r]] == before.unique[before.indices[r]]);
+        dit::append_clean_video_timesteps(times, 2);
+        CHECK(times.unique[times.indices.back()] == 1.f);
+        if (hyperflow) CHECK(times.endpoints[times.indices.back()] == 1.f);
+      }
+    }
+    // Cancellation and regenerated overlap must also restore every held slice.
+    std::fill(target.begin(), target.end(), -10.f);
+    c.restore_video(target);
+    const auto start = previous.video_rows.end() - size_t(plan.overlap_video_latents)*slice;
+    CHECK(std::equal(start, start+7*slice, target.begin()));
+    CHECK(target[7*slice] == -10.f);
+  }
+  auto minimal = make_continuation_constraint(previous, plan_continuation(previous, 5, 17));
+  minimal.set_context_noise({.8f, false, true}, 2);
+  CHECK(minimal.context_noise_scales == std::vector<float>({0, 0}));
+  for (float invalid : {-1.f, 1.01f, std::numeric_limits<float>::quiet_NaN()})
+    CHECK(rejects([&] { ContextNoise{invalid}.validate(); }));
 }
 
 SLOPFAB_TEST(keystone_persistent_anchors_and_trimmed_chain) {

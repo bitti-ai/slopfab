@@ -422,7 +422,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   std::vector<float> init_video;
   std::vector<float> init_audio;
   std::shared_ptr<InpaintConstraint> inpaint;
-  std::shared_ptr<const ContinuationConstraint> continuation_constraint;
+  std::shared_ptr<ContinuationConstraint> continuation_constraint;
   if (request.bridge)
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_bridge_constraint(*request.bridge, plan.bridge));
@@ -433,9 +433,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   else if (request.continuation && request.keystone.source)
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_keystone_constraint(*request.continuation, plan.continuation, request.keystone));
-  else if (request.continuation_lock_overlap || request.continuation_source_noise > 0)
+  else if (request.continuation_lock_overlap || request.continuation_source_noise > 0 ||
+           (request.continuation && request.context_noise.strength > 0))
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_continuation_constraint(*request.continuation, plan.continuation));
+  if (continuation_constraint && request.context_noise.strength > 0)
+    continuation_constraint->set_context_noise(request.context_noise, plan.layout.rows_per_frame());
   if (!options.init_latents_path.empty()) {
     SafeTensors file;
     file.open(options.init_latents_path);

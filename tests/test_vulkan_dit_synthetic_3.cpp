@@ -113,6 +113,57 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   CHECK(result.audio_rows == audio);
   CHECK(result.video_rows != std::vector<float>(t.video_output_rows * 4, .5f));
   model.unload();
+  // Context noise needs more than four unique timestep codes. Exercise real
+  // device copies, delayed Capstone resize, repeat runs and cancellation.
+  {
+    auto noisy = config;
+    const auto p = dit::build_ref2va_packed_sequence({1, 1, 1},
+        {{dit::ReferenceKind::kImage, 1, 4, 4, 0},
+         {dit::ReferenceKind::kVideo, 7, 4, 4, 1, true}}, 8, 4, 4, 3);
+    noisy.layout = p.layout; noisy.indices = p.indices; noisy.position_ids = p.position_ids;
+    noisy.pin_target_audio = false;
+    auto& nt = noisy.transformer;
+    nt.main.block.sequence = p.layout.total_rows();
+    nt.video_rows = uint32_t(p.indices.video.size()); nt.audio_rows = uint32_t(p.indices.audio.size());
+    nt.video_output_rows = p.layout.num_video_rows; nt.audio_output_rows = p.layout.num_audio_rows;
+    nt.video_output_start = p.layout.video_start(); nt.audio_output_start = p.layout.audio_start();
+    auto c = std::make_shared<ContinuationConstraint>();
+    const size_t slice = 16;
+    c->video.target_values_per_channel = size_t(nt.video_output_rows)*4;
+    c->video.original.assign(7*slice, 2.f);
+    c->video_restore_prefix.assign(slice, 31.f);
+    c->capstone.assign(slice, 23.f); c->capstone_start_step = 1;
+    c->audio.channels = 2; c->audio.target_values_per_channel = size_t(nt.audio_output_rows);
+    c->audio.original.assign(4, 3.f);
+    c->set_context_noise({.8f, false, true}, 4, 4);
+    noisy.continuation = c;
+    auto engine = ExactH3Denoiser::create(context, noisy);
+    engine.load(checkpoint);
+    const std::vector<float> iv(size_t(nt.video_rows)*4, .25f), ia(size_t(nt.audio_rows)*2, -.5f);
+    for (bool cancel : {false, false, true}) {
+      sampler::FlowScheduler v(12), a(3);
+      v.set_sigmas({1.f, .4f, 0}); a.set_sigmas({1.f, .6f, .2f, 0});
+      engine.prepare(prompt.data(), prompt.size(), iv.data(), iv.size(), ia.data(), ia.size());
+      int boundaries = 0;
+      const auto out = engine.run(v, a, [&](uint32_t, uint32_t) { return !cancel; },
+          [&](uint32_t step, const std::vector<float>& vr, const std::vector<float>& ar) {
+            ++boundaries;
+            const size_t vn[] = {0, 1, 1, 2}, an[] = {1, 1, 2, 3};
+            for (size_t f = 0; f < 7; ++f) {
+              const float scale = f == 0 ? 0 : .8f*float(6-f)/5;
+              const float s = scale*v.sigmas()[vn[step]];
+              CHECK_NEAR(vr[f*slice], (1-s)*2.f+s*.25f, 1e-6);
+            }
+            CHECK_NEAR(vr[7*slice], .25f + .25f*(1-v.sigmas()[vn[step]]), 1e-5);
+            CHECK_NEAR(ar[0], (1-a.sigmas()[an[step]])*3.f-a.sigmas()[an[step]]*.5f, 1e-6);
+          });
+      CHECK(boundaries == (cancel ? 1 : 4));
+      CHECK(out.video_rows.size() == c->video.target_values_per_channel);
+      CHECK(std::equal(c->video_restore_prefix.begin(), c->video_restore_prefix.end(), out.video_rows.begin()));
+      CHECK(c->video.noise.empty());
+    }
+    engine.unload();
+  }
   // Distinct constant heads expose wrong PDD bank offsets and modality shifts
   // without requiring a production transformer in GPU memory.
   {

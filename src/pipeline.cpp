@@ -84,6 +84,14 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  request.context_noise.validate();
+  if (request.context_noise.strength > 0 &&
+      (request_model_family(request) != "h3" || request.still_image || request.bridge ||
+       request.end_anchor_latents || !request.end_anchor_path.empty() || request.video_transition ||
+       request.animate || request.image_edit.image || request.continuation_source_noise > 0 ||
+       request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
+       request.motion_cache.active()))
+    throw std::invalid_argument("context noise requires H3 video without ending anchors, source initialization, edits, transitions or approximate caches");
   if (!request.clip_projection_path.empty()) {
     if (request_model_family(request) != "h3")
       throw std::invalid_argument("ClipProj is supported only for MiniMax H3");
@@ -708,7 +716,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
                    " hidden overlap); output is full joined clip\n";
     description +=
         std::string("  overlap constraint  ") +
-        ((request.continuation_lock_overlap || request.continuation_source_noise > 0 || request.keystone.source)
+        ((request.continuation_lock_overlap || request.continuation_source_noise > 0 || request.keystone.source || request.context_noise.strength > 0)
              ? "locked video and audio" : "conditioning only") + "\n";
   }
   if (request.continuation_regenerate_frames)
@@ -726,6 +734,11 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     else
       description += "; front only\n";
   }
+  if (request.context_noise.strength > 0)
+    description += "  context noise       strength " + std::to_string(request.context_noise.strength) +
+        (request.context_noise.ease ? "; ease fade" : "; linear fade") +
+        (request.context_noise.skip_first ? "; skip first" : "; include first (Keystone stays clean)") +
+        (request.continuation ? "; held video restored before output\n" : "; inactive until continuation is attached\n");
   if (request.continuation_source_noise > 0)
     description += "  middle initialization held final source latent slice; video noise " +
                    std::to_string(plan.video_sigmas.front()) + "; audio uses full schedule\n";

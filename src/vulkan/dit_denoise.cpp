@@ -84,7 +84,8 @@ void validate_config(const ExactH3DenoiseConfig& c) {
       l.num_audio_rows < 0 || sequence_wide != sequence ||
       c.transformer.text_rows != static_cast<uint32_t>(l.num_text) ||
       c.transformer.video_rows != total_video || c.transformer.audio_rows != total_audio ||
-      c.transformer.main.block.timesteps != (conditioned ? 4u : 2u) ||
+      c.transformer.main.block.timesteps != (conditioned ? 4u : 2u) +
+          (c.continuation ? c.continuation->context_noise_scales.size() : 0u) ||
       c.transformer.main.block.modalities != 3 ||
       (c.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank &&
        c.transformer.main.block.adaln_rank != 18) ||
@@ -231,6 +232,9 @@ ExactH3Denoiser& ExactH3Denoiser::operator=(ExactH3Denoiser&&) noexcept = defaul
 ExactH3Denoiser ExactH3Denoiser::create(TensorContext& context,
                                         const ExactH3DenoiseConfig& config) {
   auto resolved = config;
+  if (resolved.continuation)
+    resolved.transformer.main.block.timesteps +=
+        static_cast<uint32_t>(resolved.continuation->context_noise_scales.size());
   if (resolved.transformer.main.block.loras && resolved.transformer.main.block.loras->hyperflow())
     resolved.transformer.main.block.adaln_rank = resolved.transformer.main.block.loras->hyperflow()->rank();
   validate_config(resolved);
@@ -527,6 +531,10 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
         : conditioned ? dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t,
                                                std::max(video_t, 0.999f), 1.0f)
                     : dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t);
+    if (c.continuation)
+      overlap.prepare_context_call(nullptr, 0, c.layout, c.indices, row,
+                                   video.sigmas()[update_step.video],
+                                   video.sigmas()[update_step.video + 1], c.transformer.video_dim);
     if (tack)
       dit::append_clean_video_timesteps(row, c.layout.rows_per_frame());
     if (row.unique.empty() || row.unique.size() > code_rows ||
@@ -605,6 +613,10 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     batch.require_operator_capacity(required_step_operators(taps));
     if (conditioned) {
       batch.copy_rows(s.video_result, s.video, 0, condition_video, video_output);
+      if (!overlap.context_noise_scales.empty()) {
+        const uint32_t held = static_cast<uint32_t>(overlap.context_noise_scales.size()) * c.layout.rows_per_frame();
+        batch.copy_rows(s.video_result, s.video, 0, condition_video - held, held);
+      }
       if (has_audio) {
         batch.copy_rows(s.audio_result, s.audio, 0, condition_audio, audio_output);
       }
@@ -795,7 +807,9 @@ ExactH3Denoiser::required_step_operators(const H3TransformerForwardReplayTaps* t
                            impl_->config.layout.num_condition_audio != 0;
   const bool has_audio = impl_->config.transformer.audio_rows != 0;
   const uint32_t tail = (conditioned ? 2u : 1u) * (has_audio ? 2u : 1u) -
-                        (has_audio && impl_->config.pin_target_audio ? 1u : 0u);
+                        (has_audio && impl_->config.pin_target_audio ? 1u : 0u) +
+                        (impl_->config.continuation &&
+                         !impl_->config.continuation->context_noise_scales.empty() ? 1u : 0u);
   if (forward > UINT32_MAX - tail)
     throw std::overflow_error("Vulkan H3 denoise: step operator overflow");
   return forward + tail;

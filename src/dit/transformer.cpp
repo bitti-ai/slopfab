@@ -532,8 +532,10 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   };
   auto video_head = s.video_out, audio_head = s.audio_out;
   if (s.model.pdd_steps > 1) {
+    // Text retains the global video time even when held video rows use a
+    // context-noise ramp (or a clean Keystone).
     const int step = omniref_step(row_timesteps.unique.at(
-        row_timesteps.indices.at(s.layout.video_start())));
+        row_timesteps.indices.at(s.indices.text.front())));
     const auto select = [&](QuantWeight& weight) {
       weight.data = static_cast<const float*>(weight.data) + size_t(step) * weight.out_features * hidden;
       weight.bias = static_cast<const float*>(weight.bias) + size_t(step) * weight.out_features;

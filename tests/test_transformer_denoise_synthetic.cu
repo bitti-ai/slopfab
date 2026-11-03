@@ -106,6 +106,73 @@ SLOPFAB_TEST_CATEGORY(denoise_sampling_effect_preserves_cached_prediction, "synt
   CHECK(calls == 12 && output.steps_skipped > 0);
 }
 
+SLOPFAB_TEST_CATEGORY(denoise_context_noise_model_inputs, "synthetic") {
+  using namespace slopfab;
+  using namespace slopfab::sampler;
+  const auto packed = dit::build_ref2va_packed_sequence({1, 1, 1},
+      {{dit::ReferenceKind::kImage, 1, 4, 4, 0},
+       {dit::ReferenceKind::kVideo, 4, 4, 4, 1, true}}, 6, 4, 4, 3);
+  const auto& l = packed.layout;
+  const size_t slice = 4*96;
+  std::vector<float> guide(size_t(l.num_condition_video)*96, 13.f);
+  std::vector<float> audio_guide(size_t(l.num_condition_audio)*32, 17.f);
+  std::vector<float> initial(size_t(l.num_video_rows)*96, .25f);
+  std::vector<float> audio(size_t(l.num_audio_rows)*32, -.5f);
+  ContinuationConstraint c;
+  c.video.target_values_per_channel = initial.size();
+  c.video.original.assign(4*slice, 2.f);
+  c.video_restore_prefix.assign(slice, 31.f);
+  c.capstone.assign(slice, 23.f);
+  c.capstone_start_step = 1;
+  c.audio.channels = 2;
+  c.audio.target_values_per_channel = audio.size()/2;
+  c.audio.original.assign(64, 3.f);
+  c.set_context_noise({.8f, false, true}, 4);
+  const float scale[] = {0, .8f, .4f, 0};
+  for (auto kind : {SamplerKind::kEuler, SamplerKind::kAb2, SamplerKind::kRenoise})
+    for (bool cancel : {false, true}) {
+      FlowScheduler v(12), a(3);
+      v.set_sigmas({1.f, .4f, 0});
+      a.set_sigmas({1.f, .6f, .2f, 0});
+      v.set_sampler(kind); a.set_sampler(kind);
+      Transformer model;
+      auto in = make_denoise_inputs(l, packed.indices, v, a);
+      in.continuation = &c;
+      in.position_ids = &packed.position_ids;
+      in.init_video_rows = &initial; in.init_audio_rows = &audio;
+      in.condition_video_rows = &guide; in.condition_audio_rows = &audio_guide;
+      int calls = 0;
+      in.velocity = [&](int step, const RowTimesteps& times, const float* vr, const float* ar,
+                        float* vv, float* av) {
+        ++calls;
+        const int vi[] = {0, 0, 1, 1};
+        const bool capstone = vi[step] >= 1;
+        CHECK(vr[0] == 13.f);
+        CHECK(ar[0] == 17.f);
+        CHECK(times.indices.size() == size_t(l.total_rows()) + (capstone ? 4 : 0));
+        for (size_t f = 0; f < 4; ++f) {
+          const float s = v.sigmas()[vi[step]] * scale[f];
+          CHECK_NEAR(vr[guide.size()+f*slice], (1-s)*2.f+s*.25f, 1e-6);
+          CHECK(vr[(f+1)*slice] == vr[guide.size()+f*slice]);
+          const auto t = times.indices[packed.indices.video[l.num_condition_video+f*4]];
+          CHECK_NEAR(times.unique[t], 1-s, 1e-7);
+          CHECK(times.indices[packed.indices.video[(f+1)*4]] == t);
+        }
+        if (capstone) {
+          CHECK(vr[guide.size()+initial.size()] == 23.f);
+          CHECK(times.unique[times.indices.back()] == 1.f);
+        }
+        std::fill_n(vv, guide.size()+initial.size()+(capstone ? slice : 0), 1.f);
+        std::fill_n(av, audio_guide.size()+audio.size(), 1.f);
+      };
+      auto output = dit::denoise(model, in, [&](int, int) { return !cancel; });
+      CHECK(calls == (cancel ? 1 : 4));
+      CHECK(output.video_rows.size() == initial.size());
+      CHECK(std::equal(c.video_restore_prefix.begin(), c.video_restore_prefix.end(), output.video_rows.begin()));
+      CHECK(c.video.noise.empty());
+    }
+}
+
 SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
   using namespace slopfab;
   using namespace slopfab::sampler;

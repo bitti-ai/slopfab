@@ -21,7 +21,7 @@ std::vector<float> krea_sigma_schedule(int steps, float shift) {
 
 GeneratePlan resolve_krea_plan(const GenerateRequest& r) {
   if (r.has_references() || r.image_edit.image || r.continuation || r.bridge || r.animate ||
-      r.video_transition || r.preserve_driving_audio || r.keystone.source || r.end_anchor_latents ||
+      r.video_transition || r.preserve_driving_audio || r.keystone.source || r.context_noise.strength != 0 || r.end_anchor_latents ||
       !r.end_anchor_path.empty() || !r.loras.empty() || r.cache_threshold != 0 || r.skip_every ||
       r.block_cache_span || r.motion_cache.active() ||
       (r.schedule != sampler::ScheduleKind::kDefault && r.schedule != sampler::ScheduleKind::kBeta))

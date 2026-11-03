@@ -252,6 +252,10 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                 ? build_row_timesteps(layout, indices, vt, at, std::max(vt, 0.999f), 1.0f)
                 : build_row_timesteps(layout, indices, vt, at);
       }
+      if (inputs.continuation)
+        overlap.prepare_context_call(all_video.data(), all_video.size(), layout, indices,
+                                     row_timesteps, inputs.video_scheduler->sigmas()[update.video],
+                                     inputs.video_scheduler->sigmas()[update.video + 1], patch);
       const auto evaluate = [&] {
         const bool tack = has_capstone && update.video >= size_t(inputs.continuation->capstone_start_step);
         auto call_times = row_timesteps;

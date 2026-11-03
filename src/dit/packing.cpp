@@ -547,8 +547,10 @@ void append_video_context(SequenceLayout& l, PackedIndices& idx, std::vector<dou
 void append_clean_video_timesteps(RowTimesteps& t, int rows) {
   if (rows <= 0 || t.unique.empty() || t.unique.back() > 1)
     throw std::invalid_argument("invalid call-only video timesteps");
-  if (t.unique.back() != 1.f)
+  if (t.unique.back() != 1.f || (!t.endpoints.empty() && t.endpoints.back() != 1.f)) {
     t.unique.push_back(1.f);
+    if (!t.endpoints.empty()) t.endpoints.push_back(1.f);
+  }
   const int32_t clean = static_cast<int32_t>(t.unique.size() - 1);
   t.indices.insert(t.indices.end(), rows, clean);
   t.adaln.insert(t.adaln.end(), rows, clean * 3 + kTagVideo);

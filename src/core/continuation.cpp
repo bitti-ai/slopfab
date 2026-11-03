@@ -215,6 +215,10 @@ ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int ex
 }
 
 void LatentPrefixConstraint::capture_noise(const float* rows, size_t count) {
+  require(noise_scale.empty() || (noise_scale.size() == original.size() &&
+              std::all_of(noise_scale.begin(), noise_scale.end(), [](float x) {
+                return std::isfinite(x) && x >= 0 && x <= 1;
+              })), "invalid context noise scales");
   require(rows && channels > 0 && count % channels == 0 &&
               count / channels == target_values_per_channel && !original.empty() &&
               original.size() % channels == 0 &&
@@ -260,6 +264,7 @@ void LatentPrefixConstraint::apply(float* rows, size_t count, float sigma, int c
               original.size() / channels <= target_values_per_channel &&
               suffix_values_per_channel <= original.size() / channels &&
               noise.size() == original.size() && std::isfinite(sigma) && sigma >= 0 && sigma <= 1 &&
+              (noise_scale.empty() || noise_scale.size() == original.size()) &&
               completed_steps >= 0,
           "invalid overlap constraint update");
   const size_t prefix = original.size() / channels;
@@ -268,11 +273,12 @@ void LatentPrefixConstraint::apply(float* rows, size_t count, float sigma, int c
       const size_t from = c * prefix + i;
       const size_t front = prefix - suffix_values_per_channel;
       const size_t target = i < front ? i : target_values_per_channel - prefix + i;
+      const float level = sigma * (noise_scale.empty() ? 1.f : noise_scale[from]);
       // Explicit endpoints preserve clean source values and initial noise exactly.
       rows[c * target_values_per_channel + target] =
-          sigma == 0   ? original[from]
-          : sigma == 1 ? noise[from]
-                       : (1 - sigma) * original[from] + sigma * noise[from];
+          level == 0   ? original[from]
+          : level == 1 ? noise[from]
+                       : (1 - level) * original[from] + level * noise[from];
     }
   }
   for (const auto& anchor : anchors) {
@@ -357,6 +363,85 @@ ContinuationConstraint make_keystone_constraint(const LatentClip& source,
 void ContinuationConstraint::restore_video(std::vector<float>& rows) const {
   require(video_restore_prefix.size() <= rows.size(), "restored front exceeds video buffer");
   std::copy(video_restore_prefix.begin(), video_restore_prefix.end(), rows.begin());
+}
+
+void ContextNoise::validate() const {
+  require(std::isfinite(strength) && strength >= 0 && strength <= 1,
+          "context noise strength must be in [0,1]");
+}
+
+void ContinuationConstraint::set_context_noise(const ContextNoise& config, int rows_per_frame, int video_dim) {
+  config.validate();
+  if (config.strength == 0)
+    return;
+  const size_t slice = size_t(rows_per_frame) * video_dim;
+  require(rows_per_frame > 0 && video_dim > 0 && video.channels == 1 && video.suffix_values_per_channel == 0 &&
+              !video.original.empty() && video.original.size() % slice == 0 &&
+              video_restore_prefix.size() <= video.original.size(),
+          "context noise needs an H3 continuation prefix");
+  const size_t held = video.original.size() / slice;
+  const size_t first = config.skip_first ? 1 : 0;
+  context_noise_scales.assign(held, 0.f);
+  for (size_t f = first; f < held; ++f) {
+    // A single available slice is also the join: keep it clean.
+    const float remaining = held - first > 1 ? float(held - 1 - f) / float(held - first - 1) : 0.f;
+    context_noise_scales[f] = config.strength * (config.ease ? remaining * remaining : remaining);
+  }
+  // A grafted Keystone always wins, even if skip_first was disabled.
+  if (!video_restore_prefix.empty())
+    context_noise_scales[0] = 0;
+  auto restored = video.original;
+  std::copy(video_restore_prefix.begin(), video_restore_prefix.end(), restored.begin());
+  video_restore_prefix = std::move(restored);
+  video.noise_scale.resize(video.original.size());
+  for (size_t f = 0; f < held; ++f)
+    std::fill_n(video.noise_scale.begin() + f * slice, slice, context_noise_scales[f]);
+}
+
+void ContinuationConstraint::prepare_context_call(
+    float* rows, size_t count, const dit::SequenceLayout& layout, const dit::PackedIndices& indices,
+    dit::RowTimesteps& times, float sigma, float sigma_next, int video_dim) const {
+  if (context_noise_scales.empty())
+    return;
+  const size_t held_rows = context_noise_scales.size() * layout.rows_per_frame();
+  const size_t cv = size_t(layout.num_condition_video);
+  require(video_dim > 0 && cv >= held_rows && (!rows || count >= (cv + held_rows) * video_dim) &&
+              times.indices.size() == indices.tags.size() &&
+              times.adaln.size() == indices.tags.size() &&
+              indices.video.size() >= cv + held_rows &&
+              std::isfinite(sigma) && sigma >= 0 && sigma <= 1 &&
+              std::isfinite(sigma_next) && sigma_next >= 0 && sigma_next <= 1,
+          "invalid context noise model-call geometry");
+  // Rebuild selectors by time pairs, also supporting Hyperflow endpoints.
+  using Pair = std::pair<float, float>;
+  const bool endpoints = !times.endpoints.empty();
+  std::vector<Pair> values(times.indices.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    const auto t = size_t(times.indices[i]);
+    values[i] = {times.unique.at(t), endpoints ? times.endpoints.at(t) : 0.f};
+  }
+  if (rows)
+    std::copy_n(rows + cv * video_dim, held_rows * video_dim, rows + (cv - held_rows) * video_dim);
+  for (size_t r = 0; r < held_rows; ++r) {
+    const float scale = context_noise_scales[r / layout.rows_per_frame()];
+    const Pair time{1.f - sigma * scale, endpoints ? 1.f - sigma_next * scale : 0.f};
+    values.at(indices.video[cv - held_rows + r]) = time;
+    values.at(indices.video[cv + r]) = time;
+  }
+  auto unique = values;
+  std::sort(unique.begin(), unique.end());
+  unique.erase(std::unique(unique.begin(), unique.end()), unique.end());
+  times.unique.clear();
+  times.endpoints.clear();
+  for (const auto& time : unique) {
+    times.unique.push_back(time.first);
+    if (endpoints) times.endpoints.push_back(time.second);
+  }
+  for (size_t i = 0; i < values.size(); ++i) {
+    const int32_t t = int32_t(std::lower_bound(unique.begin(), unique.end(), values[i]) - unique.begin());
+    times.indices[i] = t;
+    times.adaln[i] = t * 3 + std::max(indices.tags[i], 0);
+  }
 }
 
 void append_continuation_guide(const LatentClip& source, const ContinuationPlan& p, uint64_t seed,
