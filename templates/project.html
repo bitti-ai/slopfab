@@ -88,7 +88,7 @@
       .logo {
         color: #171c10;
         background: var(--accent);
-        border-radius: 9px;
+        border-radius: 4px;
         width: 31px;
         height: 31px;
         display: grid;
@@ -105,7 +105,7 @@
         letter-spacing: 0.07em;
         text-transform: uppercase;
         border: 1px solid var(--line);
-        border-radius: 30px;
+        border-radius: 6px;
         padding: 5px 10px;
         color: var(--muted);
       }
@@ -178,7 +178,7 @@
       }
       .viewer {
         border: 1px solid var(--line);
-        border-radius: 15px;
+        border-radius: 6px;
         overflow: hidden;
         background: #0a0b0c;
       }
@@ -329,7 +329,7 @@
         color: var(--accent);
         font-size: 11px;
         padding: 4px 9px;
-        border-radius: 5px;
+        border-radius: 2px;
         background: #d4ef8510;
         white-space: nowrap;
       }
@@ -342,7 +342,7 @@
       }
       .inspector {
         border: 1px solid var(--line);
-        border-radius: 15px;
+        border-radius: 6px;
         background: var(--panel);
         padding: 24px;
       }
@@ -368,7 +368,7 @@
       textarea {
         width: 100%;
         border: 1px solid #41484b;
-        border-radius: 8px;
+        border-radius: 3px;
         background: #131718;
         color: var(--text);
         padding: 11px 12px;
@@ -383,7 +383,7 @@
       }
       .primary {
         border: 0;
-        border-radius: 8px;
+        border-radius: 3px;
         background: var(--accent);
         color: #202815;
         padding: 12px 18px;
@@ -400,7 +400,7 @@
       .secondary {
         border: 1px solid var(--line);
         background: transparent;
-        border-radius: 8px;
+        border-radius: 3px;
         color: var(--text);
         padding: 8px 13px;
       }
@@ -412,7 +412,7 @@
         padding: 22px;
         background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 15px;
+        border-radius: 6px;
         min-width: 0;
       }
       .generation-prompts .section-row {
@@ -459,7 +459,7 @@
         overflow-wrap: anywhere;
         padding: 12px;
         background: #111516;
-        border-radius: 8px;
+        border-radius: 3px;
         color: #bac4c3;
       }
       .sequence {
@@ -479,16 +479,52 @@
         padding-bottom: 5px;
       }
       .clip {
-        flex: 0 0 160px;
+        flex: 0 0 180px;
         text-align: left;
         background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 10px;
+        border-radius: 4px;
         padding: 14px;
         color: var(--text);
       }
       .clip.selected {
         border-color: var(--accent);
+      }
+      .clip-thumbnail {
+        aspect-ratio: 16/9;
+        position: relative;
+        display: grid;
+        place-items: center;
+        background: #101415;
+        overflow: hidden;
+        border-radius: 2px;
+        color: var(--muted);
+        font-size: 10px;
+        margin-bottom: 10px;
+      }
+      .clip-thumbnail video {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        pointer-events: none;
+        visibility: hidden;
+      }
+      .clip-thumbnail.ready video {
+        visibility: visible;
+      }
+      .clip-thumbnail.ready > span {
+        visibility: hidden;
+      }
+      .thumb > .clip-thumbnail {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+      .full-video {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
       }
       .clip .number {
         display: block;
@@ -503,7 +539,7 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .clip span:last-child {
+      .clip > span:last-child {
         display: block;
         color: var(--muted);
         font-size: 11px;
@@ -560,7 +596,7 @@
         overflow: hidden;
         background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 11px;
+        border-radius: 4px;
       }
       .card.selected {
         border-color: var(--accent);
@@ -589,7 +625,7 @@
         left: 10px;
         bottom: 10px;
         border: 1px solid #ffffff20;
-        border-radius: 5px;
+        border-radius: 2px;
         background: #101514c9;
         padding: 3px 7px;
         font-size: 10px;
@@ -613,7 +649,7 @@
       }
       .empty {
         border: 1px dashed var(--line);
-        border-radius: 12px;
+        border-radius: 5px;
         text-align: center;
         padding: 36px;
         color: var(--muted);
@@ -649,7 +685,7 @@
         background: var(--panel);
         color: var(--text);
         border: 1px solid #515a56;
-        border-radius: 16px;
+        border-radius: 6px;
         padding: 28px;
         width: min(680px, calc(100vw - 32px));
         box-shadow: 0 30px 100px #0008;
@@ -657,6 +693,28 @@
       dialog::backdrop {
         background: #030605bb;
         backdrop-filter: blur(5px);
+      }
+      #media-dialog {
+        width: min(1240px, calc(100vw - 32px));
+        max-height: calc(100dvh - 32px);
+        overflow: auto;
+        padding: 20px;
+      }
+      #media-dialog .stage {
+        min-height: 180px;
+        max-height: 60vh;
+      }
+      #media-dialog .inspector textarea {
+        min-height: 110px;
+      }
+      #media-dialog .section-row > h2 {
+        min-width: 0;
+      }
+      #close-media {
+        flex-shrink: 0;
+      }
+      body:has(dialog[open]) {
+        overflow: hidden;
       }
       dialog textarea {
         min-height: 250px;
@@ -793,9 +851,6 @@
     <header>
       <div class="brand">
         <span class="logo" aria-hidden="true">s.</span>slopfab
-        <span class="muted" style="font-weight: 400; margin-left: 10px"
-          >/ projects</span
-        >
       </div>
       <div class="header-right">
         <span class="pill"><span class="dot"></span>Local project</span
@@ -916,6 +971,19 @@
         >
       </footer>
     </main>
+    <dialog id="media-dialog" aria-labelledby="popup-item-title">
+      <div class="section-row">
+        <h2>Project library</h2>
+        <button
+          id="close-media"
+          class="secondary"
+          aria-label="Close media preview"
+        >
+          Close
+        </button>
+      </div>
+      <div id="popup-workspace" class="workspace"></div>
+    </dialog>
     <dialog id="prompt-dialog" aria-labelledby="dialog-title">
       <h2 id="dialog-title">Ready for your agent</h2>
       <p class="muted">Copy this prompt and paste it into your conversation.</p>
@@ -955,7 +1023,10 @@
         active(i) &&
         (!i.parent ||
           project.items.some((p) => p.id === i.parent && active(p)));
-      function showGenerationPrompts(item) {
+      function showGenerationPrompts(
+        item,
+        $ = (id) => document.getElementById(id),
+      ) {
         const versions = $("prompt-version");
         versions.replaceChildren();
         versions.disabled = !item;
@@ -1069,7 +1140,26 @@
       }
       let selected = null,
         filter = "all",
-        media = null;
+        media = null,
+        popupMedia = null,
+        popupSelected = null;
+      // Older manifests have no media revision; registration order breaks ties.
+      function latestFullVideo() {
+        const videos = project.items.filter(
+          (i) => i.kind === "video" && available(i),
+        );
+        const assembled = videos.filter((v) =>
+          project.items.some((i) => i.kind === "clip" && i.parent === v.id),
+        );
+        return (assembled.length ? assembled : videos).reduce(
+          (latest, item) =>
+            !latest ||
+            (item.media_revision || 0) >= (latest.media_revision || 0)
+              ? item
+              : latest,
+          null,
+        );
+      }
       const symbols = { video: "▶", image: "▧", music: "♫", clip: "▶" };
       const safeURL = (path) => {
         if (
@@ -1111,10 +1201,9 @@
         svg.append(path);
         button.append(svg);
       };
-      function player(item, url) {
+      function player(item, url, stage, warn) {
         const audio = item.kind === "music";
         const m = el(audio ? "audio" : "video");
-        media = m;
         m.preload = "metadata";
         m.src = url;
         m.setAttribute("playsinline", "");
@@ -1124,9 +1213,9 @@
             el("div", "disc"),
             el("div", "eyebrow", "Audio preview"),
           );
-          $("stage").append(cover);
+          stage.append(cover);
         }
-        $("stage").append(m);
+        stage.append(m);
         const controls = el("div", "player-controls");
         const play = el("button"),
           clock = el("span", "clock", "0:00 / 0:00"),
@@ -1187,7 +1276,7 @@
             try {
               await m.play();
             } catch (e) {
-              showWarning(
+              warn(
                 "Playback is unavailable. Ask your agent to create a compatible preview.",
               );
             }
@@ -1216,7 +1305,7 @@
           update();
         };
         m.onerror = () =>
-          showWarning(
+          warn(
             "This file could not be played. Use “Create browser preview” to ask your agent for a compatible file.",
           );
         seek.oninput = () => {
@@ -1245,28 +1334,39 @@
           full.onclick = async () => {
             try {
               if (document.fullscreenElement) await document.exitFullscreen();
-              else await $("stage").requestFullscreen();
+              else await stage.requestFullscreen();
             } catch (e) {
-              showWarning("Fullscreen is unavailable in this browser.");
+              warn("Fullscreen is unavailable in this browser.");
             }
           };
           controls.append(full);
         }
-        $("stage").append(controls);
+        stage.append(controls);
+        return m;
       }
-      function showWarning(text) {
-        $("warning").textContent = text;
-        $("warning").classList.remove("hidden");
+      function showWarning(text, warning = $("warning")) {
+        warning.textContent = text;
+        warning.classList.remove("hidden");
       }
-      function choose(item) {
-        if (media) {
-          media.pause();
-          media.removeAttribute("src");
-          media.load();
+      function releaseMedia(m) {
+        if (!m) return;
+        m.pause();
+        m.onerror = null;
+        m.removeAttribute("src");
+        m.load();
+      }
+      function choose(item, popup = false) {
+        const $ = (id) => document.getElementById((popup ? "popup-" : "") + id);
+        const warn = (text) => showWarning(text, $("warning"));
+        releaseMedia(popup ? popupMedia : media);
+        if (popup) {
+          popupSelected = item;
+          popupMedia = null;
+        } else {
+          selected = item;
           media = null;
         }
-        selected = item;
-        showGenerationPrompts(item);
+        showGenerationPrompts(item, $);
         $("stage").replaceChildren();
         $("warning").classList.add("hidden");
         $("action").replaceChildren();
@@ -1293,7 +1393,6 @@
           drawLibrary();
           return;
         }
-        location.hash = encodeURIComponent(item.id);
         $("item-title").textContent = item.title || item.id;
         $("item-subtitle").textContent = `${item.id} · Version ${item.version}`;
         $("item-badge").textContent = item.removed ? "Removed" : item.kind;
@@ -1305,11 +1404,15 @@
             img.src = url;
             img.alt = item.title || item.id;
             img.onerror = () =>
-              showWarning(
+              warn(
                 "Image unavailable. Check the registered filename or ask your agent for a browser preview.",
               );
             $("stage").append(img);
-          } else player(item, url);
+          } else {
+            const m = player(item, url, $("stage"), warn);
+            if (popup) popupMedia = m;
+            else media = m;
+          }
         } else {
           const p = el("div", "placeholder");
           p.append(
@@ -1324,11 +1427,9 @@
           $("stage").append(p);
         }
         if (item.needs_rebuild)
-          showWarning(
-            "Clips have changed. This assembled video needs rebuilding.",
-          );
+          warn("Clips have changed. This assembled video needs rebuilding.");
         if (item.removed)
-          showWarning(
+          warn(
             "This item is removed from the active project. Its files are retained.",
           );
         const actions = item.removed
@@ -1356,19 +1457,42 @@
           null,
           2,
         );
+        if (popup) return;
         const parent = item.kind === "video" ? item.id : item.parent;
+        const fullVideo = project.items.find(
+          (i) => i.id === parent && i.kind === "video" && available(i),
+        );
         const clips = project.items
           .filter(
             (i) => i.kind === "clip" && i.parent === parent && available(i),
           )
           .sort((a, b) => (a.position || 0) - (b.position || 0));
-        $("sequence").classList.toggle("hidden", !clips.length);
+        $("sequence").classList.toggle("hidden", !fullVideo);
+        $("sequence-list").querySelectorAll("video").forEach(releaseMedia);
         $("sequence-list").replaceChildren();
+        if (fullVideo) {
+          const b = el(
+            "button",
+            `clip full-video${item.id === fullVideo.id ? " selected" : ""}`,
+          );
+          b.type = "button";
+          b.setAttribute("aria-pressed", String(item.id === fullVideo.id));
+          b.append(
+            el("span", "number", "FULL VIDEO"),
+            el("strong", "", fullVideo.title || fullVideo.id),
+            el("span", "", `Version ${fullVideo.version}`),
+          );
+          b.onclick = () => choose(fullVideo);
+          $("sequence-list").append(b);
+        }
         clips.forEach((clip, n) => {
           const b = el(
             "button",
             `clip${clip.id === item.id ? " selected" : ""}`,
           );
+          b.type = "button";
+          b.setAttribute("aria-pressed", String(clip.id === item.id));
+          b.append(clipThumbnail(clip));
           b.append(
             el("span", "number", `CLIP ${String(n + 1).padStart(2, "0")}`),
             el("strong", "", clip.title || clip.id),
@@ -1385,6 +1509,37 @@
         });
         drawLibrary();
       }
+      function clipThumbnail(item) {
+        const thumb = el("div", "clip-thumbnail");
+        thumb.setAttribute("aria-hidden", "true");
+        thumb.append(el("span", "", "Preview unavailable"));
+        const path = item.preview || item.file,
+          url = safeURL(path);
+        if (!url || !/\.(mp4|webm)$/i.test(path)) return thumb;
+        // A muted, paused video decodes one frame locally, including under file://.
+        // No poster image, canvas readback, server or generated thumbnail is needed.
+        const video = el("video");
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = "metadata";
+        video.tabIndex = -1;
+        video.onloadedmetadata = () => {
+          const end = Math.min(item.end || video.duration, video.duration);
+          const start = Math.min(item.start || 0, Math.max(0, end - 0.01));
+          video.currentTime = Math.min(
+            start + 0.1,
+            Math.max(start, end - 0.01),
+          );
+        };
+        video.onseeked = () => thumb.classList.add("ready");
+        video.onerror = () => {
+          video.remove();
+          releaseMedia(video);
+        };
+        video.src = url;
+        thumb.append(video);
+        return thumb;
+      }
       function drawLibrary() {
         const showRemoved = $("show-removed").checked;
         const items = project.items.filter(
@@ -1392,6 +1547,7 @@
             (showRemoved || available(i)) &&
             (filter === "all" || i.kind === filter),
         );
+        $("grid").querySelectorAll("video").forEach(releaseMedia);
         $("grid").replaceChildren();
         $("asset-count").textContent =
           `${project.items.filter(available).length} active items`;
@@ -1417,7 +1573,8 @@
             img.alt = "";
             img.loading = "lazy";
             thumb.append(img);
-          } else thumb.append(el("span", "symbol", symbols[item.kind]));
+          } else if (item.kind === "clip") thumb.append(clipThumbnail(item));
+          else thumb.append(el("span", "symbol", symbols[item.kind]));
           thumb.append(
             el(
               "span",
@@ -1435,13 +1592,18 @@
             ),
           );
           b.append(thumb, info);
-          b.onclick = () => choose(item);
+          b.onclick = () => {
+            if (item.kind === "clip" && available(item)) choose(item);
+            else openLibraryItem(item);
+          };
           $("grid").append(b);
         });
       }
-      function agentPrompt() {
-        const action = $("action").value,
-          item = selected;
+      function agentPrompt(
+        item = selected,
+        $ = (id) => document.getElementById(id),
+      ) {
+        const action = $("action").value;
         const instructions = {
           new: "Generate new content for this project and register the results.",
           regenerate:
@@ -1523,11 +1685,65 @@
       );
       $("location").textContent = project.directory;
       $("show-removed").onchange = drawLibrary;
-      $("prepare").onclick = () => {
-        $("agent-prompt").value = agentPrompt();
+      function preparePrompt(item, lookup) {
+        $("agent-prompt").value = agentPrompt(item, lookup);
         $("copy-status").textContent = "";
         $("prompt-dialog").showModal();
-      };
+      }
+      $("prepare").onclick = () => preparePrompt(selected, $);
+      // Share the review UI, but give the popup independent selection and playback.
+      const popupLookup = (id) => document.getElementById("popup-" + id);
+      function popupClone(selector) {
+        const node = document.querySelector(selector).cloneNode(true);
+        for (const child of [node, ...node.querySelectorAll("*")]) {
+          if (child.id) child.id = "popup-" + child.id;
+          for (const attr of ["for", "aria-labelledby", "aria-describedby"])
+            if (child.hasAttribute(attr))
+              child.setAttribute(
+                attr,
+                child
+                  .getAttribute(attr)
+                  .split(" ")
+                  .map((id) => "popup-" + id)
+                  .join(" "),
+              );
+        }
+        return node;
+      }
+      function openLibraryItem(item) {
+        if (media) media.pause();
+        const popupPreview = el("div");
+        popupPreview.append(
+          popupClone(".viewer"),
+          popupClone(".generation-prompts"),
+        );
+        $("popup-workspace").replaceChildren(
+          popupPreview,
+          popupClone(".inspector"),
+        );
+        popupLookup("prepare").onclick = () =>
+          preparePrompt(popupSelected, popupLookup);
+        $("media-dialog").showModal();
+        choose(item, true);
+      }
+      $("close-media").onclick = () => $("media-dialog").close();
+      $("media-dialog").addEventListener("close", () => {
+        releaseMedia(popupMedia);
+        popupMedia = null;
+        popupSelected = null;
+        $("popup-workspace").replaceChildren();
+      });
+      $("media-dialog").addEventListener("click", (event) => {
+        if (event.target !== $("media-dialog")) return;
+        const rect = event.target.getBoundingClientRect();
+        if (
+          event.clientX < rect.left ||
+          event.clientX > rect.right ||
+          event.clientY < rect.top ||
+          event.clientY > rect.bottom
+        )
+          event.target.close();
+      });
       $("close-dialog").onclick = () => $("prompt-dialog").close();
       $("copy-prompt").onclick = async () => {
         const text = $("agent-prompt");
@@ -1547,15 +1763,7 @@
             : "Prompt selected. Press Ctrl+C (Command+C on Mac) to copy.";
         }
       };
-      let hash = "";
-      try {
-        hash = decodeURIComponent(location.hash.slice(1));
-      } catch (ignore) {}
-      choose(
-        project.items.find((i) => i.id === hash) ||
-          project.items.find(available) ||
-          null,
-      );
+      choose(latestFullVideo() || project.items.find(available) || null);
     </script>
   </body>
 </html>

@@ -16,17 +16,46 @@ const assert = require("assert/strict");
     });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.goto(pathToFileURL(path.resolve(process.argv[3])).href);
-    await page
-      .getByRole("button", { name: "Review Final film", exact: true })
-      .click();
-    await page.waitForFunction(
-      () => document.querySelector("video")?.readyState >= 1,
+    await page.goto(
+      pathToFileURL(path.resolve(process.argv[3])).href + "#clip-a",
     );
-    const player = page.locator("video");
+    assert.equal(await page.locator("#item-title").textContent(), "Final film");
+    assert(
+      (
+        await page.locator("#sequence-list > button").first().textContent()
+      ).includes("FULL VIDEO"),
+    );
+    assert.equal(
+      await page
+        .locator("#sequence-list > button")
+        .first()
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    assert(
+      !(await page.locator("header").textContent()).includes("/ projects"),
+    );
+    await page.waitForFunction(
+      () => document.querySelector("#stage video")?.readyState >= 1,
+    );
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("#sequence-list .clip-thumbnail.ready")
+          .length === 2,
+    );
+    assert(
+      await page
+        .locator("#sequence-list video")
+        .evaluateAll((videos) =>
+          videos.every(
+            (video) => video.paused && video.currentTime > 0 && !video.poster,
+          ),
+        ),
+    );
+    const player = page.locator("#stage video");
     await page.getByRole("button", { name: "Play", exact: true }).click();
     await page.waitForFunction(
-      () => document.querySelector("video").currentTime > 0.15,
+      () => document.querySelector("#stage video").currentTime > 0.15,
     );
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     assert(await player.evaluate((m) => m.paused));
@@ -38,6 +67,27 @@ const assert = require("assert/strict");
     assert.equal(await player.evaluate((m) => m.playbackRate), 1.5);
     await page.getByRole("button", { name: "Mute", exact: true }).click();
     assert(await player.evaluate((m) => m.muted));
+    const mainTime = await player.evaluate((m) => m.currentTime);
+    await page
+      .getByRole("button", { name: "Review Final film", exact: true })
+      .click();
+    assert(await page.locator("#media-dialog").isVisible());
+    await page.waitForFunction(
+      () => document.querySelector("#popup-stage video")?.readyState >= 1,
+    );
+    await page
+      .locator("#media-dialog")
+      .getByRole("button", { name: "Play", exact: true })
+      .click();
+    await page.waitForFunction(
+      () => document.querySelector("#popup-stage video").currentTime > 0.15,
+    );
+    await page.getByRole("button", { name: "Close media preview" }).click();
+    assert.equal(await player.evaluate((m) => m.currentTime), mainTime);
+    await page.waitForFunction(
+      () => !document.querySelector("#popup-stage video"),
+    );
+    assert.equal(await page.locator("#popup-stage video").count(), 0);
     await page.screenshot({
       path: path.join(path.dirname(process.argv[3]), "desktop-review.png"),
       fullPage: true,
@@ -45,6 +95,13 @@ const assert = require("assert/strict");
     await page
       .getByRole("button", { name: "Review Opening shot", exact: true })
       .click();
+    assert.equal(
+      await page.locator("#item-title").textContent(),
+      "Opening shot",
+    );
+    await page.locator("#sequence-list > button").first().click();
+    assert.equal(await page.locator("#item-title").textContent(), "Final film");
+    await page.locator("#sequence-list > button").nth(1).click();
     await page.getByLabel("Action", { exact: true }).selectOption("remove");
     await page
       .getByLabel("Your direction", { exact: false })
@@ -79,19 +136,50 @@ const assert = require("assert/strict");
       .getByRole("button", { name: "Review Cover image", exact: true })
       .click();
     await page.waitForFunction(
-      () => document.querySelector("#stage img")?.naturalWidth > 0,
+      () => document.querySelector("#popup-stage img")?.naturalWidth > 0,
     );
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert(
+      await page
+        .locator("#media-dialog")
+        .evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth),
+    );
+    await page.screenshot({
+      path: path.join(path.dirname(process.argv[3]), "mobile-popup.png"),
+    });
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    assert.equal(
+      await page.locator("#item-title").textContent(),
+      "Opening shot",
+    );
+    await page.locator("#popup-action").selectOption("edit");
+    await page.locator("#popup-prepare").click();
+    assert(
+      (await page.locator("#agent-prompt").inputValue()).includes(
+        'Target: "cover"',
+      ),
+    );
+    await page.locator("#close-dialog").click();
+    await page.keyboard.press("Escape");
+    assert(!(await page.locator("#media-dialog").isVisible()));
     await page
       .getByRole("button", { name: "Review Night score", exact: true })
       .click();
     await page.waitForFunction(
       () => document.querySelector("audio")?.readyState >= 1,
     );
-    await page.getByRole("button", { name: "Play", exact: true }).click();
+    await page
+      .locator("#media-dialog")
+      .getByRole("button", { name: "Play", exact: true })
+      .click();
     await page.waitForFunction(
       () => document.querySelector("audio").currentTime > 0.15,
     );
-    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    await page
+      .locator("#media-dialog")
+      .getByRole("button", { name: "Pause", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Close media preview" }).click();
     await page.getByRole("tab", { name: "Clips", exact: true }).click();
     assert.equal(await page.locator("#grid .card").count(), 2);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -106,7 +194,7 @@ const assert = require("assert/strict");
     );
     assert(
       await page
-        .locator(".player-controls")
+        .locator("#stage .player-controls")
         .evaluate(
           (n) =>
             n.getBoundingClientRect().right <=
@@ -262,6 +350,41 @@ const assert = require("assert/strict");
     });
     assert.equal(await page.locator("#item-title img").count(), 0);
     assert.equal(await page.evaluate(() => window.injected), undefined);
+    await page.evaluate(() => {
+      project.items.find((i) => i.id === "clip-a").start = 1;
+      choose(project.items.find((i) => i.id === "film"));
+    });
+    await page.waitForFunction(() => {
+      const frame = document.querySelector(
+        "#sequence-list .clip-thumbnail.ready video",
+      );
+      return frame && frame.currentTime >= 1;
+    });
+    await page.locator("#sequence-list > button").nth(1).click();
+    await page.waitForFunction(
+      () => document.querySelector("#stage video")?.currentTime >= 1,
+    );
+    await page.evaluate(() => {
+      const original = project.items.find((i) => i.id === "film");
+      original.media_revision = 20;
+      const later = { ...original, id: "later-film", media_revision: 21 };
+      project.items.push(later, {
+        id: "later-clip",
+        kind: "clip",
+        parent: later.id,
+      });
+      if (latestFullVideo().id !== later.id)
+        throw Error("Latest video not selected");
+      original.media_revision = 22;
+      if (latestFullVideo().id !== original.id)
+        throw Error("Updated video not selected");
+      original.removed = true;
+      if (latestFullVideo().id !== later.id)
+        throw Error("Removed video selected");
+      later.removed = true;
+      if (latestFullVideo() !== null)
+        throw Error("Expected no active full video");
+    });
     assert.deepEqual(errors, []);
     console.log(
       "PASS: offline previews, controls, prompts/lyrics/history, exact copying, fallback, escaping and mobile layout",

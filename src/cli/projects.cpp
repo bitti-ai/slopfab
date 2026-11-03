@@ -364,6 +364,8 @@ Value change_item(const fs::path& directory, const std::string& action, const st
     if (options.count("--preview"))
       item["preview"] =
           str(import_file(directory, fs::u8path(options.at("--preview")), id, version, "preview"));
+    if (source != options.end() || options.count("--preview"))
+      item["media_revision"] = num(project.find("revision")->as_number() + 1);
   }
   if (index == items.size())
     items.emplace_back(item);

@@ -97,10 +97,14 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert updated["file"] == "assets/cover/v2/source.png"
     assert updated["history"][0]["file"] == image["file"]
     assert (directory / image["file"]).exists()
+    previous_media_revision = item("film")["media_revision"]
     run("projects", "update", "demo", "film", "--file", str(preview))
     assert not item("film")["needs_rebuild"] and "preview" not in item("film")
+    assert item("film")["media_revision"] == project()["revision"] > previous_media_revision
+    film_media_revision = item("film")["media_revision"]
     run("projects", "update", "demo", "clip-a", "--position", "0")
     assert item("film")["needs_rebuild"]
+    assert item("film")["media_revision"] == film_media_revision
 
     # Dry runs resolve project paths but cannot create files or modify metadata.
     before = (directory / "project.json").read_bytes()
