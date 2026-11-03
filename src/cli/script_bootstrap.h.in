@@ -1,0 +1,2 @@
+#pragma once
+inline constexpr const char* kScriptBootstrap = R"SLOPFAB_JS(@SLOPFAB_SCRIPT_BOOTSTRAP@)SLOPFAB_JS";

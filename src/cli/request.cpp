@@ -1,6 +1,7 @@
 #include "agent.h"
 #include "startup.h"
 #include "settings.h"
+#include "mods.h"
 #include "commands.h"
 #include "slopfab/model_profile.h"
 #include <cmath>
@@ -486,6 +487,11 @@ Value capabilities() {
   return Value(Object{
       {"version", str(kVersion)},
       {"protocol_version", num(1)},
+      {"scripting", Value(Object{{"engine",str("QuickJS-NG 0.18.0")}, {"api_version",num(1)},
+          {"command",str("slopfab run FILE.js -- ARGS")},
+          {"apis",Value(Array{str("filesystem"),str("binary files"),str("paths"),str("processes"),
+              str("HTTP/downloads"),str("CLI"),str("environment"),str("timers"),str("SHA-256")})}})},
+      {"mod_commands",Value(mod_commands())},
       {"backends", Value(backends)},
       {"models", Value(models)},
       {"prompting", Value(Object{{"index", str("slopfab prompts list")},
@@ -508,7 +514,7 @@ Value capabilities() {
       {"mods",
        Value(Object{{"index_command", str("slopfab mods list")},
                     {"load_command", str("slopfab mods load NAME")},
-                    {"format", str("mods/NAME/MOD.md: YAML front matter and Markdown prompt")}})},
+                    {"format", str("mods/NAME/MOD.md: YAML front matter and Markdown prompt; command + script register a JavaScript CLI command")}})},
       {"projects",
        Value(Object{
            {"help", str("slopfab help projects")},

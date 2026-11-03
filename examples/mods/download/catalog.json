@@ -1,0 +1,13 @@
+{
+  "minimaxh3": {
+    "source": "https://huggingface.co/Comfy-Org/MiniMax-H3",
+    "note": "Choose one transformer and a compatible text encoder plus video/audio VAEs; listing does not guarantee local backend compatibility.",
+    "files": [
+      {"id": "fl2va-w6a8", "role": "transformer", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors"},
+      {"id": "ref2va-bf16", "role": "transformer", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_bf16.safetensors"},
+      {"id": "text-bf16", "role": "text_encoder", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_bf16.safetensors"},
+      {"id": "video-vae", "role": "vae", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors"},
+      {"id": "audio-vae", "role": "vae", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors"}
+    ]
+  }
+}

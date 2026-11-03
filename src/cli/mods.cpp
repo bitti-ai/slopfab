@@ -1,5 +1,7 @@
 #include "mods.h"
 #include "agent.h"
+#include "commands.h"
+#include "script.h"
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -104,18 +106,25 @@ std::string scalar(std::string text) {
 }
 
 struct Mod {
-  std::string name, description, prompt, content;
+  std::string name, description, prompt, content, command;
+  fs::path script;
   fs::path path;
   bool enabled = true;
   Object metadata;
 
   Object summary() const {
-    return {{"name", str(name)},
+    Object out{{"name", str(name)},
             {"description", str(description)},
             {"enabled", Value(enabled)},
             {"path", str(path.u8string())},
             {"directory", str(path.parent_path().u8string())},
             {"load_command", str("slopfab mods load " + name)}};
+    if (!command.empty()) {
+      out["command"] = str(command);
+      out["script"] = str(script.u8string());
+      out["run_command"] = str("slopfab " + command);
+    }
+    return out;
   }
 };
 
@@ -178,7 +187,7 @@ Mod read_mod(const fs::path& path, const std::string& name) {
       invalid("metadata must be a flat YAML mapping");
     auto key = trim(text.substr(0, colon));
     if (key != "name" && key != "description" && key != "enabled" && key != "author" &&
-        key != "version")
+        key != "version" && key != "command" && key != "script")
       invalid("unknown metadata field: " + key);
     if (mod.metadata.count(key))
       invalid("duplicate metadata field: " + key);
@@ -250,6 +259,21 @@ Mod read_mod(const fs::path& path, const std::string& name) {
   if (d == mod.metadata.end() || trim(d->second.as_string()).empty())
     invalid("description is required");
   mod.description = d->second.as_string();
+  const auto script = mod.metadata.find("script"), command = mod.metadata.find("command");
+  if (script != mod.metadata.end() || command != mod.metadata.end()) {
+    if (script == mod.metadata.end() || command == mod.metadata.end())
+      invalid("executable mods require both command and script fields");
+    mod.command = command->second.as_string();
+    if (!valid_name(mod.command) || find_command(mod.command))
+      invalid("mod command must be a valid name and cannot replace a built-in command");
+    const auto relative = fs::u8path(script->second.as_string());
+    if (relative.empty() || relative.is_absolute()) invalid("script must be a relative module path");
+    const auto directory = fs::canonical(path.parent_path());
+    mod.script = fs::weakly_canonical(directory / relative);
+    const auto within = mod.script.lexically_relative(directory);
+    if (within.empty() || *within.begin() == ".." || !fs::is_regular_file(mod.script))
+      invalid("script must be an existing file inside the mod directory");
+  }
   return mod;
 }
 
@@ -313,8 +337,54 @@ Index index_mods() {
                                           {"message", str(e.what())}}));
     }
   }
+  std::map<std::string, int> commands;
+  for (const auto& mod : index.mods) if (mod.enabled && !mod.command.empty()) ++commands[mod.command];
+  for (const auto& entry : commands) if (entry.second > 1)
+    index.errors.push_back(Value(Object{{"code",str("MOD_COMMAND_AMBIGUOUS")}, {"command",str(entry.first)},
+        {"message",str("multiple enabled mods register this command")}}));
   return index;
 }
+}
+
+json::Array mod_commands() {
+  const auto index = index_mods();
+  Array commands;
+  for (const auto& mod : index.mods) {
+    if (!mod.enabled || mod.command.empty()) continue;
+    const auto count = std::count_if(index.mods.begin(),index.mods.end(),[&](const auto& other) {
+      return other.enabled && other.command == mod.command;
+    });
+    if (count == 1) commands.push_back(Value(Object{{"command",str(mod.command)},
+        {"description",str(mod.description)}, {"mod",str(mod.name)}, {"script",str(mod.script.u8string())}}));
+  }
+  return commands;
+}
+
+bool try_mod_command(const std::string& command, const std::vector<std::string>& args, bool help) {
+  if (find_command(command)) return false;
+  const auto index = index_mods();
+  const Mod* selected = nullptr; bool disabled = false;
+  for (const auto& mod : index.mods) {
+    if (mod.command != command) continue;
+    if (!mod.enabled) { disabled = true; continue; }
+    if (selected) throw CliError("MOD_COMMAND_AMBIGUOUS","multiple enabled mods register " + command,3);
+    selected = &mod;
+  }
+  if (!selected) {
+    if (disabled) throw CliError("MOD_DISABLED","mod command is disabled",4);
+    return false;
+  }
+  if (help || args == std::vector<std::string>{"--help"} || args == std::vector<std::string>{"-h"}) {
+    const auto usage = "slopfab " + command + " [ARGS...]";
+    const auto detail = "JavaScript module: " + selected->script.u8string() +
+        "\nRead workflow instructions with slopfab mods load " + selected->name + ".\n" + selected->prompt;
+    print_command_help({command.c_str(),usage.c_str(),selected->description.c_str(),detail.c_str()});
+  } else {
+    auto passed = args;
+    if (!passed.empty() && passed.front() == "--") passed.erase(passed.begin());
+    run_script(selected->script,passed);
+  }
+  return true;
 }
 
 int mods_command(const std::vector<std::string>& args) {

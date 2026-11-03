@@ -70,6 +70,24 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"run", "slopfab run FILE.js [-- ARGS...] | run --eval SOURCE",
+     "Run an embedded QuickJS workflow with filesystem, HTTP, process and CLI APIs.",
+     "  run FILE.js -- ARGS...       run an ES module; optional default export is called with args\n"
+     "  run -                       read JavaScript from stdin\n"
+     "  run --eval SOURCE           execute inline JavaScript\n"
+     "  --memory-mb N               JavaScript heap limit (default 256)\n"
+     "  --timeout-ms N              workflow deadline, 0 = unlimited (default)\n"
+     "Import APIs from 'slopfab' or use global slopfab. See docs/scripting.md.\n"
+     "  export default args => VALUE          return JSON-serializable data (async supported)\n"
+     "  slopfab.fs.readJson/writeJson         files; readText/writeText/readBytes/writeBytes also available\n"
+     "  slopfab.exec([EXE, ...ARGS], OPTIONS)  shell-free process; stdout/stderr/exitCode returned\n"
+     "  slopfab.spawn([EXE, ...ARGS])          concurrent child with poll(), wait(), kill()\n"
+     "  slopfab.cli(['COMMAND', ...ARGS])      same CLI/config/jobs; parsed events and result\n"
+     "  slopfab.http.json(URL)                fetch JSON; download(URL, PATH) streams to disk\n"
+     "  slopfab.tool('ffmpeg')                locate external FFmpeg for exec/spawn\n"
+     "  slopfab.path.fileUrl(PATH)            absolute percent-encoded file URL\n"
+     "Console output goes to stderr. Local ES imports, promises and timers are supported.\n"
+     "Scripts and executable mods run with your normal filesystem/process access.\n"},
     {"prompts", "slopfab prompts list|get|select [options]",
      "Retrieve offline model-specific prompting guidance, templates and examples before writing generation prompts.",
      "  prompts list [--model NAME]          index supported models and use cases\n"
@@ -586,6 +604,7 @@ bool option_takes_value(std::string_view a, std::string_view command) {
 bool wants_help(int argc, char** argv, std::string_view command) {
   for (int i = 0; i < argc; ++i) {
     const std::string_view a = argv[i];
+    if (a == "--") break;
     if (a == "--help" || a == "-h" || (i == 0 && a == "help"))
       return true;
     if (option_takes_value(a, command) && i + 1 < argc)
@@ -611,7 +630,7 @@ int print_command_help(const CommandHelp& c) {
   return 0;
 }
 
-void print_usage(bool list_commands) {
+void print_usage(bool list_commands, const json::Array& extra_commands) {
   const auto dependencies = list_commands ? StartupDependencies{false, false, true}
                                           : startup_dependencies(agent().executable);
   const bool has_weights = list_commands || !configured_weight_paths().empty();
@@ -626,14 +645,18 @@ void print_usage(bool list_commands) {
       for (const auto& c : kCommands)
         commands.push_back(
             Value(Object{{"command", str(c.name)}, {"description", str(c.summary)}}));
+      for (const auto& c : extra_commands) commands.push_back(c);
       response["commands"] = Value(commands);
     }
     emit(std::move(response), true);
   } else {
     std::fputs(text.c_str(), stdout);
-    if (list_commands)
+    if (list_commands) {
       for (const auto& c : kCommands)
         std::printf("  %-18s %s\n", c.name, c.summary);
+      for (const auto& c : extra_commands)
+        std::printf("  %-18s %s (mod)\n",c.find("command")->as_string().c_str(),c.find("description")->as_string().c_str());
+    }
   }
 }
 
@@ -643,6 +666,10 @@ void consume_cuda_version_option(int& argc, char** argv) {
   int write = 1;
   for (int read = 1; read < argc; ++read) {
     const std::string_view argument = argv[read];
+    if (argument == "--") {
+      for (; read < argc; ++read) argv[write++] = argv[read];
+      break;
+    }
     constexpr std::string_view prefix = "--cuda-version=";
     if (argument.rfind(prefix, 0) == 0) {
       requested = std::string(argument.substr(prefix.size()));

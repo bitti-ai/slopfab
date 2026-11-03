@@ -3,6 +3,7 @@
 #include "cli/agent_instructions.h"
 #include "cli/settings.h"
 #include "cli/mods.h"
+#include "cli/script.h"
 #include "cli/projects.h"
 #include "cli/prompting.h"
 #include <cstdio>
@@ -26,6 +27,10 @@ int cli_main(int argc, char** argv) {
   try {
     for (int i = 1; i < argc; ++i) {
       const std::string a = argv[i];
+      if (a == "--") {
+        for (; i < argc; ++i) args.push_back(argv[i]);
+        break;
+      }
       if (a == "--agent") {
         machine = true;
         continue;
@@ -79,17 +84,21 @@ int cli_main(int argc, char** argv) {
     const int ac = int(av.size());
     if (command == "help" || command == "--help" || command == "-h") {
       if (args.empty()) {
-        print_usage(true);
+        print_usage(true, mod_commands());
         return finish_command(0);
       }
       if (const auto* help = find_command(args[0]))
         return print_command_help(*help);
+      if (args.size() == 1 && try_mod_command(args[0], {}, true))
+        return 0;
       throw CliError("INVALID_REQUEST", "unknown command: " + args[0]);
     }
     if (const auto* help = find_command(command); help && wants_help(ac, av.data(), command))
       return print_command_help(*help);
     if (command == "mods")
       return mods_command(args);
+    if (command == "run")
+      return script_command(args);
     if (command == "prompts")
       return prompts_command(args);
     if (command == "projects")
@@ -113,6 +122,8 @@ int cli_main(int argc, char** argv) {
       emit({{"type", str("result")}, {"ok", Value(true)}, {"version", str(kVersion)}}, true);
       return 0;
     }
+    if (try_mod_command(command, args))
+      return 0;
     // Older diagnostic tools return their text inside the JSON envelope. Their
     // internal output never leaks onto the machine protocol stream.
     FILE* capture = nullptr;

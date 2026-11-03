@@ -90,8 +90,17 @@ void launch_worker() {
   startup.dwFlags = STARTF_USESHOWWINDOW;
   startup.wShowWindow = SW_HIDE;
   PROCESS_INFORMATION process{};
-  if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                      nullptr, nullptr, &startup, &process))
+  // A submitted worker outlives the submitting workflow. Ordinary child
+  // processes remain in its job; only this explicitly detached worker leaves.
+  auto launch_command = command;
+  bool launched = CreateProcessW(exe.c_str(), launch_command.data(), nullptr, nullptr, FALSE,
+      CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr, &startup, &process) != 0;
+  if (!launched && GetLastError() == ERROR_ACCESS_DENIED) {
+    launch_command = command;
+    launched = CreateProcessW(exe.c_str(), launch_command.data(), nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != 0;
+  }
+  if (!launched)
     throw CliError("WORKER_START_FAILED", "cannot start local worker; run slopfab worker manually",
                    1);
   CloseHandle(process.hThread);

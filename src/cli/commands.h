@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include "slopfab/pipeline.h"
+#include "slopfab/json.h"
 
 namespace slopfab::cli {
 inline constexpr const char* kVersion = "0.1.0";
@@ -19,7 +20,7 @@ const CommandHelp* find_command(std::string_view);
 bool wants_help(int argc, char** argv, std::string_view command = {});
 bool option_takes_value(std::string_view, std::string_view command = {});
 int print_command_help(const CommandHelp&);
-void print_usage(bool list_commands = false);
+void print_usage(bool list_commands = false, const json::Array& extra_commands = {});
 void consume_cuda_version_option(int&, char**);
 std::string format_shape(const std::vector<int64_t>&);
 std::string format_bytes(uint64_t);

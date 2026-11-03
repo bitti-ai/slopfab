@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install build and media tools
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build g++ libpng-dev libjpeg-dev ffmpeg binutils python3-pip
+          sudo apt-get update && sudo apt-get install -y ninja-build g++ libpng-dev libjpeg-dev libcurl4-openssl-dev ffmpeg binutils python3-pip
           python3 -m pip install cmake==3.31.6
       - name: Check glibc baseline and checker
         run: |
@@ -71,7 +71,7 @@ jobs:
     steps:
       - name: Install build tools
         run: |
-          apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3-pip binutils ninja-build g++ libpng-dev libjpeg-dev
+          apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3-pip binutils ninja-build g++ libpng-dev libjpeg-dev libcurl4-openssl-dev
           python3 -m pip install cmake==3.31.6
       - uses: actions/checkout@v4
       - name: Configure CUDA and Vulkan

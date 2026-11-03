@@ -1,4 +1,5 @@
 # --- cli --------------------------------------------------------------------
+include(cmake/QuickJS.cmake)
 
 set(SLOPFAB_CLI_SOURCES src/main.cpp src/cli/startup.cpp src/cli/settings.cpp src/cli/mods.cpp src/cli/agent.cpp src/cli/request.cpp src/cli/jobs.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/templates/project.html")
@@ -19,6 +20,21 @@ configure_file(src/cli/prompting_catalog.h.in generated/prompting_catalog.h @ONL
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
+target_sources(slopfab PRIVATE src/cli/script.cpp src/cli/script_process.cpp src/cli/script_http.cpp src/cli/pipe_process.cpp)
+target_link_libraries(slopfab PRIVATE slopfab_quickjs)
+if(WIN32)
+  target_link_libraries(slopfab PRIVATE winhttp)
+  if(MSVC)
+    target_link_options(slopfab PRIVATE /STACK:8388608)
+  endif()
+else()
+  find_package(CURL REQUIRED)
+  target_link_libraries(slopfab PRIVATE CURL::libcurl)
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/cli/script_bootstrap.js")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/cli/script_bootstrap.js" SLOPFAB_SCRIPT_BOOTSTRAP)
+string(REPLACE "\n" "\n)SLOPFAB_JS\"\nR\"SLOPFAB_JS(" SLOPFAB_SCRIPT_BOOTSTRAP "${SLOPFAB_SCRIPT_BOOTSTRAP}")
+configure_file(src/cli/script_bootstrap.h.in generated/script_bootstrap.h @ONLY)
 target_sources(slopfab PRIVATE src/cli/projects.cpp)
 target_sources(slopfab PRIVATE src/cli/agent_instructions.cpp)
 target_sources(slopfab PRIVATE src/cli/prompting.cpp)
