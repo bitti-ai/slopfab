@@ -1,0 +1,146 @@
+/*
+ * Copyright (c) 2026 ThorVG project. All rights reserved.
+
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+#include "tvgWgRenderTask.h"
+#include <iostream>
+
+//***********************************************************************
+// WgBatchTask
+//***********************************************************************
+
+WgBatchTask::WgBatchTask(WgShape* first, WgShape* second, bool stencilBatch) :
+    shapes{2}, stencilBatch(stencilBatch)
+{
+    shapes.push(first);
+    shapes.push(second);
+}
+
+void WgBatchTask::stage(WgCompositor& compositor)
+{
+    if (stencilBatch) compositor.requestStencilBatch(shapes, stencilRange);
+    else compositor.requestSolidBatch(shapes, solidRange);
+}
+
+void WgBatchTask::run(WgContext&, WgCompositor& compositor, WGPUCommandEncoder)
+{
+    if (stencilBatch) compositor.renderStencilBatch(shapes, stencilRange);
+    else compositor.renderSolidBatch(solidRange);
+}
+
+//***********************************************************************
+// WgImageBatchTask
+//***********************************************************************
+
+WgImageBatchTask::WgImageBatchTask(WgImage* first, WgImage* second) : images{2}
+{
+    images.push(first);
+    images.push(second);
+}
+
+void WgImageBatchTask::stage(WgCompositor& compositor)
+{
+    compositor.requestImageBatch(images, range);
+}
+
+void WgImageBatchTask::run(WgContext&, WgCompositor& compositor, WGPUCommandEncoder)
+{
+    compositor.renderImageBatch(images[0], range);
+}
+
+//***********************************************************************
+// WgPaintTask
+//***********************************************************************
+
+void WgPaintTask::stage(WgCompositor& compositor)
+{
+    if (renderPaint->type() == tvg::Type::Shape) compositor.requestShape((WgShape*)renderPaint);
+    if (renderPaint->type() == tvg::Type::Picture) compositor.requestImage((WgImage*)renderPaint);
+}
+
+void WgPaintTask::run(WgContext& context, WgCompositor& compositor, WGPUCommandEncoder encoder)
+{
+    if (renderPaint->type() == tvg::Type::Shape) compositor.renderShape(context, (WgShape*)renderPaint, blendMethod);
+    if (renderPaint->type() == tvg::Type::Picture) compositor.renderImage(context, (WgImage*)renderPaint, blendMethod);
+}
+
+//***********************************************************************
+// WgSceneTask
+//***********************************************************************
+
+void WgSceneTask::stage(WgCompositor& compositor)
+{
+    // stage all resources used by the scene tree
+    ARRAY_FOREACH(task, children) {
+        (*task)->stage(compositor);
+    }
+}
+
+// run all, including all shapes drawing, blending, composition and effect
+void WgSceneTask::run(WgContext& context, WgCompositor& compositor, WGPUCommandEncoder encoder)
+{
+    // Preserve the canvas contents when clearing is disabled; temporary scenes always clear.
+    compositor.beginRenderPassMS(encoder, renderTarget, clearBuffer);
+    runChildren(context, compositor, encoder);  // run all children (scenes and shapes)
+    compositor.endRenderPass();
+
+    // apply effect for current scene
+    ARRAY_FOREACH(effect, effects) {
+        runEffect(context, compositor, *effect);
+    }
+
+    if (!renderTargetDst) return;  // there's no point in continuing (e.g., the root scene)
+
+    // scene blending
+    if (compose->method == MaskMethod::None) {
+        compositor.beginRenderPassMS(encoder, renderTargetDst, false);
+        compositor.renderScene(context, renderTarget, compose);
+    // scene composition (for scenes, that have a handle to mask)
+    } else if (renderTargetMsk) {
+        compositor.beginRenderPassMS(encoder, renderTargetDst, false);
+        compositor.composeScene(context, renderTarget, renderTargetMsk, compose);
+    }
+}
+
+
+void WgSceneTask::runChildren(WgContext& context, WgCompositor& compositor, WGPUCommandEncoder encoder)
+{
+    ARRAY_FOREACH(task, children) {
+        WgRenderTask* renderTask = *task;
+        // we need to restore current render pass without clear
+        compositor.beginRenderPassMS(encoder, renderTarget, false);
+        // run children (shape or scene)
+        renderTask->run(context, compositor, encoder);
+    }
+}
+
+void WgSceneTask::runEffect(WgContext& context, WgCompositor& compositor, const RenderEffect* effect)
+{
+    switch (effect->type) {
+        case SceneEffect::GaussianBlur: compositor.gaussianBlur(context, renderTarget, (RenderEffectGaussianBlur*)effect, compose); break;
+        case SceneEffect::DropShadow: compositor.dropShadow(context, renderTarget, (RenderEffectDropShadow*)effect, compose); break;
+        case SceneEffect::Fill: compositor.fillEffect(context, renderTarget, (RenderEffectFill*)effect, compose); break;
+        case SceneEffect::Tint: compositor.tintEffect(context, renderTarget, (RenderEffectTint*)effect, compose); break;
+        case SceneEffect::Tritone : compositor.tritoneEffect(context, renderTarget, (RenderEffectTritone*)effect, compose); break;
+        case SceneEffect::MotionBlur: compositor.motionBlur(context, renderTarget, static_cast<const RenderEffectMotionBlur*>(effect), compose); break;
+        default: break;
+    }
+}
