@@ -1,5 +1,7 @@
 # Slopfab media generation
 
+Slopfab is available in this folder.
+
 Use Slopfab for image, video and music generation. Add `--agent` when calling
 it. Discover syntax and supported options through `slopfab help`, command help,
 capabilities and schema; consult relevant mods. Follow startup setup guidance.
