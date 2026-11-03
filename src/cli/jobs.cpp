@@ -297,8 +297,10 @@ int job_command(const std::string& command, const std::vector<std::string>& args
       prepared.push_back("--check-ready");
     if (!agent().project.empty()) {
       const auto directory = project_directory(agent().project, agent().project_output);
-      prepared.insert(prepared.end(), {"--project", agent().project, "--output-dir", directory.parent_path().u8string()});
-      if (!agent().project_item.empty()) prepared.insert(prepared.end(), {"--project-item", agent().project_item});
+      prepared.insert(prepared.end(), {"--project", agent().project, "--output-dir",
+                                       directory.parent_path().u8string()});
+      if (!agent().project_item.empty())
+        prepared.insert(prepared.end(), {"--project-item", agent().project_item});
     }
     Array arguments;
     for (const auto& a : prepared)

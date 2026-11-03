@@ -210,9 +210,10 @@ int settings_command(const std::vector<std::string>& args) {
   if ((parts[0] != "weight_paths" && parts[0] != "models" && parts[0] != "presets" &&
        parts[0] != "output_directory") ||
       ((parts[0] == "weight_paths" || parts[0] == "output_directory") && parts.size() != 1))
-    throw CliError("INVALID_REQUEST",
-                   "writable settings: weight_paths, output_directory, models, presets (schema_version is read-only)",
-                   2, key);
+    throw CliError(
+        "INVALID_REQUEST",
+        "writable settings: weight_paths, output_directory, models, presets (schema_version is read-only)",
+        2, key);
   auto lock = settings_lock();
   auto settings = load_settings();
   Value value;

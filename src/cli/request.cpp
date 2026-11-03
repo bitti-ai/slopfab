@@ -71,7 +71,8 @@ std::vector<std::string> request_args(Value request) {
   auto version = request.find("schema_version");
   if (!version || !version->is_number() || version->as_number() != 1)
     throw CliError("INVALID_REQUEST", "schema_version must be 1", 2, "schema_version");
-  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics", "project", "project_item", "output_directory"})
+  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics", "project",
+                          "project_item", "output_directory"})
     if (const auto* v = request.find(key))
       if (!v->is_string())
         throw CliError("INVALID_REQUEST", std::string(key) + " must be a string", 2, key);
@@ -182,7 +183,8 @@ std::vector<std::string> request_args(Value request) {
                                              "resolution", "seed",        "count",
                                              "out",        "overwrite",   "deadline",
                                              "dry-run",    "check-ready", "task",
-                                             "bench-load", "project", "project-item", "output-dir"};
+                                             "bench-load", "project",     "project-item",
+                                             "output-dir"};
     for (const auto& item : opts->as_object()) {
       const auto& key = item.first;
       if (key.empty() || key[0] == '-' || forbidden.count(key))
@@ -244,8 +246,10 @@ void resolve_model_alias(GenerateRequest& request, const std::string& name) {
     request.model_family = name;
     return;
   }
-  keys(*model, {"family", "transformer", "text_encoder", "clip_projection", "vae", "audio_vae", "tokenizer"},
-       "models." + name);
+  keys(
+      *model,
+      {"family", "transformer", "text_encoder", "clip_projection", "vae", "audio_vae", "tokenizer"},
+      "models." + name);
   const auto* family = model->find("family");
   if (!family)
     throw CliError("INVALID_REQUEST", "model alias requires family", 2, "models." + name);
@@ -311,8 +315,10 @@ std::vector<std::string> prepare_arguments(const std::vector<std::string>& input
   agent().project_item.clear();
   agent().project_new_id.clear();
   agent().project_revision = 0;
+  agent().project_manifest_revision = 0;
   agent().generation_arguments.clear();
-  for (const auto& argument : args) agent().generation_arguments.push_back(str(argument));
+  for (const auto& argument : args)
+    agent().generation_arguments.push_back(str(argument));
   if (!args.empty() && (args[0] == "image" || args[0] == "video" || args[0] == "music")) {
     agent().task = args[0];
     args.erase(args.begin());
@@ -330,10 +336,14 @@ std::vector<std::string> prepare_arguments(const std::vector<std::string>& input
       return args[++i];
     };
     if (a == "--project" || a == "--project-item" || a == "--output-dir") {
-      auto& destination = a == "--project" ? agent().project : a == "--project-item" ? agent().project_item : agent().project_output;
-      if (!destination.empty()) throw CliError("INVALID_REQUEST", "repeated " + a);
+      auto& destination = a == "--project"        ? agent().project
+                          : a == "--project-item" ? agent().project_item
+                                                  : agent().project_output;
+      if (!destination.empty())
+        throw CliError("INVALID_REQUEST", "repeated " + a);
       destination = value();
-      if (destination.empty()) throw CliError("INVALID_REQUEST", "empty " + a);
+      if (destination.empty())
+        throw CliError("INVALID_REQUEST", "empty " + a);
       continue;
     }
     if (a == "--overwrite") {
@@ -392,7 +402,8 @@ Value request_schema() {
   properties["schema_version"] = Value(Object{{"const", num(1)}});
   properties["task"] =
       Value(Object{{"enum", Value(Array{str("video"), str("image"), str("music")})}});
-  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics", "project", "project_item", "output_directory"})
+  for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics", "project",
+                          "project_item", "output_directory"})
     properties[key] = typed("string");
   properties["seed"] =
       Value(Object{{"type", str("string")},
@@ -485,20 +496,24 @@ Value capabilities() {
       {"execution", str("one generation per local worker; CLI processes share a GPU lock")},
       {"external_conversion",
        str("Use a separate ffmpeg installation to encode MP4, MP3 or other formats.")},
-      {"h3_clip_projection", Value(Object{
-          {"option", str("--clip-projection FILE")},
-          {"encoders", Value(Array{str("Qwen3-VL-4B"),str("Qwen3-VL-8B")})},
-          {"conditioning", str("text only; BF16 streaming student, CPU ridge/MLP projection")}})},
+      {"h3_clip_projection",
+       Value(Object{
+           {"option", str("--clip-projection FILE")},
+           {"encoders", Value(Array{str("Qwen3-VL-4B"), str("Qwen3-VL-8B")})},
+           {"conditioning", str("text only; BF16 streaming student, CPU ridge/MLP projection")}})},
       {"mods",
        Value(Object{{"index_command", str("slopfab mods list")},
                     {"load_command", str("slopfab mods load NAME")},
                     {"format", str("mods/NAME/MOD.md: YAML front matter and Markdown prompt")}})},
-      {"projects", Value(Object{{"help", str("slopfab help projects")},
-                                 {"create", str("slopfab projects create NAME")},
-                                 {"generate", str("generate --project NAME; --project-item ID replaces an item")},
-                                 {"manifest", str("project.json")},
-                                 {"preview", str("index.html: offline media review and copyable agent prompts")},
-                                 {"naming", str("PROJECT.md and projects show describe exact manifest paths and naming rules")}})},
+      {"projects",
+       Value(Object{
+           {"help", str("slopfab help projects")},
+           {"create", str("slopfab projects create NAME")},
+           {"generate", str("generate --project NAME; --project-item ID replaces an item")},
+           {"manifest", str("project.json")},
+           {"preview", str("index.html: offline media review and copyable agent prompts")},
+           {"naming",
+            str("PROJECT.md and projects show describe exact manifest paths and naming rules")}})},
       {"schema_command", str("slopfab schema")}});
 }
 

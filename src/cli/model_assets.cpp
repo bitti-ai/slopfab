@@ -78,7 +78,9 @@ uint64_t random_seed() {
 std::string timestamped_output_path() {
   const auto settings = load_settings();
   const auto* output = settings.find("output_directory");
-  return (std::filesystem::u8path(output ? output->as_string() : "output") / unique_id() / "video.y4m").u8string();
+  return (std::filesystem::u8path(output ? output->as_string() : "output") / unique_id() /
+          "video.y4m")
+      .u8string();
 }
 
 std::string counted_output_path(const std::string& base, int index, int count) {
@@ -150,7 +152,8 @@ std::string find_weight(const std::vector<std::filesystem::path>& roots,
 }
 }
 
-void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable, bool text_only) {
+void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable,
+                                   bool text_only) {
   (void)executable;
   const auto& profile = model_profile(request_model_family(req));
   if (profile.image_only)
@@ -180,7 +183,8 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
     }
     req.text_encoder_path = find_weight(weights, {"text_encoder", "text_encoders", ""}, hint);
   }
-  if (text_only) return;
+  if (text_only)
+    return;
   if (req.transformer_path.empty()) {
     const auto architecture = (std::string_view(profile.family) == "h3" && req.has_references())
                                   ? "ref2va"

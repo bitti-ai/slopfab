@@ -12,6 +12,11 @@ accessible. FFmpeg remains an external conversion tool, not a linked dependency.
 is unchanged. CLI requests, jobs, output policy, and configuration are separate
 from DLL generation.
 
+For generation requests, start with `slopfab projects create NAME` and pass
+`--project NAME` to generation. Projects provide an offline review page with
+copyable agent edit prompts, saved recipes, clip relationships and explicit
+filename rules. See [projects](projects.md) or `slopfab help projects`.
+
 ```sh
 slopfab capabilities
 slopfab models list
@@ -57,6 +62,9 @@ and lyrics may contain newlines and Unicode. Seeds are decimal strings covering
 the full unsigned 64-bit range. Unknown fields, duplicate JSON keys, and NUL
 characters are rejected. Request-file paths and reference/output paths are
 resolved against the invocation's working directory. Jobs retain that directory.
+For project generation, a relative output path is instead relative to the
+project folder. Use top-level `project`, `project_item` and `output_directory`
+fields in JSON requests.
 
 A request cannot be combined with generation flags. `--dry-run` and
 `--check-ready` are allowed alongside it. Global `--agent`, `--config`, and

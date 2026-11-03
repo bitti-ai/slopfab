@@ -4,6 +4,8 @@ Native C++ video, image and music generation on CUDA and Vulkan. No Python is re
 
 ## Features
 
+- **Agent projects:** [Project folders](docs/projects.md) with an offline media review page, clip editing prompts, saved generation recipes and explicit file naming rules.
+
 - **Video with audio:** MiniMax H3 generation with configurable resolution, duration, seeds and batches.
 - **Reference conditioning:** images, video and audio with Ref2VA; reusable [RefMods, mixed bundles and text embeddings](docs/refmods.md).
 - **LoRA adapters:** stacking, TaoMate (3 evaluations), DMAD (4), and **Hyperflow (8)** with two-time conditioning and an automatically selected schedule. Hyperflow requires a prepared companion; see [LoRA setup](docs/loras.md).

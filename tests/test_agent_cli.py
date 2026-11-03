@@ -108,6 +108,18 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
     done = run("wait", failed, "--timeout", "15")["job"]
     assert done["state"] == "failed" and done["result"]["error"]["code"] == "MODEL_MISSING", done
 
+    # Project controls must survive submit's normalized argument serialization.
+    run("projects", "create", "queued-project")
+    project_request = dict(request, project="queued-project")
+    project_request.pop("output", None)
+    queued = run("submit", "--request", "-", "--dry-run", input=json.dumps(project_request))["job"]
+    assert "--project" in queued["arguments"] and "--output-dir" in queued["arguments"]
+    done = run("wait", queued["job_id"], "--timeout", "15")["job"]
+    assert done["state"] == "succeeded", done
+    directory = Path(run("projects", "show", "queued-project")["project"]["directory"])
+    assert Path(done["result"]["plans"][0]["output"]).is_relative_to(directory)
+    assert run("projects", "show", "queued-project")["project"]["items"] == []
+
     # Idle workers release their OS locks on exit. Wait on the actual lock on
     # POSIX: unlinking an open file succeeds there and does not release flock.
     # Tell this worker to stop through its dedicated store sentinel.

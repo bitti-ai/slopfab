@@ -43,6 +43,7 @@ struct AgentContext {
   std::string project, project_output, project_item, project_new_id;
   Array generation_arguments;
   int project_revision = 0;
+  int project_manifest_revision = 0;
   Value last_event;
 };
 

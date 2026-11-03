@@ -1,5 +1,6 @@
 #include "../src/cli/agent.h"
 #include "../src/cli/native_media.h"
+#include "../src/cli/projects.h"
 #include "slopfab/image.h"
 #include <fstream>
 #include <iostream>
@@ -87,10 +88,70 @@ int main() {
               "cancellation did not stop publication");
       agent().cancel_file.clear();
     }
+    {
+      agent().config_path = (root / "config.json").u8string();
+      agent().project = "review";
+      agent().project_output = (root / "projects").u8string();
+      projects_command({"create", "review", "--output-dir", agent().project_output});
+      const auto directory = project_directory("review", agent().project_output);
+      GenerateRequest request;
+      request.out_path = "image.png";
+      request.prompt = "Project image";
+      agent().generation_arguments = {str("image"), str("--prompt"), str(request.prompt)};
+      samples.audio = nullptr;
+      auto generate = [&]() {
+        prepare_project_generation(request, false, 1);
+        Delivery delivery(request.out_path);
+        delivery.reserve(delivery.output);
+        Delivery::samples(samples, &delivery);
+        return record_project_generation(request,
+                                         Value(Object{{"index", num(0)},
+                                                      {"ok", Value(true)},
+                                                      {"plan", Value(Object{{"seed", str("42")}})},
+                                                      {"artifacts", Value(delivery.artifacts)}}));
+      };
+      auto first = generate();
+      const auto original = request.out_path;
+      const auto id = first.find("id")->as_string();
+      require(first.find("version")->as_number() == 1, "project registration version mismatch");
+      agent().project_item = id;
+      auto second = generate();
+      require(second.find("version")->as_number() == 2, "project regeneration version mismatch");
+      require(request.out_path != original && std::filesystem::exists(original),
+              "project regeneration did not preserve original output");
+      auto manifest = read_json(directory / "project.json");
+      const auto& item = manifest.find("items")->as_array()[0];
+      require(manifest.find("items")->as_array().size() == 1 &&
+                  item.find("history")->as_array().size() == 1,
+              "project regeneration lost stable ID/history");
+      require(item.find("generation")->find("plan")->find("seed")->as_string() == "42",
+              "project recipe lost resolved seed");
+      require(std::filesystem::exists(directory / "index.html"), "project page was not generated");
+      // An edit after planning must not be replaced by a late generation.
+      prepare_project_generation(request, false, 1);
+      std::filesystem::create_directories(std::filesystem::u8path(request.out_path).parent_path());
+      std::filesystem::copy_file(original, std::filesystem::u8path(request.out_path));
+      projects_command({"update", "review", id, "--title", "A newer edit", "--output-dir",
+                        agent().project_output});
+      bool rejected = false;
+      try {
+        record_project_generation(request, Value(Object{{"index", num(0)},
+                                                        {"plan", Value(Object{})},
+                                                        {"artifacts", Value(Array{})}}));
+      } catch (const CliError& error) {
+        rejected = error.code == "PROJECT_CHANGED";
+      }
+      require(rejected && std::filesystem::exists(std::filesystem::u8path(request.out_path)),
+              "late project registration overwrote an edit or lost output");
+      agent().project.clear();
+      agent().project_item.clear();
+      agent().project_output.clear();
+    }
     for (const auto& entry : std::filesystem::directory_iterator(root))
       require(entry.path().extension() != ".tmp", "temporary artifact was leaked");
     std::filesystem::remove_all(root);
-    std::cout << "PASS: PNG/Y4M/WAV delivery, reservations, overwrite, cancellation and cleanup\n";
+    std::cout
+        << "PASS: PNG/Y4M/WAV delivery, reservations, cancellation, project registration and versions\n";
     return 0;
   } catch (const std::exception& e) {
     std::filesystem::remove_all(root);

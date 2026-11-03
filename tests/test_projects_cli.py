@@ -63,6 +63,11 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert image["file"] == "assets/cover/v1/source.png" and image["title"] == "--agent"
     assert image["request"]["prompt"] == "Original direction"
     assert (directory / image["file"]).read_bytes() == png.read_bytes()
+    canonical = directory / "assets/manual/v1/source.png"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(png.read_bytes())
+    manual = run("projects", "add", "demo", "--file", str(canonical), "--id", "manual")["item"]
+    assert manual["file"] == "assets/manual/v1/source.png"
     run("projects", "add", "demo", "--file", str(wav), "--id", "score")
     run("projects", "add", "demo", "--file", str(movie), "--id", "film", "--preview", str(preview))
     run("projects", "add", "demo", "--file", str(movie), "--id", "clip-a", "--kind", "clip", "--parent", "film", "--position", "1", "--start", "0", "--end", "2.5")
