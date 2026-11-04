@@ -11,43 +11,37 @@
       "sources": [
         "https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/base-en.txt",
         "https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/ref-en.txt"
-      ],
-      "implementation": ["docs/continuation.md", "src/pipeline.cpp", "src/generate.cpp"]
+      ]
     },
     "krea2": {
       "name": "Krea 2",
       "guidance": "Start with the subject and an intentional visual style. For exploration, a short idea can leave useful aesthetic freedom; for a settled brief, specify framing, materials, palette, lighting and any exact visible text. Change one important creative variable per comparison. Use descriptive text rather than H3 audiovisual fields.",
       "slopfab_support": "Slopfab currently exposes text-to-image Krea 2, not the hosted product's style-reference or moodboard controls. Do not request reference images, masked edits or negative-prompt conditioning here. Use the chosen local Turbo/RAW settings; changing the caption does not select a checkpoint variant.",
-      "sources": ["https://www.krea.ai/blog/krea-2-deep-dive-walkthrough", "https://github.com/krea-ai/krea-2"],
-      "implementation": ["docs/krea2.md"]
+      "sources": ["https://www.krea.ai/blog/krea-2-deep-dive-walkthrough", "https://github.com/krea-ai/krea-2"]
     },
     "moss": {
       "name": "MOSS Image SFT",
       "guidance": "Use a descriptive caption for ordinary images: subject, composition, spatial relationships, materials, light and style. English is a useful default, but preserve requested visible text in its original language. Spell out text placement and line breaks. For explicit spatial design, use a JSON layout with summary.caption and items, bbox_format yxyx, and bbox_coord_space abs_centralized. Coordinates are integer pixels relative to the canvas center: subtract W/2 from x and H/2 from y; boxes must match the actual generation canvas.",
       "slopfab_support": "MOSS is text-to-image in Slopfab. Layout JSON is positive prompt text, not a mask or image-editing API. A separate negative prompt is supported; use targeted exclusions only when needed. Model defaults remain in CLI help rather than being implied by the prompt.",
-      "sources": ["https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT", "https://github.com/OpenMOSS/MOSS-Image/blob/main/USERGUIDE.md"],
-      "implementation": ["docs/moss.md", "src/core/model_profile.cpp"]
+      "sources": ["https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT", "https://github.com/OpenMOSS/MOSS-Image/blob/main/USERGUIDE.md"]
     },
     "fibo2": {
       "name": "Fibo 2.0 Edit Turbo",
       "guidance": "For editing, describe the requested change and what should remain. For precise composition, provide an edit_instruction plus a structured_caption of the desired result. Describe objects, placement, background, lighting and medium; text_render contains exact text to appear. Assign a clear role to each supplied image. Avoid conflating the source appearance with the desired result.",
       "slopfab_support": "The supported checkpoint is Edit Turbo. Upstream recommends Dev for text-to-image; Slopfab accepts zero-reference Turbo generation as a local capability, without claiming it is the recommended upstream text-to-image model. Slopfab's structured form requires edit_instruction and structured_caption; do not send a bare caption object expecting the same parsing. Up to four ordinary reference images are supported; masked editing uses one source. Nonempty text_render glyph conditioning currently requires Windows. No negative prompt, video or rectangular outpainting is supported.",
-      "sources": ["https://huggingface.co/briaai/Fibo-2.0-edit-turbo", "https://huggingface.co/docs/diffusers/main/api/pipelines/bria_fibo2"],
-      "implementation": ["docs/fibo2.md", "src/fibo/plan.cpp", "src/fibo/render.cpp"]
+      "sources": ["https://huggingface.co/briaai/Fibo-2.0-edit-turbo", "https://huggingface.co/docs/diffusers/main/api/pipelines/bria_fibo2"]
     },
     "yue2": {
       "name": "YuE2",
       "guidance": "Keep the style caption and lyrics separate. Describe genre, groove, vocal delivery, instrumentation and progression in the caption; put the words to sing in lyrics, arranged into sections. Preserve supplied lyrics and their language. Full planning includes melody and chords; melody planning omits chord planning; off skips symbolic planning. These are execution choices, not text tokens to paste into the song.",
       "slopfab_support": "Use prompt for style and lyrics for the lyric input. Slopfab supports full/melody/off planning, but not the upstream cover workflow, external ABC-score input, reference audio or score editing. Empty lyrics alone is not a reliable instrumental instruction: explicitly ask for instrumental music in the caption. Duration is a ceiling; the model may finish earlier. Loop seams and exact tempo require listening/editing, not just a caption.",
-      "sources": ["https://huggingface.co/m-a-p/YuE2-3B"],
-      "implementation": ["docs/music-models.md"]
+      "sources": ["https://huggingface.co/m-a-p/YuE2-3B"]
     },
     "minimax_music3": {
       "name": "MiniMax Music3",
       "guidance": "A short music description is usable. For detailed control, write Global Metadata, Vocal Details and Arrangement in that order. Describe the musical identity, vocal configuration and how instruments enter, change or leave across sections. Keep actual lyrics in the separate lyrics input. Carry musical instructions from lyric-section tags into the corresponding arrangement section. Preserve instrumental requests and explicit exclusions. Do not invent exact BPM, key or vocal traits when the user has not established them. Musical controls are generative guidance, not timing guarantees.",
       "slopfab_support": "Map the caption to prompt and song text to lyrics, not to service-specific instructions/input fields. Lyrics section tags may include [Verse], [Chorus] and [Outro]. Slopfab preserves the local decoder's native WAV output; hosted service sample-rate descriptions do not override it. No audio-reference/cover input or symbolic planning is exposed for this model. A five-minute request is a maximum, not a promise to sing every supplied line.",
-      "sources": ["https://huggingface.co/MiniMaxAI/MiniMax-Music3", "https://github.com/MiniMax-AI/MiniMax-Music3/blob/main/skills/music-caption-rewriter/SKILL.md"],
-      "implementation": ["docs/music-models.md"]
+      "sources": ["https://huggingface.co/MiniMaxAI/MiniMax-Music3", "https://github.com/MiniMax-AI/MiniMax-Music3/blob/main/skills/music-caption-rewriter/SKILL.md"]
     }
   },
   "guides": [

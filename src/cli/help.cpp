@@ -86,7 +86,7 @@ const CommandHelp kCommands[] = {
      "or export a factory receiving script arguments after --. Import {motions} from 'slopfab'.\n"
      "motions.svg(w,h,body), element(tag,attrs,children), text(text,attrs), font(name,path),\n"
      "and render(options,frame) are available to workflows. ctx: frame,time,progress,width,height,fps,frames.\n"
-     "PNG/SVG need no FFmpeg. Video export requires FFmpeg. See docs/motions.md.\n"},
+     "PNG/SVG need no FFmpeg. Video export requires FFmpeg.\n"},
     {"run", "slopfab run FILE.js [-- ARGS...] | run --eval SOURCE",
      "Run an embedded QuickJS workflow with filesystem, HTTP, process and CLI APIs.",
      "  run FILE.js -- ARGS...       run an ES module; optional default export is called with args\n"
@@ -94,7 +94,7 @@ const CommandHelp kCommands[] = {
      "  run --eval SOURCE           execute inline JavaScript\n"
      "  --memory-mb N               JavaScript heap limit (default 256)\n"
      "  --timeout-ms N              workflow deadline, 0 = unlimited (default)\n"
-     "Import APIs from 'slopfab' or use global slopfab. See docs/scripting.md.\n"
+     "Import APIs from 'slopfab' or use global slopfab.\n"
      "  export default args => VALUE          return JSON-serializable data (async supported)\n"
      "  slopfab.fs.readJson/writeJson         files; readText/writeText/readBytes/writeBytes also available\n"
      "  slopfab.exec([EXE, ...ARGS], OPTIONS)  shell-free process; stdout/stderr/exitCode returned\n"
@@ -199,7 +199,7 @@ const CommandHelp kCommands[] = {
      "  --project NAME              save results in an existing project and refresh its review page\n"
      "  --project-item ID           regenerate an existing item (count 1); preserve previous versions\n"
      "  --output-dir DIR            project root override; otherwise use settings.output_directory or ./output\n"
-     "  --music-settings JSON       music sampling settings; see docs/music-models.md\n"
+     "  --music-settings JSON       music sampling settings as inline JSON\n"
      "  YuE2 defaults: CUDA, 32 midpoint steps, stereo 48 kHz .wav output.\n"
      "  MiniMax Music3 defaults: CUDA, 30 Euler steps, stereo 44.1 kHz .wav.\n"
      "  --prompt <text>              the prompt\n"
@@ -311,7 +311,7 @@ const CommandHelp kCommands[] = {
      "  --video-decoder <f>         decoder override (Sol-H3-VAE); --vae encodes references.\n"
      "  --save-latents <f>           save a versioned AV latent archive for continuation.\n"
      "  --lcs <f>                    native H3 LCS calibration archive.\n"
-     "  --lcs-settings <json>        LCS controls as inline JSON (see docs/lcs.md).\n"
+     "  --lcs-settings <json>        LCS controls as inline JSON.\n"
      "  --regenerate-overlap-frames <n> release the last n overlap frames (multiples of 17);\n"
      "                               requires --lock-overlap; join replaces the overlap.\n"
      "  --continue-from <f>          extend a saved archive; --frames is NEW frames,\n"
