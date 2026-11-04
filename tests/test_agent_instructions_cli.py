@@ -11,7 +11,7 @@ template = Path(__file__).resolve().parents[1] / "templates" / "AGENTS.md"
 expected = template.read_text(encoding="utf-8")
 version = int(expected.splitlines()[0])
 assert version > 0 and expected[0].isdigit()
-assert "`file://` URL" in expected and "index.html" in expected
+assert "`slopfab projects open NAME`" in expected and "index.html" in expected
 
 with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
     root = Path(temporary)
