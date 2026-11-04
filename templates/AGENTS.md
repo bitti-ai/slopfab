@@ -1,4 +1,4 @@
-4
+5
 
 # Slopfab media generation
 
@@ -8,27 +8,13 @@ Use Slopfab for image, video and music generation. Add `--agent` when calling
 it. Discover syntax and supported options through `slopfab help`, command help,
 capabilities and schema; consult relevant mods. Follow startup setup guidance.
 Before writing a generation prompt, retrieve the model/use-case prompting guide
-through `slopfab help prompts`. Declare first/last-frame roles explicitly; ordinary
-identity/style references are not automatically endpoints. Apply the guide to the
-actual brief and inspected media, keeping lyrics separate for music.
+through `slopfab help prompts`.
 
-For multi-step automation, use embedded JavaScript through `slopfab run FILE.js`
-or `run --eval SOURCE`; put script arguments after `--`. Prefer its `slopfab`
-host API for files, JSON, HTTP downloads and process execution over external
-Python or batch scripts. Use `slopfab.cli(args)` for generation, jobs, projects
-and other CLI operations, and `slopfab.exec([slopfab.tool('ffmpeg'), ...args])`
-for media conversion. `spawn` supports parallel subprocesses. Consult run help
-and scripting capabilities; mods can register additional CLI commands. Scripts
-return JSON data and write diagnostics to stderr. Use `slopfab.path.fileUrl`
-when presenting project review links.
+`slopfab run help`: For multi-step javascript automation. Prefer `slopfab`
+scripting API for files, JSON, HTTP downloads and process execution over external
+Python or batch scripts. Consult run help for scripting capabilities.
 
-Use **Motions** for vector graphics, titles and animation overlays. JavaScript
-Motion modules return SVG artwork per frame; embedded ThorVG renders PNG stills,
-video or transparent animations. Discover `slopfab help motions`: use `motions
-frame` for PNG/SVG, `motions render` for video, and `--over VIDEO` to composite
-over generated footage. Supply its separate WAV via `--audio` when needed.
-Preserve sources and register exported media/previews in the project. Text needs
-an explicitly loaded TTF/OTF font. Motion rendering is a CLI feature.
+`slopfab help motions`: Use **Motions** for vector graphics, titles and animation overlays. JavaScript
 
 ## Establish the brief
 
@@ -93,22 +79,19 @@ OUTPUT/PROJECT/
     preview.EXT               optional browser preview
 ```
 
-Read the project instructions and current manifest before edits. Let project
-generation name/register files; register externally created media and previews
+Call `slopfab projects open NAME` for the project once, to open the index.html in browser.
+Read the project instructions and current manifest before edits. Only write files inside the project folder. 
+Let project generation name/register files; register externally created media and previews
 too. The page uses exact manifest paths, not a folder scan. Preserve stable IDs,
 previous versions, unrelated items and saved latents needed for continuation.
 Use external FFmpeg for browser-friendly previews of native Y4M/PPM, keeping
 video soundtracks synchronized. After clip changes, rebuild and register the
-parent video and refresh the page. Present the project's `index.html` link as an
-absolute `file://` URL so the user can click it in the terminal, for example
-`file:///D:/Projects/output/my-project/index.html`. Use forward slashes and
-percent-encode spaces and other reserved URL characters in the path.
+parent video and refresh the page.
 
 Keep the page's main player
 defaulted to the latest full assembled video, with FULL VIDEO first in the clip
 list and clip selections playing in that main view. Clip cards show a single
 frame decoded by the browser from their video, without pregenerated thumbnail
-images. Other library assets open in a popup over the page. Preserve the compact
-corner styling and the header brand text `slopfab`.
+images. Other library assets open in a popup over the page.
 Pasted page prompts are edit requests; reconcile them with the latest project
 state before acting.
