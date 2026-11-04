@@ -107,7 +107,7 @@ publish "$root/third_party/thorvg/LODEPNG-LICENSE.txt" LODEPNG-LICENSE.txt
   printf 'CUDA targets: sm_86 and sm_120a; full tokenizer embedded\n'
   printf 'Source: %s\nBuild directory: %s\nCUDA compiler: %s\n' "$root" "$build_dir" "$cuda_compiler"
   printf 'Built UTC: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup\n'
+  printf 'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup, whisper, transcribe_cli\n'
   printf 'CUDA driver and matching toolkit shared libraries are external dependencies.\n'
 } > "$destination/build-info.txt"
 printf 'build: wrote %s/slopfab and libslopfab.so (ABI %s)\n' "$destination" "$version"

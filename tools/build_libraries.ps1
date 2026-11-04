@@ -136,7 +136,7 @@ try {
         @("slopfab C API $($version -join '.')", 'Windows x64 Release; CUDA 12.8; Vulkan enabled',
             'CUDA targets: sm_86 and sm_120a; full tokenizer embedded',
             "Source: $root", "Build directory: $WindowsBuildDir", "Built UTC: $([DateTime]::UtcNow.ToString('o'))",
-            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup') |
+            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup, whisper, transcribe_cli') |
             Set-Content -LiteralPath (Join-Path $destination 'build-info.txt') -Encoding UTF8
         Write-Host "build: wrote $destination\slopfab.exe and slopfab.dll"
     }
