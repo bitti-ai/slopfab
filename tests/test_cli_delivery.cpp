@@ -1,6 +1,7 @@
 #include "../src/cli/agent.h"
 #include "../src/cli/native_media.h"
 #include "../src/cli/projects.h"
+#include "../src/cli/frames.h"
 #include "slopfab/image.h"
 #include <fstream>
 #include <iostream>
@@ -25,6 +26,43 @@ int main() {
     samples.height = 4;
     samples.frames = 1;
     const auto path = (root / "image.png").u8string();
+    {
+      // Real delivery callback with borrowed planar generation pixels, no models or GPU.
+      PixelBuffer movie(3 * 3 * 4 * 4, 0.0f);
+      for (int frame = 0; frame < 3; ++frame)
+        for (int p = 0; p < 16; ++p)
+          movie[frame * 48 + frame * 16 + p] = 1.0f;
+      RunSamples video;
+      video.video = &movie;
+      video.frames = 3;
+      video.width = video.height = 4;
+      const auto review = (root / "review.png").u8string();
+      bool observed = false;
+      agent().samples_observer = [&](RunSamples& borrowed, Delivery& delivery) {
+        require(borrowed.video == &movie, "sample observer copied the generation buffer");
+        auto image = frames_from_samples(
+            borrowed, delivery.fps,
+            Value(Object{
+                {"output", str(review)}, {"columns", num(3)}, {"rows", num(1)}, {"width", num(2)}}),
+            [] {
+            });
+        require(image.find("source")->as_string() == "memory:generation", "wrong review source");
+        require(image.find("cells")->as_array()[2].find("time")->as_number() == 1,
+                "wrong sample timestamp");
+        delivery.artifacts.push_back(image);
+        observed = true;
+      };
+      Delivery delivery((root / "review-video.y4m").u8string());
+      delivery.fps = {2, 1};
+      delivery.reserve(delivery.output);
+      Delivery::samples(video, &delivery);
+      agent().samples_observer = {};
+      require(observed && delivery.artifacts.size() == 2, "missing RAM review artifact");
+      auto image = load_platform_image(review);
+      require(image.width == 6 && image.height == 2, "wrong RAM grid size");
+      require(image.pixels[0] == 255 && image.pixels[7] == 255 && image.pixels[14] == 255,
+              "planar RGB generation frame selection is wrong");
+    }
     {
       Delivery delivery(path);
       delivery.reserve(delivery.output);
@@ -135,7 +173,8 @@ int main() {
                   prompts.find("negative_prompt")->as_string() == "Unwanted lettering" &&
                   prompts.find("lyrics")->as_string().empty(),
               "project recipe did not snapshot resolved prompt inputs");
-      const auto& previous = *item.find("history")->as_array()[0].find("generation")->find("prompts");
+      const auto& previous =
+          *item.find("history")->as_array()[0].find("generation")->find("prompts");
       require(previous.find("prompt")->as_string() == "Project image" &&
                   previous.find("lyrics")->as_string() == "Original lyrics\nSecond line",
               "project history lost previous prompt inputs");

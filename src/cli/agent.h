@@ -33,6 +33,7 @@ struct CliError : std::runtime_error {
   }
 };
 
+struct Delivery;
 struct AgentContext {
   bool enabled = false, terminal = false, overwrite = false, check_ready = false;
   bool worker = false;
@@ -46,6 +47,7 @@ struct AgentContext {
   int project_manifest_revision = 0;
   Value last_event;
   Value startup_context;
+  std::function<void(RunSamples&, Delivery&)> samples_observer;
 };
 
 AgentContext& agent();

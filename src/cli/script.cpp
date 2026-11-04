@@ -1,5 +1,6 @@
 #include "script.h"
 #include "motions.h"
+#include "frames.h"
 #include "script_host.h"
 #include "script_bootstrap.h"
 #include "commands.h"
@@ -196,6 +197,8 @@ Value host_call(Runtime& r, const std::string& op, const Array& args) {
   r.check();
   if (op.rfind("motions.", 0) == 0)
     return r.motions.call(op.substr(8), args);
+  if (op == "frames.extract")
+    return extract_frames(args.at(0), [&r] { r.check(); });
   const auto s = [&](size_t i) -> const std::string& {
     return args.at(i).as_string();
   };
@@ -396,6 +399,13 @@ JSValue native_bytes(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv,
       throw std::runtime_error("detached binary data");
     if (operation == 3)
       return JS_NewStringLen(ctx, reinterpret_cast<const char*>(data), length);
+    if (operation == 4) {
+      if (argc < 2 || (element != 0 && element != 1))
+        throw std::runtime_error("frames.fromRGB needs an 8-bit buffer and options");
+      auto result = frames_from_rgb(data, length, parse_cli_json(js_string(ctx, argv[1])),
+                                    [&runtime] { runtime.check(); });
+      return JS_NewString(ctx, json::stringify(result).c_str());
+    }
     write_file(path_arg(js_string(ctx, argv[0])), data, length);
     return JS_UNDEFINED;
   } catch (const std::exception& e) {
@@ -433,7 +443,7 @@ JSModuleDef* load_module(JSContext* ctx, const char* name, void*) {
     const auto source =
         std::string(name) == "slopfab"
             ? std::string(
-                  "export default globalThis.slopfab; export const {fs,path,http,exec,spawn,cli,env,sleep,sha256,tool,args,motions}=globalThis.slopfab;")
+                  "export default globalThis.slopfab; export const {fs,path,http,exec,spawn,cli,env,sleep,sha256,tool,args,motions,frames}=globalThis.slopfab;")
             : read_file(path_arg(name));
     Owned compiled(ctx, JS_Eval(ctx, source.data(), source.size(), name,
                                 JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY));
@@ -500,8 +510,8 @@ int run_script(const fs::path& input, const std::vector<std::string>& args,
     JS_SetPropertyStr(r.ctx, global.value, "__slopfabHost",
                       JS_NewCFunction(r.ctx, native_host, "host", 2));
     const char* names[] = {"__slopfabReadBytes", "__slopfabWriteBytes", "__slopfabEncode",
-                           "__slopfabDecode"};
-    for (int i = 0; i < 4; ++i)
+                           "__slopfabDecode", "__slopfabFramesRGB"};
+    for (int i = 0; i < 5; ++i)
       JS_SetPropertyStr(
           r.ctx, global.value, names[i],
           JS_NewCFunctionMagic(r.ctx, native_bytes, names[i], 2, JS_CFUNC_generic_magic, i));

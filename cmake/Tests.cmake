@@ -10,6 +10,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME frames_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frames_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(frames_cli PROPERTIES LABELS synthetic TIMEOUT 120)
     add_test(NAME motions_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_motions_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(motions_cli PROPERTIES LABELS synthetic TIMEOUT 120)
@@ -208,6 +211,7 @@ if(SLOPFAB_BUILD_TESTS)
   target_link_libraries(slopfab_native_media_tests PRIVATE slopfab_core)
   add_test(NAME native_media COMMAND slopfab_native_media_tests)
   add_executable(slopfab_cli_delivery_tests tests/test_cli_delivery.cpp src/cli/agent.cpp
+    src/cli/frames.cpp src/cli/pipe_process.cpp src/cli/script_process.cpp
     src/cli/native_media.cpp src/cli/model_assets.cpp src/cli/help.cpp src/cli/startup.cpp src/cli/settings.cpp src/cli/projects.cpp)
   target_include_directories(slopfab_cli_delivery_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_link_libraries(slopfab_cli_delivery_tests PRIVATE slopfab_core ${CMAKE_DL_LIBS})

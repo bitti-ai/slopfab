@@ -487,6 +487,10 @@ Value capabilities() {
   return Value(Object{
       {"version", str(kVersion)},
       {"protocol_version", num(1)},
+      {"video_frames", Value(Object{{"command",str("slopfab video frames VIDEO --out IMAGE.png")},
+          {"javascript",str("slopfab.frames.extract / fromRGB / generate")},
+          {"generation_ram_capture",Value(true)}, {"native_y4m",Value(true)},
+          {"compressed_video",str("external FFmpeg and ffprobe")}, {"cli_only",Value(true)}})},
       {"motions", Value(Object{{"renderer",str("ThorVG 1.1.3")}, {"runtime",str("embedded JavaScript")},
         {"command",str("slopfab motions render|frame FILE.js --out FILE")},
         {"formats",Value(Array{str("svg"),str("png"),str("mp4"),str("mov"),str("webm")})},

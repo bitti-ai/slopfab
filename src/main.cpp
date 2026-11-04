@@ -5,6 +5,7 @@
 #include "cli/mods.h"
 #include "cli/script.h"
 #include "cli/motions.h"
+#include "cli/frames.h"
 #include "cli/projects.h"
 #include "cli/prompting.h"
 #include <cstdio>
@@ -102,6 +103,12 @@ int cli_main(int argc, char** argv) {
       return script_command(args);
     if (command == "motions")
       return motions_command(args);
+    if (command == "video") {
+      if (args.empty() || args.front() != "frames")
+        throw CliError("INVALID_REQUEST", "use slopfab video frames; see slopfab help video");
+      args.erase(args.begin());
+      return frames_command(args);
+    }
     if (command == "prompts")
       return prompts_command(args);
     if (command == "projects")

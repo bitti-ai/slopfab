@@ -87,7 +87,25 @@
       }
     }
   });
-  globalThis.slopfab = Object.freeze({...__slopfabInfo, fs, path, http, exec, spawn, cli, motions,
+  const frames = Object.freeze({
+    extract: options => host('frames.extract', options),
+    fromRGB: (bytes, options) => JSON.parse(__slopfabFramesRGB(bytes, JSON.stringify(options))),
+    generate: (args, options, processOptions = {}) => {
+      if (!Array.isArray(args)) throw new TypeError('frames.generate needs generation arguments');
+      const flags = [];
+      for (const [key, value] of Object.entries(options)) {
+        if (key === 'overwrite') { if (value) flags.push('--overwrite'); }
+        else if (key === 'columns' || key === 'rows') continue;
+        else if (['output','frame','time','width','start','end'].includes(key))
+          flags.push(key === 'output' ? '--out' : `--${key}`, String(value));
+        else throw new TypeError(`Unknown generation frame option: ${key}`);
+      }
+      if ('columns' in options || 'rows' in options)
+        flags.push('--grid', `${options.columns ?? 4}x${options.rows ?? 3}`);
+      return cli(['video', 'frames', 'generate', ...flags, '--', ...args], processOptions);
+    }
+  });
+  globalThis.slopfab = Object.freeze({...__slopfabInfo, fs, path, http, exec, spawn, cli, motions, frames,
     cwd: () => host('cwd'),
     chdir: dir => host('chdir', dir),
     env: Object.freeze({get: key => host('env.get', key), set: (key, value) => host('env.set', key, value)}),

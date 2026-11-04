@@ -551,6 +551,8 @@ bool Delivery::samples(RunSamples& s, void* user) {
               audio::write_wav(name, *s.audio, s.audio_channels, s.audio_sample_rate);
             });
     }
+    if (context.samples_observer)
+      context.samples_observer(s, d);
     for (const auto& file : pending) {
 #ifdef _WIN32
       if (!MoveFileExW(file.temp.c_str(), file.final.c_str(),

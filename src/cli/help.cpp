@@ -70,6 +70,23 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"video", "slopfab video frames VIDEO --out IMAGE.png [options]",
+     "Extract a video frame or a downscaled contact sheet; capture generation samples in RAM.",
+     "  VIDEO --out IMAGE.png        extract frame zero by default\n"
+     "  --frame N | --time SECONDS   zero-based frame index or nearest timestamp\n"
+     "  --grid COLSxROWS             evenly sample a grid (at most 256 cells)\n"
+     "  --start SECONDS --end SECONDS optional inclusive grid range, relative to first frame\n"
+     "  --width N                   maximum frame/cell width; grid default 320; never upscale\n"
+     "  --overwrite                 atomically replace an existing PNG\n"
+     "  --ffmpeg PATH --ffprobe PATH compressed-video decoder/probe overrides\n"
+     "  frames generate --out REVIEW.png [options] -- GENERATION_ARGS\n"
+     "                              review generation RGB in RAM, without re-decoding video\n"
+     "Native 8-bit 420 Y4M needs no FFmpeg. Other formats need FFmpeg and ffprobe.\n"
+     "JavaScript: import {frames} from 'slopfab'; frames.extract({input,output,frame|time});\n"
+     "use {columns,rows,width} for grids. frames.fromRGB(bytes,{sourceWidth,sourceHeight,\n"
+     "count,fps,output,...}) reads packed RGB24 frames. frames.generate(args,options) runs\n"
+     "generation in a child process; capture uses that process's live decoded samples.\n"
+     "Results include source frame indices, timestamps and cell positions.\n"},
     {"motions", "slopfab motions render|frame FILE.js --out FILE [options]",
      "Render JavaScript vector Motions with ThorVG; export video or overlay existing video.",
      "  render FILE.js --out VIDEO.mp4|.mov|.webm   render animation; MOV/WebM preserve alpha\n"
