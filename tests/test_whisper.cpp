@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 using namespace slopfab;
@@ -52,12 +54,19 @@ int main(int argc, char** argv) {
                          {"cached_logits", {m.config.vocab}, next}});
       return 0;
     }
-    if (argc == 3 && std::string(argv[1]) == "tokenize") {
+    if (argc == 3 &&
+        (std::string(argv[1]) == "tokenize" || std::string(argv[1]) == "tokenize-file")) {
       Config c;
       c.multilingual = true;
       c.vocab = 51866;
       Tokenizer t(c);
-      for (auto id : t.encode(argv[2]))
+      std::string input = argv[2];
+      if (std::string(argv[1]) == "tokenize-file") {
+        std::ifstream stream(argv[2], std::ios::binary);
+        require(bool(stream), "cannot open tokenization input");
+        input.assign(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+      }
+      for (auto id : t.encode(input))
         std::cout << id << " ";
       std::cout << "\n";
       return 0;
@@ -120,6 +129,13 @@ int main(int argc, char** argv) {
       require(tok.decode(tok.encode(s)) == s, "tokenizer roundtrip");
     require(tok.encode("Hello world!") == std::vector<int>({15947, 1002, 0}),
             "known tokenizer IDs");
+    require(tok.encode("Hyvää päivää! 日本語 中文 العربية") ==
+                std::vector<int>({38792, 85, 8942, 32232, 592, 8942, 0, 220, 27311, 31348, 220,
+                                  5975, 17174, 18863, 25513, 10632}),
+            "multilingual IDs match tiktoken");
+    require(tok.encode("  hello\n\nworld  ") ==
+                std::vector<int>({220, 7751, 198, 198, 13217, 220, 220}),
+            "whitespace IDs match tiktoken");
     require(tok.language_id("fi") == 50277 && tok.timestamp_begin == 50365, "v3 special IDs");
     auto silence = log_mel(std::vector<float>(400, 0), 80);
     for (float v : silence)

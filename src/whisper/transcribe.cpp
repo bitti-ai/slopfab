@@ -322,6 +322,7 @@ Result transcribe(const std::vector<float>& pcm, int rate, int channels, const O
   if (!model.config.multilingual && language != tokenizer.language_id("en"))
     throw std::invalid_argument("Whisper: English-only checkpoint");
   bool detect = options.language == "auto" && model.config.multilingual;
+  result.language = detect ? "und" : tokenizer.language_code(language);
   std::vector<int> history, initial = tokenizer.encode(options.prompt);
   const size_t content_frames = (audio.size() + 159) / 160;
   size_t seek = 0;
@@ -329,6 +330,16 @@ Result transcribe(const std::vector<float>& pcm, int rate, int channels, const O
     progress = double(seek) / content_frames;
     check("encode");
     size_t count = std::min<size_t>(3000, content_frames - seek);
+    // Digital silence contains no words; do not ask the decoder to invent some.
+    const size_t sample_begin = std::min(seek * 160, audio.size());
+    const size_t sample_end = std::min((seek + count) * 160, audio.size());
+    if (std::all_of(audio.begin() + sample_begin, audio.begin() + sample_end, [](float value) {
+          return std::abs(value) <= 1e-7f;
+        })) {
+      seek += count;
+      history.clear();
+      continue;
+    }
     std::vector<float> window(3000 * model.config.mels);
     std::copy_n(mel.begin() + seek * model.config.mels, window.size(), window.begin());
     model.encode(window);

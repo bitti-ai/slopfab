@@ -68,6 +68,12 @@ source, regeneration procedure and attribution are in
 `WHISPER-LICENSE.txt`. Check the license of separately obtained weights, especially
 community fine-tunes.
 
+Development checks: `slopfab_whisper_tests [cpu|cuda|vulkan]` compares backend
+operators. `tools/verify_whisper.py` compares features, encoder outputs and cached
+decoder logits against a local Transformers checkpoint. With local tiny weights
+and the 16 kHz JFK sample, `tests/test_whisper_integration.py EXE MODEL JFK.wav cuda`
+checks silence, repeated passages across windows, word timing and subtitle output.
+
 ## Build
 
 Linux builds support CUDA, Vulkan, or both, including the C API and an embedded
