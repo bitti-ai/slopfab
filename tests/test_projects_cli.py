@@ -1,6 +1,7 @@
 """Project storage, generation planning and offline page contracts; no models/GPU."""
 import base64
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -14,10 +15,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     config = root / "config.json"
     output = root / "output with spaces å"
 
-    def run(*args, code=0, payload=None):
+    def run(*args, code=0, payload=None, env=None):
         process = subprocess.run([exe, "--config", str(config), "--agent", *args], cwd=root,
                                  input=json.dumps(payload) if payload is not None else None,
-                                 capture_output=True, text=True, encoding="utf-8", timeout=30)
+                                 capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
         assert process.returncode == code, (args, process.returncode, process.stdout, process.stderr)
         events = [json.loads(line) for line in process.stdout.splitlines()]
         assert events, (args, process.stderr)
@@ -41,6 +42,11 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     run("projects", "create", "../escape", code=2)
     run("projects", "create", "con", code=2)
     run("projects", "show", "missing", code=3)
+    run("projects", "open", "missing", code=3)
+    run("projects", "open", code=2)
+    run("projects", "open", "demo", "extra", code=2)
+    run("projects", "open", "../escape", code=2)
+    run("projects", "open", "demo", "--title", "ignored", code=2)
     run("projects", "add", "missing", "--file", "missing.png", code=3)
     assert not (output / "missing").exists()
 
@@ -124,9 +130,32 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     run("generate", "image", "--project", "demo", "--count", "2", "--prompt", "new", "--dry-run")
     assert (directory / "project.json").read_bytes() == before
     (directory / "index.html").unlink()
+    missing_index = run("projects", "open", "demo", code=3)
+    assert "projects render demo" in json.dumps(missing_index)
+    assert not (directory / "index.html").exists()
     run("projects", "render", "demo")
     assert (directory / "index.html").is_file()
     assert (directory / "project.json").read_bytes() == before
+
+    # Exercise the desktop launcher without opening a real browser.
+    if os.name != "nt":
+        launchers = root / "launchers"
+        launchers.mkdir()
+        opener = launchers / ("open" if sys.platform == "darwin" else "xdg-open")
+        captured = root / "opened-path.txt"
+        env = dict(os.environ, PATH=str(launchers), SLOPFAB_TEST_OPEN_PATH=str(captured))
+        opener.write_text('#!/bin/sh\nprintf "%s\\n" "$#" "$1" > "$SLOPFAB_TEST_OPEN_PATH"\necho launcher-output\n')
+        opener.chmod(0o755)
+        for options in ((), ("--output-dir", str(output))):
+            opened = run("projects", "open", "demo", *options, env=env)
+            assert opened["opened"] is True
+            assert Path(opened["project"]["index_path"]) == directory / "index.html"
+            assert captured.read_text().splitlines() == ["1", str(directory / "index.html")]
+        assert (directory / "project.json").read_bytes() == before
+        opener.write_text("#!/bin/sh\nexit 1\n")
+        assert "OPEN_FAILED" in json.dumps(run("projects", "open", "demo", code=6, env=env))
+        opener.unlink()
+        assert "OPEN_FAILED" in json.dumps(run("projects", "open", "demo", code=6, env=env))
 
     # Reject symlink escapes on systems where symlink creation is available.
     outside = root / "outside"
@@ -140,10 +169,16 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
         (directory / "escape").symlink_to(outside, target_is_directory=True)
         run("generate", "image", "--project", "demo", "--out", "escape/out.png", "--prompt", "new", "--dry-run", code=2)
         assert not list(outside.iterdir())
+        (outside / "index.html").write_text("outside project")
+        (directory / "index.html").unlink()
+        (directory / "index.html").symlink_to(outside / "index.html")
+        run("projects", "open", "demo", code=2)
 
     help_text = run("help", "projects")["options"]
     assert "naming" in help_text and "--preview" in help_text
+    assert "projects open NAME" in help_text
     assert "projects" in run("capabilities")["data"]
+    assert run("capabilities")["data"]["projects"]["open"] == "slopfab projects open NAME"
     assert "project" in run("schema")["data"]["properties"]
 
 print("PASS: projects, safe paths, versions, clip edits, naming contract, HTML embedding and generation planning")

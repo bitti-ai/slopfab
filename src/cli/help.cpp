@@ -129,6 +129,7 @@ const CommandHelp kCommands[] = {
      "  projects create NAME [--title TEXT]   create project.json, PROJECT.md and index.html\n"
      "  projects list                        list projects in the output directory\n"
      "  projects show NAME                   read items, exact filenames, recipes and naming rules\n"
+     "  projects open NAME                   open index.html in the default browser\n"
      "  projects add NAME --file PATH        import and register media; --id ID sets a stable ID\n"
      "  projects update NAME ID [options]    replace media, preview or metadata; retain older files\n"
      "  projects remove NAME ID              remove from the active project; retain files/history\n"

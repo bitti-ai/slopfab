@@ -9,6 +9,15 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <shellapi.h>
+#else
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
 #endif
 
 namespace slopfab::cli {
@@ -207,6 +216,49 @@ void render(const fs::path& directory, const Value& manifest) {
   guide +=
       "\n## Agent workflow\n\nRead project.json before editing; IDs are stable and array entries carry version, prompt, generation recipe, parent and position. Clip order is ascending position. Removed items stay in the manifest and retain their files.\n\nUse slopfab help projects for commands. After regenerating a clip or removing/restoring/reordering it, rebuild its parent video with external FFmpeg and register the replacement using projects update. needs_rebuild marks an outdated parent. The page only prepares prompts; it never runs commands.\n\nGeneration recipes record arguments, working directory, resolved plan and artifacts. Resolve relative model/reference paths against that working directory. Use a new output and seed when asked to regenerate. Preserve other items. --if-revision can reject stale project edits.\n";
   atomic_text(inside(directory, "PROJECT.md"), guide);
+}
+
+void open_index(const fs::path& directory) {
+  const auto path = inside(directory, "index.html");
+  if (!fs::is_regular_file(path))
+    throw CliError("INPUT_NOT_FOUND",
+                   "project index.html not found; run projects render " + directory.filename().u8string(), 3);
+#ifdef _WIN32
+  const auto result = reinterpret_cast<INT_PTR>(
+      ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+  if (result <= 32)
+    throw CliError("OPEN_FAILED", "cannot open project in default browser (Windows error " +
+                                     std::to_string(result) + "): " + path.u8string(), 6);
+#else
+#ifdef __APPLE__
+  std::string opener = "open";
+#else
+  std::string opener = "xdg-open";
+#endif
+  std::string filename = path.string();
+  char* arguments[] = {opener.data(), filename.data(), nullptr};
+  posix_spawn_file_actions_t actions;
+  int error = posix_spawn_file_actions_init(&actions);
+  if (error)
+    throw CliError("OPEN_FAILED", "cannot prepare browser launcher: " + std::string(std::strerror(error)), 6);
+  // Keep launcher output off the CLI's JSON stream and avoid reading its stdin.
+  error = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+  if (!error)
+    error = posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDOUT_FILENO);
+  pid_t child = -1;
+  if (!error)
+    error = posix_spawnp(&child, arguments[0], &actions, nullptr, arguments, environ);
+  posix_spawn_file_actions_destroy(&actions);
+  if (error)
+    throw CliError("OPEN_FAILED", "cannot launch " + opener + ": " + std::strerror(error), 6);
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    throw CliError("OPEN_FAILED", "cannot open project in default browser: " + path.u8string(), 6);
+#endif
 }
 
 void save(const fs::path& directory, Object object) {
@@ -409,11 +461,11 @@ int projects_command(const std::vector<std::string>& args) {
   }
   if (positional.empty())
     invalid(
-        "use projects create, list, show, add, update, remove, restore or render; slopfab help projects");
+        "use projects create, list, show, open, add, update, remove, restore or render; slopfab help projects");
   const auto action = positional[0];
   const bool edit = action == "update" || action == "remove" || action == "restore";
   const bool known = edit || action == "list" || action == "create" || action == "show" ||
-                     action == "render" || action == "add";
+                     action == "render" || action == "add" || action == "open";
   if (!known || positional.size() != (action == "list" ? 1u : edit ? 3u : 2u))
     invalid("wrong project action or arguments; run slopfab help projects");
   std::set<std::string> permitted = {"--output-dir"};
@@ -481,6 +533,10 @@ int projects_command(const std::vector<std::string>& args) {
       response["item"] = change_item(directory, action, id, options);
     }
     response["project"] = context(directory, load(directory));
+    if (action == "open") {
+      open_index(directory);
+      response["opened"] = Value(true);
+    }
   }
   emit(std::move(response), true);
   return 0;

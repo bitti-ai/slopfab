@@ -523,6 +523,7 @@ Value capabilities() {
        Value(Object{
            {"help", str("slopfab help projects")},
            {"create", str("slopfab projects create NAME")},
+           {"open", str("slopfab projects open NAME")},
            {"generate", str("generate --project NAME; --project-item ID replaces an item")},
            {"manifest", str("project.json")},
            {"preview", str("index.html: offline media review and copyable agent prompts")},

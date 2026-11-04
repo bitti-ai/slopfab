@@ -12,9 +12,13 @@ slopfab generate image --project launch-film --prompt "A quiet city at dusk"
 slopfab generate video --project launch-film --prompt "A slow camera move over the city"
 slopfab generate music --project launch-film --prompt "Warm ambient synths" --duration 10
 slopfab projects show launch-film
+slopfab projects open launch-film
 ```
 
-Open the returned `index_path` in a browser. The page shows images, video and
+Use `slopfab projects open NAME` to open `index.html` in the default browser,
+or open the returned `index_path` yourself. The command supports `--output-dir`
+and the configured output directory. If the page is missing, rebuild it with
+`slopfab projects render NAME`. The page shows images, video and
 music with custom playback controls, filters, a clip sequence and generation
 details. Select an item, choose an action, add direction and copy the resulting
 prompt into the agent. The prompt identifies the project, item, version,

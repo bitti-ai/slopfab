@@ -25,7 +25,7 @@ target_sources(slopfab PRIVATE src/cli/script.cpp src/cli/script_process.cpp src
 target_sources(slopfab PRIVATE src/cli/motions.cpp)
 target_link_libraries(slopfab PRIVATE slopfab_quickjs slopfab_thorvg)
 if(WIN32)
-  target_link_libraries(slopfab PRIVATE winhttp)
+  target_link_libraries(slopfab PRIVATE winhttp shell32)
   if(MSVC)
     target_link_options(slopfab PRIVATE /STACK:8388608)
   endif()
