@@ -62,8 +62,8 @@ cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DSLOPFAB_BUILD_C_API=ON -DSLOPFAB_BUILD_TESTS=ON \
   -DSLOPFAB_EMBED_TOKENIZER=ON "-DSLOPFAB_TOKENIZER_FILE=$root/ref/text_encoder/tokenizer.json"
 cmake --build "$build_dir" --config Release --parallel "$jobs" \
-  --target slopfab slopfab_c slopfab_capi_tests slopfab_embedded_tokenizer_tests slopfab_startup_tests
-ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup)$'
+  --target slopfab slopfab_c slopfab_capi_tests slopfab_embedded_tokenizer_tests slopfab_startup_tests slopfab_whisper_tests
+ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli)$'
 
 major=$(awk '/^#define SLOPFAB_CAPI_VERSION_MAJOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')
 minor=$(awk '/^#define SLOPFAB_CAPI_VERSION_MINOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')

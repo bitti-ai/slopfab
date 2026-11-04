@@ -7,6 +7,7 @@ if(SLOPFAB_BUILD_TESTS)
     target_compile_options(slopfab_whisper_tests PRIVATE /utf-8)
   endif()
   add_test(NAME whisper COMMAND slopfab_whisper_tests)
+  set_tests_properties(whisper PROPERTIES LABELS synthetic TIMEOUT 60)
   find_package(Threads REQUIRED)
   add_executable(slopfab_media_pipeline_tests tests/harness.cpp tests/test_media_pipeline.cpp
     src/cli/pipe_process.cpp)
@@ -16,6 +17,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME transcribe_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_transcribe_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(transcribe_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME frames_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_frames_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(frames_cli PROPERTIES LABELS synthetic TIMEOUT 120)

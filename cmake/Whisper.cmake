@@ -4,7 +4,8 @@ add_custom_command(OUTPUT "${whisper_assets}"
   COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}"
     "-DOUTPUT=${whisper_assets}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedWhisper.cmake"
   DEPENDS resources/whisper/multilingual.tiktoken resources/whisper/gpt2.tiktoken
-    resources/whisper/profiles.json cmake/EmbedWhisper.cmake VERBATIM)
+    resources/whisper/profiles.json resources/whisper/mel_filters.npz
+    resources/whisper/SHA256SUMS cmake/EmbedWhisper.cmake VERBATIM)
 add_library(slopfab_whisper STATIC src/whisper/frontend.cpp src/whisper/tokenizer.cpp
   src/whisper/model.cpp src/whisper/cpu.cpp src/whisper/transcribe.cpp "${whisper_assets}")
 target_link_libraries(slopfab_whisper PUBLIC slopfab_core)

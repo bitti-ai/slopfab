@@ -9,14 +9,17 @@
 namespace slopfab::whisper {
 std::string embedded_asset(const std::string& name);
 const json::Value& assets();
+
 struct Config {
   std::string name;
   int width = 0, heads = 0, encoder_layers = 0, decoder_layers = 0, mels = 0, vocab = 0;
   int audio_context = 1500, text_context = 448;
   bool multilingual = true;
-  std::vector<std::pair<int,int>> alignment_heads;
+  std::vector<std::pair<int, int>> alignment_heads;
 };
+
 Config inspect(const SafeTensors&, const std::string& variant);
+
 struct Tokenizer {
   explicit Tokenizer(const Config&);
   std::vector<int> encode(const std::string&) const;
@@ -27,15 +30,18 @@ struct Tokenizer {
   int language_count;
   std::vector<int> suppress;
   std::vector<std::string> vocabulary;
-  std::unordered_map<std::string,int> ranks;
+  std::unordered_map<std::string, int> ranks;
 };
+
 std::vector<float> mono_16k(const std::vector<float>&, int rate, int channels);
 // Entire recording + 30 seconds of zero padding, in [frames,mels] layout.
 std::vector<float> log_mel(const std::vector<float>&, int mels);
+
 struct Tensor {
   int rows = 0, cols = 0;
   std::shared_ptr<void> data;
 };
+
 class Backend {
 public:
   virtual ~Backend() = default;
@@ -49,13 +55,18 @@ public:
   virtual Tensor concat(const Tensor&, const Tensor&) = 0;
   virtual Tensor im2col(const Tensor&, int stride) = 0;
   // Optional probabilities: [heads,queries,keys], before any rounding.
-  virtual Tensor attention(const Tensor& q, const Tensor& k, const Tensor& v,
-                           int heads, bool causal, std::vector<float>* probabilities = nullptr) = 0;
+  virtual Tensor attention(const Tensor& q, const Tensor& k, const Tensor& v, int heads,
+                           bool causal, std::vector<float>* probabilities = nullptr) = 0;
 };
+
 std::unique_ptr<Backend> cpu_backend();
 std::unique_ptr<Backend> cuda_backend();
 std::unique_ptr<Backend> vulkan_backend();
-struct Cache { Tensor k, v; };
+
+struct Cache {
+  Tensor k, v;
+};
+
 class Model {
 public:
   Model(const Options&);
@@ -63,7 +74,7 @@ public:
   Config config;
   std::string backend_name;
   std::unique_ptr<Backend> backend;
-  std::map<std::string,Tensor> weights;
+  std::map<std::string, Tensor> weights;
   std::vector<Cache> self_cache, cross_cache;
   Tensor audio;
   std::function<void(const std::string&)> check;
@@ -75,6 +86,8 @@ public:
   std::vector<float> decode(const std::vector<int>& ids,
                             std::vector<std::vector<float>>* alignment = nullptr);
 };
+
 std::vector<Word> align_words(Model&, const Tokenizer&, const std::vector<int>& prefix,
-                              const std::vector<int>& text, double offset, double duration);
+                              const std::vector<int>& text, double offset, double duration,
+                              std::vector<size_t>* word_ends = nullptr);
 }

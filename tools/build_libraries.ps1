@@ -109,10 +109,10 @@ try {
             '-DSLOPFAB_BUILD_C_API=ON', '-DSLOPFAB_BUILD_TESTS=ON',
             '-DSLOPFAB_EMBED_TOKENIZER=ON', "-DSLOPFAB_TOKENIZER_FILE=$tokenizer")
         Invoke-Checked 'cmake' @('--build', $WindowsBuildDir, '--config', 'Release',
-            '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests',
+            '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests', 'slopfab_whisper_tests',
             '--parallel', "$Jobs")
         Invoke-Checked 'ctest' @('--test-dir', $WindowsBuildDir, '-C', 'Release',
-            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup)$')
+            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli)$')
 
         $destination = Join-Path $root 'dist\windows'
         New-Item -ItemType Directory -Path $destination -Force | Out-Null

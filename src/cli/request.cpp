@@ -487,6 +487,11 @@ Value capabilities() {
   return Value(Object{
       {"version", str(kVersion)},
       {"protocol_version", num(1)},
+      {"transcription", Value(Object{{"command",str("slopfab transcribe FILE --model MODEL.safetensors")},
+          {"model",str("whisper")}, {"multilingual",Value(true)}, {"word_timestamps",Value(true)},
+          {"embedded_tokenizer",Value(true)}, {"weights",str("Hugging Face safetensors, F16/BF16/F32")},
+          {"formats",Value(Array{str("json"),str("txt"),str("srt"),str("vtt")})},
+          {"cli_only",Value(true)}})},
       {"video_frames", Value(Object{{"command",str("slopfab video frames VIDEO --out IMAGE.png")},
           {"javascript",str("slopfab.frames.extract / fromRGB / generate")},
           {"generation_ram_capture",Value(true)}, {"native_y4m",Value(true)},

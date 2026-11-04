@@ -20,6 +20,53 @@ Native C++ video, image and music generation on CUDA and Vulkan. No Python is re
 - **Decoding and upscaling:** [Sol H3 VAE](docs/sol_h3_vae.md), [H3 latent upscaling](docs/latent_upscaling.md) and [Real-ESRGAN](docs/upscaling.md) on CUDA/Vulkan; [SeedVR2 restoration](docs/seedvr2.md) on CUDA.
 - **Application integration:** asynchronous C API, cancellation, progress, [generation previews](docs/generation_previews.md), [isolated session caches](docs/conditioning_settings.md) and model reuse.
 - **Media and tools:** Native PNG images and Y4M/WAV output, checkpoint inspection, tensor comparison and standalone media/text encoding.
+- **Transcription:** Native Whisper speech and sung-lyrics transcription, automatic language detection, segment/word timestamps and JSON, text, SRT or WebVTT output. CUDA and Vulkan inference use original Hugging Face safetensors; tokenizer and standard model metadata are embedded.
+
+## Transcribing audio
+
+```powershell
+slopfab transcribe song.flac --model whisper-large-v3-turbo.safetensors --word-timestamps --out lyrics.srt
+slopfab transcribe interview.wav --model whisper-small.safetensors --language fi --backend vulkan --out transcript.json
+slopfab help transcribe
+```
+
+Supply an original Hugging Face Whisper `model.safetensors` file (renaming it is fine),
+or a directory containing that file. No tokenizer/config JSON sidecars, Python, model
+conversion or runtime downloads are required. F16, BF16 and F32 weights are accepted;
+this implementation computes in FP32, so GPU memory consumption exceeds the weight
+file size. CPU inference is available as a slow reference backend.
+
+Standard tiny, base, small and medium checkpoints, their `.en` variants, large-v1/v2/v3
+and large-v3-turbo are supported. Dimensions select the embedded profile; specify
+`--variant large-v1` or `--variant large-v2` for those two identically shaped models.
+Custom architectures, sharded/quantized checkpoints and distilled variants other
+than large-v3-turbo are unsupported. `.en` checkpoints transcribe English only.
+
+Language defaults to automatic detection. Use `--language CODE` to select a language,
+`--prompt "names and vocabulary"` for context, `--beam-size 5` for beam search, or
+`--no-context` to disable carrying prior transcript text between windows. Audio is
+downmixed/resampled to mono 16 kHz and decoded in overlapping timestamp-driven
+windows. Native WAV input needs no external tools; compressed audio and video input
+use FFmpeg from the configured media tools or `--ffmpeg PATH`.
+
+`--out` infers the output format from `.json`, `.txt`, `.srt` or `.vtt`; otherwise use
+`--format`. Without `--out`, the result goes to stdout. Existing outputs require
+`--overwrite`. `--agent` provides progress events followed by a structured result.
+Transcription is currently exposed through the CLI and its JavaScript CLI bridge,
+not the C ABI. `--word-timestamps` adds approximate attention-based word alignment
+to JSON; subtitles use segment timestamps.
+
+Whisper can transcribe singing, but accompaniment, layered vocals and sustained
+syllables can reduce accuracy and produce hallucinations. Vocal isolation is not
+included. Check lyrics and timing before publishing them, especially across
+instrumental breaks. Automatic language detection uses the first audio window;
+it does not independently detect each language in a mixed-language recording.
+
+Embedded assets come from OpenAI Whisper's MIT-licensed repository. The pinned
+source, regeneration procedure and attribution are in
+[third_party/whisper/README.md](third_party/whisper/README.md); distributions include
+`WHISPER-LICENSE.txt`. Check the license of separately obtained weights, especially
+community fine-tunes.
 
 ## Build
 
