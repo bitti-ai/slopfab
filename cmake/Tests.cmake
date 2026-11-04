@@ -1,6 +1,12 @@
 # --- tests ------------------------------------------------------------------
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
+  add_executable(slopfab_whisper_tests tests/test_whisper.cpp)
+  target_link_libraries(slopfab_whisper_tests PRIVATE slopfab_whisper)
+  if(MSVC)
+    target_compile_options(slopfab_whisper_tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME whisper COMMAND slopfab_whisper_tests)
   find_package(Threads REQUIRED)
   add_executable(slopfab_media_pipeline_tests tests/harness.cpp tests/test_media_pipeline.cpp
     src/cli/pipe_process.cpp)

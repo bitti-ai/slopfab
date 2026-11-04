@@ -123,6 +123,7 @@ try {
         Publish-File (Join-Path $root 'third_party\quickjs\LICENSE') (Join-Path $destination 'QUICKJS-LICENSE.txt')
         Publish-File (Join-Path $root 'third_party\thorvg\LICENSE') (Join-Path $destination 'THORVG-LICENSE.txt')
         Publish-File (Join-Path $root 'third_party\thorvg\LODEPNG-LICENSE.txt') (Join-Path $destination 'LODEPNG-LICENSE.txt')
+        Publish-File (Join-Path $root 'third_party\whisper\LICENSE') (Join-Path $destination 'WHISPER-LICENSE.txt')
         $hashes = foreach ($name in @('slopfab.exe', 'slopfab.dll', 'slopfab_c.lib', 'capi.h')) {
             $digest = (Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256).Hash.ToLowerInvariant()
             "$digest  $name"

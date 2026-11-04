@@ -79,6 +79,8 @@ copy /y "%ROOT%\third_party\sageattention\LICENSE" "%STAGE%\SAGEATTENTION-LICENS
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\motioncache\LICENSE" "%STAGE%\MOTIONCACHE-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
+copy /y "%ROOT%\third_party\whisper\LICENSE" "%STAGE%\WHISPER-LICENSE.txt" >nul
+if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\quickjs\LICENSE" "%STAGE%\QUICKJS-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\third_party\thorvg\LICENSE" "%STAGE%\THORVG-LICENSE.txt" >nul

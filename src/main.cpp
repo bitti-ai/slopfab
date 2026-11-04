@@ -8,6 +8,7 @@
 #include "cli/frames.h"
 #include "cli/projects.h"
 #include "cli/prompting.h"
+#include "cli/transcribe.h"
 #include <cstdio>
 #include <set>
 #ifdef _WIN32
@@ -111,6 +112,8 @@ int cli_main(int argc, char** argv) {
     }
     if (command == "prompts")
       return prompts_command(args);
+    if (command == "transcribe")
+      return transcribe_command(args);
     if (command == "projects")
       return projects_command(args);
     if (command == "settings")

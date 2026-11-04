@@ -21,6 +21,8 @@ configure_file(src/cli/prompting_catalog.h.in generated/prompting_catalog.h @ONL
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
+target_sources(slopfab PRIVATE src/cli/transcribe.cpp)
+target_link_libraries(slopfab PRIVATE slopfab_whisper)
 target_sources(slopfab PRIVATE src/cli/script.cpp src/cli/script_process.cpp src/cli/script_http.cpp src/cli/pipe_process.cpp)
 target_sources(slopfab PRIVATE src/cli/motions.cpp)
 target_sources(slopfab PRIVATE src/cli/frames.cpp src/cli/frames_command.cpp)

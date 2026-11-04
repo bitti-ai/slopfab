@@ -93,6 +93,7 @@ publish "$library" "libslopfab.so.$major"
 publish "$library" libslopfab.so
 publish "$root/include/slopfab/capi.h" capi.h
 publish "$root/third_party/quickjs/LICENSE" QUICKJS-LICENSE.txt
+publish "$root/third_party/whisper/LICENSE" WHISPER-LICENSE.txt
 publish "$root/third_party/thorvg/LICENSE" THORVG-LICENSE.txt
 publish "$root/third_party/thorvg/LODEPNG-LICENSE.txt" LODEPNG-LICENSE.txt
 (

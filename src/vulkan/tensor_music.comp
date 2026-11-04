@@ -15,6 +15,7 @@ float wf(uint i) { return uintBitsToFloat(uint(w[i])<<16); }
 float bf_(uint i) { return uintBitsToFloat(uint(b[i])<<16); }
 float x32(uint i) { return uintBitsToFloat(uint(x[2*i])|(uint(x[2*i+1])<<16)); }
 float w32(uint i) { return uintBitsToFloat(uint(w[2*i])|(uint(w[2*i+1])<<16)); }
+float b32(uint i) { return uintBitsToFloat(uint(b[2*i])|(uint(b[2*i+1])<<16)); }
 uint narrow(float v) { uint u=floatBitsToUint(v); return (u+0x7fffu+((u>>16)&1u))>>16; }
 float bf(float v) { return uintBitsToFloat(narrow(v)<<16); }
 void put(uint i,float v) { y[i]=uint16_t(narrow(v)); }
@@ -23,6 +24,58 @@ float silu(float v) { return v/(1.0+exp(-v)); }
 void main() {
   uint t=gl_LocalInvocationID.x, g=gl_WorkGroupID.x+gl_WorkGroupID.y*p[15];
   uint i=g*256+t, op=p[0], n=p[1], cols=p[2];
+  // Native Whisper FP32 operations. Separate opcode range leaves the existing
+  // music arithmetic unchanged. Parameters are validated by the model graph.
+  if(op==100) {
+    if(g>=n)return;
+    float sum=0;for(uint c=t;c<cols;c+=256)sum+=x32(g*cols+c);
+    s[t]=sum;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+    float mean=s[0]/float(cols);barrier();
+    sum=0;for(uint c=t;c<cols;c+=256){float a=x32(g*cols+c)-mean;sum+=a*a;}
+    s[t]=sum;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+    float inv=inversesqrt(s[0]/float(cols)+1e-5);
+    for(uint c=t;c<cols;c+=256)put32(g*cols+c,(x32(g*cols+c)-mean)*inv*w32(c)+b32(c));
+    return;
+  }
+  if(op==101) {
+    if(i>=n)return;
+    // Abramowitz-Stegun erf, maximum absolute error < 1.5e-7.
+    float a=x32(i),v=abs(a)*0.7071067811865475,u=1.0/(1.0+0.3275911*v);
+    float e=1.0-(((((1.061405429*u-1.453152027)*u)+1.421413741)*u-0.284496736)*u+0.254829592)*u*exp(-v*v);
+    put32(i,0.5*a*(1.0+sign(a)*e));return;
+  }
+  if(op==102) {
+    if(i>=n)return;
+    uint row=i/(cols*3),c=(i/3)%cols;
+    int at=int(row*p[4]+i%3)-1;
+    put32(i,at>=0 && at<int(p[3])?x32(uint(at)*cols+c):0);return;
+  }
+  if(op==103) {
+    if(i>=n)return;
+    uint key=i%p[3],q=(i/p[3])%p[4]+p[5],h=i/(p[3]*p[4]);
+    precise float sum=0;
+    for(uint c=0;c<cols;++c)sum=fma(x32((q*p[6]+h)*cols+c),w32((key*p[6]+h)*cols+c),sum);
+    put32(i,sum*inversesqrt(float(cols)));return;
+  }
+  if(op==104) {
+    if(i>=n)return;
+    uint c=i%cols,q=(i/cols)%p[4],h=i/(cols*p[4]);
+    precise float sum=0;
+    for(uint k=0;k<p[3];++k)sum=fma(x32((h*p[4]+q)*p[3]+k),w32((k*p[6]+h)*cols+c),sum);
+    put32(((q+p[5])*p[6]+h)*cols+c,sum);return;
+  }
+  if(op==105) {
+    if(g>=n)return;
+    uint limit=p[3]!=0?min(cols,g%p[4]+p[5]+1):cols;
+    float mx=-uintBitsToFloat(0x7f800000);
+    for(uint k=t;k<limit;k+=256)mx=max(mx,x32(g*cols+k));
+    s[t]=mx;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]=max(s[t],s[t+d]);barrier();}
+    mx=s[0];barrier();float sum=0;
+    for(uint k=t;k<limit;k+=256)sum+=exp(x32(g*cols+k)-mx);
+    s[t]=sum;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+    sum=s[0];for(uint k=t;k<cols;k+=256)put32(g*cols+k,k<limit?exp(x32(g*cols+k)-mx)/sum:0);return;
+  }
+  if(op==107) {if(i<n)put32(i,x32(i)+w32(i%cols));return;}
   if(op<=6) {
     if(i>=n) return;
     if(op==0) { uint c=i%cols, gw=cols/p[5]; y[i]=x[(i/cols)*p[3]+(c/gw)*(p[3]/p[5])+p[4]+c%gw]; }

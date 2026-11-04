@@ -70,6 +70,22 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"transcribe", "slopfab transcribe FILE --model MODEL.safetensors [options]",
+     "Transcribe speech or song vocals locally with native Whisper and embedded model assets.",
+     "  --model FILE                standard Hugging Face Whisper safetensors (or model folder)\n"
+     "  --variant NAME              auto; use large-v1 or large-v2 for their ambiguous shapes\n"
+     "  --backend auto|cuda|vulkan|cpu  FP32 inference; CPU is a slow reference path\n"
+     "  --language CODE             auto (default), ISO language code or English language name\n"
+     "  --prompt TEXT               vocabulary/style context; not an instruction to rewrite\n"
+     "  --beam-size N               deterministic search width 1..10 (default 1)\n"
+     "  --word-timestamps           estimate word timing using cross-attention alignment\n"
+     "  --no-context                do not condition on previous windows\n"
+     "  --out FILE --format FORMAT  json, txt, srt or vtt; format defaults to output extension\n"
+     "  --overwrite                 replace an existing transcript atomically\n"
+     "  --ffmpeg PATH               decoder for non-WAV audio/video; WAV is native\n"
+     "Models: tiny/base/small/medium (including .en), large-v1/v2/v3 and large-v3-turbo.\n"
+     "Only weights are needed; tokenizer, mel filters and standard profiles are embedded.\n"
+     "Songs use the same recognizer; no vocal separation is applied. Word timing is approximate.\n"},
     {"video", "slopfab video frames VIDEO --out IMAGE.png [options]",
      "Extract a video frame or a downscaled contact sheet; capture generation samples in RAM.",
      "  VIDEO --out IMAGE.png        extract frame zero by default\n"
@@ -586,6 +602,8 @@ const CommandHelp* find_command(std::string_view name) {
 // True when the argument list asks for help. Checked before any other option,
 // so `--help` works even alongside otherwise invalid arguments.
 bool option_takes_value(std::string_view a, std::string_view command) {
+  if (command == "transcribe" && (a == "--word-timestamps" || a == "--no-context"))
+    return false;
   if (command == "prompts" && (a == "--layout" || a == "--instrumental" || a == "--continuation"))
     return false;
   if (command == "decode" && a == "--bench-load")
