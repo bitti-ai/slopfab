@@ -72,9 +72,9 @@
         height: 76px;
         border-bottom: 1px solid var(--line);
         padding: 0 36px;
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
         align-items: center;
-        justify-content: space-between;
         gap: 20px;
       }
       .brand {
@@ -98,6 +98,7 @@
       .header-right {
         display: flex;
         align-items: center;
+        justify-self: end;
         gap: 18px;
       }
       .pill {
@@ -129,18 +130,15 @@
         text-transform: uppercase;
         color: var(--muted);
       }
-      .heading {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-end;
-        gap: 20px;
-        margin: 0 0 28px;
-      }
       h1 {
-        font-size: clamp(26px, 3vw, 38px);
-        letter-spacing: -1.2px;
-        margin: 6px 0 8px;
-        line-height: 1.15;
+        font-size: 20px;
+        letter-spacing: -0.4px;
+        margin: 0;
+        line-height: 1.3;
+        text-align: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       h2 {
         font-size: 18px;
@@ -165,7 +163,7 @@
       }
       .stats strong {
         display: block;
-        font-size: 22px;
+        font-size: 18px;
         line-height: 1.25;
         color: var(--text);
         font-weight: 550;
@@ -346,6 +344,10 @@
         background: var(--panel);
         padding: 24px;
       }
+      #main-workspace > .inspector {
+        height: var(--viewer-height, auto);
+        overflow: auto;
+      }
       .inspector h2 {
         margin: 8px 0;
       }
@@ -520,11 +522,6 @@
         width: 100%;
         height: 100%;
         margin: 0;
-      }
-      .full-video {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
       }
       .clip .number {
         display: block;
@@ -765,23 +762,31 @@
       }
       @media (max-width: 760px) {
         header {
-          padding: 0 20px;
+          padding: 0 16px;
           height: 64px;
+          gap: 10px;
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
         }
-        .header-right .pill {
-          display: none;
+        .brand {
+          gap: 6px;
+          font-size: 13px;
+        }
+        .logo {
+          width: 24px;
+          height: 24px;
+        }
+        h1 {
+          font-size: 16px;
         }
         main {
           padding: 24px 16px;
         }
-        .heading {
-          align-items: flex-start;
-        }
         .stats {
-          gap: 12px;
+          gap: 8px;
+          font-size: 10px;
         }
         .stats strong {
-          font-size: 18px;
+          font-size: 15px;
         }
         .workspace {
           grid-template-columns: 1fr;
@@ -791,6 +796,9 @@
         }
         .inspector {
           padding: 22px;
+        }
+        #main-workspace > .inspector {
+          height: auto;
         }
         .library-toolbar {
           align-items: flex-start;
@@ -816,9 +824,6 @@
         }
         .viewer-footer {
           padding: 14px;
-        }
-        .header-right {
-          font-size: 11px;
         }
         footer {
           flex-direction: column;
@@ -852,20 +857,11 @@
       <div class="brand">
         <span class="logo" aria-hidden="true">s.</span>slopfab
       </div>
-      <div class="header-right">
-        <span class="pill"><span class="dot"></span>Local project</span
-        ><span id="revision" class="muted tiny"></span>
-      </div>
+      <h1 id="title"></h1>
+      <div id="stats" class="stats header-right"></div>
     </header>
     <main>
-      <div class="heading">
-        <div>
-          <h1 id="title"></h1>
-          <p class="muted">Review the result. Shape what comes next.</p>
-        </div>
-        <div id="stats" class="stats"></div>
-      </div>
-      <div class="workspace">
+      <div id="main-workspace" class="workspace">
         <div>
           <section class="viewer" aria-label="Media preview">
             <div id="stage" class="stage"></div>
@@ -911,7 +907,6 @@
           </section>
         </div>
         <aside class="inspector">
-          <div class="eyebrow">Make it yours</div>
           <h2>Continue with your agent</h2>
           <p>
             Choose an action, add direction, then copy the prompt into your
@@ -963,7 +958,9 @@
         <pre id="location" class="rules"></pre>
       </details>
       <footer>
-        <span>Made with slopfab · Your files stay on your machine.</span
+        <span
+          >Made with slopfab · Your files stay on your machine.
+          <span id="revision"></span></span
         ><span
           >This page is a snapshot. Refresh after your agent updates the
           project.</span
@@ -1142,6 +1139,8 @@
         media = null,
         popupMedia = null,
         popupSelected = null;
+      const sequenceCards = new Map();
+      const libraryCards = new Map();
       // Older manifests have no media revision; registration order breaks ties.
       function latestFullVideo() {
         const videos = project.items.filter(
@@ -1457,6 +1456,10 @@
           2,
         );
         if (popup) return;
+        drawSequence(item);
+        drawLibrary();
+      }
+      function drawSequence(item) {
         const parent = item.kind === "video" ? item.id : item.parent;
         const fullVideo = project.items.find(
           (i) => i.id === parent && i.kind === "video" && available(i),
@@ -1467,46 +1470,59 @@
           )
           .sort((a, b) => (a.position || 0) - (b.position || 0));
         $("sequence").classList.toggle("hidden", !fullVideo);
-        $("sequence-list").querySelectorAll("video").forEach(releaseMedia);
-        $("sequence-list").replaceChildren();
-        if (fullVideo) {
+        // Keep decoded thumbnail media attached, even when viewing another sequence.
+        if (fullVideo && !sequenceCards.has(fullVideo.id)) {
+          const cards = [];
+          sequenceCards.set(fullVideo.id, cards);
           const b = el(
             "button",
             `clip full-video${item.id === fullVideo.id ? " selected" : ""}`,
           );
           b.type = "button";
+          b.dataset.itemId = fullVideo.id;
           b.setAttribute("aria-pressed", String(item.id === fullVideo.id));
           b.append(
+            clipThumbnail(fullVideo),
             el("span", "number", "FULL VIDEO"),
             el("strong", "", fullVideo.title || fullVideo.id),
             el("span", "", `Version ${fullVideo.version}`),
           );
           b.onclick = () => choose(fullVideo);
           $("sequence-list").append(b);
+          cards.push(b);
+          clips.forEach((clip, n) => {
+            const b = el(
+              "button",
+              `clip${clip.id === item.id ? " selected" : ""}`,
+            );
+            b.type = "button";
+            b.dataset.itemId = clip.id;
+            b.setAttribute("aria-pressed", String(clip.id === item.id));
+            b.append(clipThumbnail(clip));
+            b.append(
+              el("span", "number", `CLIP ${String(n + 1).padStart(2, "0")}`),
+              el("strong", "", clip.title || clip.id),
+              el(
+                "span",
+                "",
+                clip.end
+                  ? `${time(clip.start || 0)} – ${time(clip.end)}`
+                  : `Version ${clip.version}`,
+              ),
+            );
+            b.onclick = () => choose(clip);
+            $("sequence-list").append(b);
+            cards.push(b);
+          });
         }
-        clips.forEach((clip, n) => {
-          const b = el(
-            "button",
-            `clip${clip.id === item.id ? " selected" : ""}`,
-          );
-          b.type = "button";
-          b.setAttribute("aria-pressed", String(clip.id === item.id));
-          b.append(clipThumbnail(clip));
-          b.append(
-            el("span", "number", `CLIP ${String(n + 1).padStart(2, "0")}`),
-            el("strong", "", clip.title || clip.id),
-            el(
-              "span",
-              "",
-              clip.end
-                ? `${time(clip.start || 0)} – ${time(clip.end)}`
-                : `Version ${clip.version}`,
-            ),
-          );
-          b.onclick = () => choose(clip);
-          $("sequence-list").append(b);
-        });
-        drawLibrary();
+        for (const [parentId, cards] of sequenceCards) {
+          for (const card of cards) {
+            card.classList.toggle("hidden", parentId !== fullVideo?.id);
+            const active = card.dataset.itemId === item.id;
+            card.classList.toggle("selected", active);
+            card.setAttribute("aria-pressed", String(active));
+          }
+        }
       }
       function clipThumbnail(item) {
         const thumb = el("div", "clip-thumbnail");
@@ -1546,19 +1562,10 @@
             (showRemoved || available(i)) &&
             (filter === "all" || i.kind === filter),
         );
-        $("grid").querySelectorAll("video").forEach(releaseMedia);
-        $("grid").replaceChildren();
         $("asset-count").textContent =
           `${project.items.filter(available).length} active items`;
-        if (!items.length)
-          $("grid").append(
-            el(
-              "div",
-              "empty",
-              "Nothing here yet. New generations will appear here.",
-            ),
-          );
         items.forEach((item) => {
+          if (libraryCards.has(item.id)) return;
           const b = el(
             "button",
             `card${selected && item.id === selected.id ? " selected" : ""}`,
@@ -1572,7 +1579,8 @@
             img.alt = "";
             img.loading = "lazy";
             thumb.append(img);
-          } else if (item.kind === "clip") thumb.append(clipThumbnail(item));
+          } else if (item.kind === "clip" || item.kind === "video")
+            thumb.append(clipThumbnail(item));
           else thumb.append(el("span", "symbol", symbols[item.kind]));
           thumb.append(
             el(
@@ -1596,7 +1604,23 @@
             else openLibraryItem(item);
           };
           $("grid").append(b);
+          libraryCards.set(item.id, b);
         });
+        const visible = new Set(items.map((item) => item.id));
+        for (const [id, card] of libraryCards) {
+          card.classList.toggle("hidden", !visible.has(id));
+          card.classList.toggle("selected", id === selected?.id);
+        }
+        let empty = $("grid").querySelector(".empty");
+        if (!empty) {
+          empty = el(
+            "div",
+            "empty",
+            "Nothing here yet. New generations will appear here.",
+          );
+          $("grid").append(empty);
+        }
+        empty.classList.toggle("hidden", items.length > 0);
       }
       function agentPrompt(
         item = selected,
@@ -1634,6 +1658,7 @@
         return text;
       }
       $("title").textContent = project.title || project.name;
+      $("title").title = project.title || project.name;
       document.title = `${project.title || project.name} · slopfab`;
       $("revision").textContent = `Revision ${project.revision}`;
       [
@@ -1762,6 +1787,13 @@
             : "Prompt selected. Press Ctrl+C (Command+C on Mac) to copy.";
         }
       };
+      const mainViewer = document.querySelector("#main-workspace .viewer");
+      new ResizeObserver(() => {
+        $("main-workspace").style.setProperty(
+          "--viewer-height",
+          `${mainViewer.getBoundingClientRect().height}px`,
+        );
+      }).observe(mainViewer);
       choose(latestFullVideo() || project.items.find(available) || null);
     </script>
   </body>
