@@ -7,6 +7,7 @@ Native C++ video, image and music generation on CUDA and Vulkan. No Python is re
 - **Agent projects:** [Project folders](docs/projects.md) with an offline media review page, clip editing prompts, saved generation recipes and explicit file naming rules.
 - **Agent workflows:** [Embedded JavaScript](docs/scripting.md) for files, HTTP downloads, FFmpeg and parallel processes; [mods](docs/mods.md) can add CLI commands. QuickJS is linked only into the executable, never the DLL.
 - **Motions:** [JavaScript vector animations](docs/motions.md) rendered with embedded ThorVG, with transparent stills, video exports and overlays on generated video. ThorVG is linked only into the executable.
+- **Video review:** [Single frames and downscaled grids](docs/video_frames.md) through `slopfab video frames` or JavaScript, including direct capture from generation frames in RAM.
 
 - **Video with audio:** MiniMax H3 generation with configurable resolution, duration, seeds and batches.
 - **Reference conditioning:** images, video and audio with Ref2VA; reusable [RefMods, mixed bundles and text embeddings](docs/refmods.md).

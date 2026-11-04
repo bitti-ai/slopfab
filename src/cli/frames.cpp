@@ -367,6 +367,8 @@ Value compressed(const fs::path& input, const Value& options, const FrameCheck& 
   if (!streams || streams->as_array().empty())
     invalid("input has no video stream");
   const auto& stream = streams->as_array().front();
+  if (!stream.find("width") || !stream.find("height"))
+    invalid("video stream has no dimensions");
   Source s;
   s.width = int(stream.find("width")->as_int());
   s.height = int(stream.find("height")->as_int());
@@ -393,7 +395,8 @@ Value compressed(const fs::path& input, const Value& options, const FrameCheck& 
     const size_t bytes = size_t(w) * h * 3;
     if (decoder->pipe.read(out, bytes) != bytes) {
       check();
-      invalid("FFmpeg returned an incomplete frame");
+      decoder->finish();
+      throw CliError("FRAME_EXTRACTION_FAILED", "FFmpeg returned an incomplete frame", 6);
     }
   };
   // Drain and verify the decoder before publishing the PNG.

@@ -81,6 +81,9 @@ with tempfile.TemporaryDirectory(prefix='slopfab-frames-') as temp:
     (root/'one.y4m').write_bytes(b'YUV4MPEG2 W2 H2 F30000:1001 Ip C420\nFRAME\n'+bytes([235])*4+bytes([128])*2)
     data = run('video','frames','one.y4m','--grid','2x2','--out','one.png')['data']
     assert [c['frame'] for c in data['cells']]==[0]*4
+    (root/'réview').mkdir()
+    data = run('video','frames','input.y4m','--frame',1,'--out','réview/frame.png')['data']
+    assert Path(data['path']).is_file()
     # Typed-array subviews must honor offsets; downscaling must average, not discard pixels.
     data = run('run','--eval',"""import {frames} from 'slopfab'; export default ()=>{
       const storage=new Uint8Array(8+2*2*3*3+5); const rgb=storage.subarray(8,storage.length-5);
@@ -120,7 +123,7 @@ with tempfile.TemporaryDirectory(prefix='slopfab-frames-') as temp:
         assert [c['frame'] for c in data['cells']]==[0,2,4]
         assert png(root/'compressed.png')[:2]==(12,2)
         # Nonuniform timestamps, tested by time and index independently.
-        ff('-i','input.y4m','-vf','select=eq(n\,0)+eq(n\,1)+eq(n\,4)','-vsync','0','-c:v','ffv1','vfr.mkv')
+        ff('-i','input.y4m','-vf',r'select=eq(n\,0)+eq(n\,1)+eq(n\,4)','-vsync','0','-c:v','ffv1','vfr.mkv')
         data=run('video','frames','vfr.mkv','--out','vfr.png','--time',.7,*tools)['data']
         assert data['cells'][0]['frame']==2 and abs(data['cells'][0]['time']-1)<.001
         assert png(root/'vfr.png')[2][0]>=254
@@ -131,6 +134,10 @@ with tempfile.TemporaryDirectory(prefix='slopfab-frames-') as temp:
         run('video','frames','lossless.mkv','--out','failure.png','--ffprobe',ffprobe,
             '--ffmpeg','slopfab-no-such-ffmpeg',code=6)
         assert not (root/'failure.png').exists()
+        (root/'failure.png').write_bytes(b'original output')
+        run('video','frames','lossless.mkv','--out','failure.png','--overwrite','--ffprobe',ffprobe,
+            '--ffmpeg','slopfab-no-such-ffmpeg',code=6)
+        assert (root/'failure.png').read_bytes()==b'original output'
         assert not list(root.rglob('*.slopfab-reserved')) and not list(root.rglob('*.tmp'))
     else:
         print('FFmpeg unavailable; compressed-video cases skipped')

@@ -42,8 +42,10 @@ stack and use `SCRIPT_ERROR` (exit 6). Catch host errors with ordinary `try/catc
 
 The global `slopfab` and the default export of `import sf from 'slopfab'` are the
 same object. Named exports include `fs`, `path`, `http`, `exec`, `spawn`, `cli`,
-`env`, `sleep`, `sha256`, `tool`, `args` and `motions`. The [Motions API](motions.md)
+`env`, `sleep`, `sha256`, `tool`, `args`, `motions` and `frames`. The [Motions API](motions.md)
 renders SVG artwork and JavaScript animations using the CLI's embedded ThorVG.
+The [frames API](video_frames.md) extracts stills and contact sheets from video files,
+packed RGB buffers, or live generation samples in RAM.
 `slopfab capabilities` advertises the
 engine version, API version, supported facilities and installed mod commands.
 

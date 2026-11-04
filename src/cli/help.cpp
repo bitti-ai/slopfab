@@ -120,6 +120,7 @@ const CommandHelp kCommands[] = {
      "  slopfab.http.json(URL)                fetch JSON; download(URL, PATH) streams to disk\n"
      "  slopfab.tool('ffmpeg')                locate external FFmpeg for exec/spawn\n"
      "  slopfab.path.fileUrl(PATH)            absolute percent-encoded file URL\n"
+     "  slopfab.frames.extract(OPTIONS)      video frame/grid PNG; see video frames --help\n"
      "Console output goes to stderr. Local ES imports, promises and timers are supported.\n"
      "Scripts and executable mods run with your normal filesystem/process access.\n"},
     {"prompts", "slopfab prompts list|get|select [options]",
