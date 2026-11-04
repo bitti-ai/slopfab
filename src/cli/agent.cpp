@@ -14,6 +14,7 @@
 #include <fstream>
 #include <mutex>
 #include <random>
+#include <thread>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -354,8 +355,17 @@ void atomic_json(const std::filesystem::path& path, const Value& value) {
     if (!f)
       throw CliError("OUTPUT_FAILED", "cannot write " + path.u8string(), 6);
 #ifdef _WIN32
-    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-      throw CliError("OUTPUT_FAILED", "cannot publish " + path.u8string(), 6);
+    // Short-lived readers (including filesystem metadata probes) can deny
+    // deletion even while our writer lock is held. Keep replacement atomic.
+    for (int attempt = 0;; ++attempt) {
+      if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        break;
+      const DWORD error = GetLastError();
+      if (attempt == 99 || (error != ERROR_SHARING_VIOLATION && error != ERROR_ACCESS_DENIED))
+        throw CliError("OUTPUT_FAILED", "cannot publish " + path.u8string() +
+                         " (Windows error " + std::to_string(error) + ")", 6);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 #else
     std::filesystem::rename(tmp, path);
 #endif
