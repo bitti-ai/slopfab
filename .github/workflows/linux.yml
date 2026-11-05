@@ -58,7 +58,10 @@ jobs:
             test -L "$RUNNER_TEMP/slopfab/lib/libslopfab.so"
             python3 -c 'import ctypes, os; lib = ctypes.CDLL(os.environ["RUNNER_TEMP"] + "/slopfab/lib/libslopfab.so"); lib.slopfab_capi_version.restype = ctypes.c_uint32; assert lib.slopfab_capi_version() >> 24 == 1'
           fi
-          cpack --config build/linux/CPackConfig.cmake -B build/packages
+          # Native CI smoke-test artifacts are not distributable release packages.
+          # Releases are assembled by tools/package_bundle.py and require both OS builds.
+          mkdir -p build/packages
+          tar -C "$RUNNER_TEMP/slopfab" -czf build/packages/linux-native-test.tar.gz .
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.backend }}-test-build

@@ -48,24 +48,6 @@ install(FILES third_party/seedvr2/NOTICE DESTINATION ${CMAKE_INSTALL_DATADIR}/li
   RENAME seedvr2-NOTICE.txt)
 
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_ENABLE_VULKAN)
-    set(SLOPFAB_PACKAGE_BACKEND cuda-vulkan)
-  elseif(SLOPFAB_ENABLE_CUDA)
-    set(SLOPFAB_PACKAGE_BACKEND cuda)
-  elseif(SLOPFAB_ENABLE_VULKAN)
-    set(SLOPFAB_PACKAGE_BACKEND vulkan)
-  else()
-    set(SLOPFAB_PACKAGE_BACKEND cpu)
-  endif()
-  set(CPACK_GENERATOR TGZ)
-  set(CPACK_PACKAGE_NAME slopfab)
-  set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-  set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Native video and audio generation")
-  set(CPACK_PACKAGE_FILE_NAME
-    "slopfab-${PROJECT_VERSION}-linux-${CMAKE_SYSTEM_PROCESSOR}-${SLOPFAB_PACKAGE_BACKEND}")
-  set(CPACK_PACKAGING_INSTALL_PREFIX "/")
-  set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
-  set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
-  include(CPack)
-endif()
+# Release archives are assembled from both platform builds by tools/package_bundle.py.
+# cmake --install remains available for native development installations; do not
+# generate a single-platform CPack release that cannot provision the other OS.

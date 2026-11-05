@@ -30,7 +30,7 @@ int cli_main(int argc, char** argv) {
 #endif
   bool machine = false;
   std::vector<std::string> args;
-  std::string remote_host, download_directory, local_project;
+  std::string remote_host, download_directory, local_project, jobs_directory;
   std::vector<std::string> downloads;
   try {
     for (int i = 1; i < argc; ++i) {
@@ -62,11 +62,10 @@ int cli_main(int argc, char** argv) {
       if (a == "--config" || a == "--jobs-dir") {
         if (++i == argc)
           throw CliError("INVALID_REQUEST", "missing value for " + a);
-        auto path = std::filesystem::absolute(std::filesystem::u8path(argv[i])).u8string();
         if (a == "--config")
-          agent().config_path = path;
+          agent().config_path = std::filesystem::absolute(std::filesystem::u8path(argv[i])).u8string();
         else
-          agent().jobs_path = path;
+          jobs_directory = argv[i];
         continue;
       }
       args.push_back(a);
@@ -78,8 +77,13 @@ int cli_main(int argc, char** argv) {
     }
     initialize_agent(machine,
                      std::filesystem::absolute(std::filesystem::u8path(argv[0])).u8string());
-    if (!remote_host.empty())
+    if (!remote_host.empty()) {
+      if (!jobs_directory.empty() && !args.empty())
+        args.insert(args.begin() + 1, {"--jobs-dir", jobs_directory});
       return remote_execute(remote_host, args, download_directory, local_project, downloads);
+    }
+    if (!jobs_directory.empty())
+      agent().jobs_path = std::filesystem::absolute(std::filesystem::u8path(jobs_directory)).u8string();
     if (!download_directory.empty() || !local_project.empty() || !downloads.empty())
       throw CliError("INVALID_REQUEST", "download options require --host or --remote");
     ensure_agent_instructions();

@@ -57,8 +57,8 @@ project dependency.
 
 ## Output directory and filenames
 
-For generation on another computer, use [SSH generation](remote.md) with
-`--local-project NAME` before its `--` separator and `--project NAME` after it.
+For generation on another computer, use [SSH execution](remote.md) with
+`generate --host HOST --local-project NAME --project NAME`.
 The remote project records generation; the local project imports downloaded
 results and rebuilds its review page. Each run creates new local items, without
 copying the remote project manifest or merging its edits.

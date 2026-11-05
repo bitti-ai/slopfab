@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 original = Path(sys.argv[1]).resolve()
 ssh = str(Path(sys.argv[2]).resolve())
@@ -54,6 +55,29 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     assert run("projects", "show", "remote-project", "--host", "gpu")["remote_result"]["project"]["name"] == "remote-project"
     assert run("projects", "show", "remote-project", "--host", "gpu")["artifacts"] == []
     run("settings", "get", "--host", "gpu")
+    job_options = ["--host", "gpu", "--jobs-dir", "test-jobs"]
+    submitted = run("submit", "image", "--prompt", "test", "--dry-run", *job_options)
+    job_id = submitted["job"]["job_id"]
+    assert run("wait", job_id, "--timeout", "15", *job_options)["job"]["state"] == "succeeded"
+    assert run("status", job_id, *job_options)["job"]["state"] == "succeeded"
+    assert run("cancel", job_id, *job_options)["job"]["state"] == "succeeded"
+    # Stop the detached worker and wait for its lock before removing the fixture.
+    job_store = remote / "test-jobs"
+    (job_store / "stop").touch()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            if os.name == "nt":
+                (job_store / "worker.lock").unlink()
+            else:
+                import fcntl
+                with (job_store / "worker.lock").open("r+") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except (PermissionError, BlockingIOError):
+            time.sleep(.1)
+    else:
+        raise AssertionError("remote worker did not stop")
     run("version", "--host", "missing", code=3)
     run("remote", "generate", code=2)
     run("projects", "open", "remote-project", "--host", "gpu", code=2)
@@ -82,6 +106,8 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     script = script.replace("sf.writeText", "sf.fs.writeText")
     scripted = run("run", "--host", "gpu", "--eval", script)
     assert (Path(scripted["receipt"]).parent / scripted["artifacts"][0]["local"]).read_text() == "remote data"
+    assert Path(scripted["data"]["output"]).read_text() == "remote data"
+    assert scripted["remote_result"]["data"]["output"] == "script-result.txt"
     assert run("run", "--host", "gpu", "--eval", "export default () => 'metadata only'")["artifacts"] == []
     explicit = run("version", "--host", "gpu", "--download", "script-result.txt")
     assert len(explicit["artifacts"]) == 1
@@ -157,6 +183,8 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     write_reply([dict(artifacts[0], path="C:/output/NUL.png")])
     run(*options, "video", code=6, extra_env={"SLOPFAB_TEST_REPLY": str(reply)})
     reply.write_text("not json\n")
+    run(*options, "video", code=6, extra_env={"SLOPFAB_TEST_REPLY": str(reply)})
+    reply.write_text('{"type":"remote_response"}\n')
     run(*options, "video", code=6, extra_env={"SLOPFAB_TEST_REPLY": str(reply)})
 
     # Internal streaming errors never contaminate the binary channel with JSON.

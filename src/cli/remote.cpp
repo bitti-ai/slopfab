@@ -166,6 +166,8 @@ int remote_process(const std::vector<std::string>& argv, const Value& input, con
       pending.append(bytes, size_t(out.gcount()));
       size_t end;
       while ((end = pending.find('\n')) != std::string::npos) {
+        if (end > 16 * 1024 * 1024)
+          throw CliError("REMOTE_PROTOCOL", "remote event exceeds 16 MiB", 6);
         auto line = pending.substr(0, end);
         pending.erase(0, end + 1);
         if (!line.empty() && line.back() == '\r')
@@ -351,7 +353,11 @@ Value collect(const Value& receipt, const fs::path& directory, bool provisioned 
   if (manifest.count("local_project")) {
     Array items;
     const auto project = fs::u8path(manifest.at("local_project").as_string());
-    const auto* results = manifest.at("remote_result").find("results");
+    const auto* response = &manifest.at("remote_result");
+    if (const auto* job = response->find("job"))
+      if (const auto* result = job->find("result"))
+        response = result;
+    const auto* results = response->find("results");
     if (results) {
       size_t index = 0;
       for (const auto& result : results->as_array()) {
@@ -371,15 +377,15 @@ Value collect(const Value& receipt, const fs::path& directory, bool provisioned 
           if (field(artifact, "remote") == field(*plan, "output"))
             source = local;
           files.emplace_back(Object{{"path", str(local)},
-                                    {"remote_path", *artifact.find("remote")},
-                                    {"media_type", *artifact.find("media_type")}});
+                                    {"remote_path", str(field(artifact, "remote"))},
+                                    {"media_type", str(field(artifact, "media_type"))}});
         }
         if (source.empty())
           throw CliError("REMOTE_PROTOCOL", "primary project artifact is missing", 6);
         const auto id = "remote-" + directory.filename().u8string().substr(0, 12) + "-" +
                         std::to_string(++index);
         Value recipe(Object{{"remote_receipt", str((directory / "remote.json").u8string())},
-                            {"host", *connection.find("host")},
+                            {"host", str(field(connection, "host"))},
                             {"working_directory", manifest.at("remote_directory")},
                             {"arguments", manifest.at("arguments")},
                             {"plan", *plan},
@@ -391,8 +397,25 @@ Value collect(const Value& receipt, const fs::path& directory, bool provisioned 
     manifest["index_path"] = str((project / "index.html").u8string());
   }
   std::map<std::string, std::string> paths;
-  for (const auto& artifact : artifacts)
-    paths[field(artifact, "remote")] = local_path(directory, field(artifact, "local")).u8string();
+  auto remote_root = field(Value(manifest), "remote_directory");
+  std::replace(remote_root.begin(), remote_root.end(), '\\', '/');
+  if (!remote_root.empty() && remote_root.back() != '/')
+    remote_root += '/';
+  for (const auto& artifact : artifacts) {
+    auto remote = field(artifact, "remote");
+    const auto local = local_path(directory, field(artifact, "local")).u8string();
+    paths[remote] = local;
+    std::replace(remote.begin(), remote.end(), '\\', '/');
+    paths[remote] = local;
+    if (!remote_root.empty() && remote.rfind(remote_root, 0) == 0) {
+      auto relative = remote.substr(remote_root.size());
+      paths[relative] = local;
+      paths["./" + relative] = local;
+      std::replace(relative.begin(), relative.end(), '/', '\\');
+      paths[relative] = local;
+      paths[".\\" + relative] = local;
+    }
+  }
   // Preserve the regular command's response fields for callers using the same
   // CLI locally and remotely. Keep original server paths in remote_result.
   for (const auto& entry : manifest.at("remote_result").as_object())
@@ -463,21 +486,24 @@ int remote_execute(const std::string& host, const std::vector<std::string>& args
   emit({{"type", str("remote_started")},
         {"directory", str(directory.u8string())},
         {"host", connection.at("host")}});
-  const auto status = exchange(Value(connection),
-                               Value(Object{{"directory", str(remote_directory)},
-                                            {"arguments", Value(arguments)},
-                                            {"downloads", Value(requested_files)}}),
-                               scratch.directory / "events.ndjson", false, [&](const Value& event) {
-                                 const auto type = field(event, "type");
-                                 if (type == "remote_manifest")
-                                   ready = event;
-                                 else if (type == "remote_response")
-                                   terminal = *event.find("response");
-                                 else if (type == "result" || type == "error")
-                                   terminal = event;
-                                 else
-                                   emit({{"type", str("remote_event")}, {"event", event}});
-                               });
+  const auto status =
+      exchange(Value(connection),
+               Value(Object{{"directory", str(remote_directory)},
+                            {"arguments", Value(arguments)},
+                            {"downloads", Value(requested_files)}}),
+               scratch.directory / "events.ndjson", false, [&](const Value& event) {
+                 const auto type = field(event, "type");
+                 if (type == "remote_manifest")
+                   ready = event;
+                 else if (type == "remote_response") {
+                   if (!event.find("response") || !event.find("response")->is_object())
+                     throw CliError("REMOTE_PROTOCOL", "invalid remote response", 6);
+                   terminal = *event.find("response");
+                 } else if (type == "result" || type == "error")
+                   terminal = event;
+                 else
+                   emit({{"type", str("remote_event")}, {"event", event}});
+               });
   if (status || terminal.is_null() || (terminal.find("ok") && !terminal.find("ok")->as_bool())) {
     Object error{
         {"type", str("error")},

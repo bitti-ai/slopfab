@@ -1,153 +1,198 @@
-# Remote generation over SSH
+# Remote commands over SSH
 
-`slopfab remote generate` runs generation in an existing project directory on
-another computer and downloads its result artifacts. Both computers need
-slopfab from a version that includes this command. The remote computer needs
-the GPU backend, models, settings and reference inputs used by the request.
-The local computer can use a CPU-only build.
-
-Source code, model weights, input files, caches and whole project directories
-are never synchronized. Only the JSON control request travels to the server;
-progress, result metadata and generated artifacts travel back. No Python,
-rsync, SCP, SFTP or separate server is required at runtime.
-
-## SSH setup
-
-Install an OpenSSH client locally and enable an SSH server on the generation
-computer. Configure a host alias in your local SSH config, for example:
-
-```sshconfig
-Host gpu-linux
-    HostName 192.168.1.50
-    User artist
-    IdentityFile ~/.ssh/id_ed25519
-    Port 22
-```
-
-Connect once with `ssh gpu-linux` to verify the host key and authentication.
-Slopfab uses `BatchMode=yes`: authenticate with a key or SSH agent, without
-interactive password or host-key prompts. Ports, identities and jump hosts
-come from your normal SSH configuration. See the
-[OpenSSH configuration reference](https://man.openbsd.org/ssh_config.5).
-
-Use `--platform posix` (the default) for a Linux or WSL SSH server. Use
-`--platform windows` for Windows OpenSSH; its default shell can be cmd.exe or
-PowerShell. Windows invokes the native worker through PowerShell with inherited
-binary handles, preserving media bytes. See
-[Windows OpenSSH setup](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration).
-A WSL endpoint must connect to the SSH server inside the distribution.
-
-`--directory` is an **absolute remote working directory**. All generation
-paths, including `--out`, prompt files, JSON requests, models and references,
-are evaluated there or according to the remote user's settings. Local settings
-and local absolute paths are not translated or forwarded. Configure model
-locations with `slopfab settings` on the remote computer.
-
-`--executable` is the remote slopfab executable, resolved before changing into
-the working directory. Use an absolute path, or omit it if `slopfab` is on the
-remote SSH session's PATH. `--ssh` selects a local SSH client path.
-
-## Generate video, images and music
-
-Linux/WSL remote, from either a Windows or Linux client:
+Use the regular command with `--host NAME` or its alias `--remote NAME`:
 
 ```sh
-slopfab remote generate --host gpu-linux --directory /srv/slopfab --executable /srv/slopfab/build/slopfab -- video --prompt "A cat playing a piano" --frames 22 --seed 11
-slopfab remote generate --host gpu-linux --directory /srv/slopfab --executable /srv/slopfab/build/slopfab -- image --model krea2 --prompt "A red apple"
-slopfab remote generate --host gpu-linux --directory /srv/slopfab --executable /srv/slopfab/build/slopfab -- music --prompt "Warm ambient synths" --duration 10
+slopfab generate --host gpu video --prompt "A cat playing a piano" --frames 22
+slopfab generate --remote gpu image --model krea2 --prompt "A red apple"
+slopfab devices --host gpu
+slopfab inspect weights/transformer/model.safetensors --host gpu
 ```
 
-Windows remote, with a `gpu-windows` SSH alias:
+`slopfab remote` manages the connection and the remote installation. It does not
+contain a second set of generation or media commands.
+
+## Set up a host
+
+Install an OpenSSH client locally and enable an SSH server on the other computer.
+Connect once with `ssh gpu` to verify its host key and key/agent authentication.
+The SSH alias can specify the username, port, identity and jump host. Slopfab uses
+`BatchMode=yes`, so passwords and host-key confirmations must be handled before
+running it. It preserves your SSH host-key checking settings.
+
+Create or check out the project on both computers. Models, reference files and
+other inputs must already be present remotely. Then configure the remote project:
+
+```sh
+slopfab remote setup gpu --host artist@gpu-box --directory /srv/slopfab
+```
+
+For Windows OpenSSH:
 
 ```powershell
-slopfab remote generate --host gpu-windows --platform windows --directory 'D:\Projects\slopfab' --executable 'D:\Projects\slopfab\build\Release\slopfab.exe' -- video --prompt 'A cat playing a piano' --frames 22 --seed 11
+slopfab remote setup gpu-win --host artist@windows-box --directory 'D:\Projects\slopfab' --platform windows
 ```
 
-The `--` separator is required. Options before it control SSH and local
-delivery; arguments after it go to the remote `generate` command. Arguments
-travel as JSON over SSH stdin, so quotes, Unicode, multiline prompts and shell
-metacharacters remain literal generation arguments.
+`--host` in setup defaults to the profile name. `--directory` must be an existing
+absolute remote working directory. The platform is inferred from that path;
+`--platform linux|windows` overrides it. WSL uses `linux` and an SSH server inside
+the distribution. Windows supports cmd.exe and PowerShell as the SSH login shell.
+`--ssh PATH` optionally chooses the local OpenSSH executable.
 
-Use `--dry-run` after the separator to validate remotely without loading models:
+The package contains `windows/slopfab.exe` and `linux/slopfab`. Slopfab finds this
+package root beside its executable or one directory above it. Development builds
+can specify a package root explicitly:
 
 ```sh
-slopfab remote generate --host gpu-linux --directory /srv/slopfab --executable /srv/slopfab/build/slopfab -- image --prompt "Connection check" --dry-run
+slopfab remote setup gpu --directory /srv/slopfab --binary-dir /work/slopfab/dist
 ```
 
-`--request settings/request.json` reads that file **on the remote computer**.
-Stdin requests (`--request -`) are unavailable because SSH stdin carries the
-control protocol. Local `--config` selects local settings only.
-
-## Downloads and projects on both computers
-
-Each invocation gets `output/remote/RUN_ID/remote.json` locally. Choose another
-download root with `--local-dir PATH`. Artifacts are grouped under numbered
-subdirectories by remote parent directory, preserving video/audio sidecars
-together and distinguishing duplicate basenames. Existing local files are
-never overwritten. Byte counts and SHA-256 hashes are checked before publishing
-downloads. Use a filesystem supporting hard links, such as NTFS or ext4, for
-atomic publication without overwrites.
-
-The downloaded files are exactly the generation result's artifacts, including
-requested saved latents. No directory scanning or recursive copying occurs.
-Native generation currently reports PNG/PPM, Y4M and WAV; this command does not
-perform additional MP4/MP3 encoding. Remote outputs are retained.
-
-To maintain review projects on both computers, create a project on each using
-`slopfab projects create film`. They may have the same name and different
-configured output roots. Then use both project options:
+Saved profiles are stored beside the local settings file in
+`CONFIG_PATH.remotes.json`. `--config FILE` selects the local settings/profile
+store; it is not forwarded to the remote computer. Passwords and keys are never
+stored in these profiles.
 
 ```sh
-slopfab remote generate --host gpu-linux --directory /srv/slopfab --executable /srv/slopfab/build/slopfab --local-project film -- video --project film --prompt "A city at sunrise" --frames 22
+slopfab remote list
+slopfab remote show gpu
+slopfab remote update gpu
+slopfab remote remove gpu
+```
+
+Removing a profile only forgets the connection; remote files remain.
+
+## Automatic executable updates
+
+Setup installs the bundled executable for the remote operating system. Every
+remote command checks its SHA-256 checksum and uploads the bundled copy only if
+it is missing, different or corrupted. No existing slopfab executable is needed
+for this bootstrap: Linux uses a POSIX shell and `sha256sum`; Windows uses
+PowerShell and .NET binary streams. Linux executable permissions are set during
+installation. Neither Python nor SCP/SFTP/rsync is required remotely.
+
+Verified executables live under `REMOTE_PROJECT/.slopfab/bin/SHA256/`. Uploads
+are written to temporary files and verified before publication. A new package
+selects a new executable directory, leaving older versions available for running
+jobs, including Windows processes that lock their executable. The original
+checkout's executable is not overwritten. `remote update NAME` performs this
+check immediately without running another command.
+
+Only the executable and command metadata are uploaded. Sources, models, caches,
+project manifests and reference media are not synchronized. Install GPU drivers,
+CUDA/Vulkan dependencies and Linux system libraries on the remote machine as
+usual. Setup does not install those system dependencies or download weights.
+
+## Run regular commands
+
+Generation, validation, transcription, frame extraction, Motions, upscaling,
+encoding, inspection, comparison, tokenization, discovery, settings, project
+management, scripts, mods and job commands use the same arguments remotely.
+Paths and model settings are evaluated on the remote computer, relative to the
+configured working directory where applicable.
+`--jobs-dir` also selects a remote path. `--config` selects the local settings
+file and its adjacent host profiles; the remote uses its own settings.
+
+```sh
+slopfab generate --host gpu music --prompt "Warm ambient synths" --duration 10
+slopfab generate --host gpu image --prompt "Connection check" --dry-run
+slopfab generate --host gpu --request settings/request.json
+slopfab transcribe interview.wav --model whisper-small.safetensors --out transcript.srt --host gpu
+slopfab video frames output/scene.y4m --out contact.png --grid 4x3 --host gpu
+slopfab settings set weight_paths /models/weights --host gpu
+slopfab projects create film --host gpu
+slopfab run workflows/render.js --host gpu -- workflow-arguments
+slopfab submit image --prompt "A red apple" --host gpu
+slopfab status JOB_ID --host gpu
+slopfab wait JOB_ID --host gpu
+slopfab cancel JOB_ID --host gpu
+```
+
+Place remote flags before a command's `--` argument separator. Arguments after
+that separator remain opaque script/generation arguments. Prompt values equal
+to `--host` or `--remote` remain literal values. Long prompts and shell
+metacharacters travel as JSON over SSH stdin rather than in shell command text.
+Stdin-based inputs such as `--request -` and `run -` are unavailable over this
+transport; use an existing remote file or `run --eval` instead.
+
+Host setup, download recovery and the internal worker entry points are local
+control operations. `projects open` launches a local browser and cannot be
+routed to a remote host; use `projects show --host NAME` to inspect its metadata.
+The C API remains local.
+
+## Result downloads
+
+Generated artifacts are downloaded automatically. This includes batch outputs,
+video/audio sidecars, requested latents, frame images, transcripts and other
+reported command outputs. A script can return an artifact descriptor such as
+`{artifacts: [{path: "output/clip.mp4", media_type: "video/mp4"}]}` or an
+`output` filename. Metadata-only commands return their response without copying
+project/model files. There is no directory scanning or recursive copying.
+For a custom workflow that does not report artifacts, request exact output files:
+
+```sh
+slopfab run render.js --host gpu --download output/final.mp4 --download output/score.wav
+```
+
+Use `--download-dir DIR` to change the local root from `output/remote`. Each
+invocation has a unique run directory with `remote.json` and downloaded files.
+Files from the same remote directory stay together, preserving video/audio
+sidecars. Different remote directories receive separate numbered subdirectories.
+Existing local files are never overwritten. Downloads are checked by byte count
+and SHA-256 before publication; the destination filesystem must support hard
+links (for example NTFS or ext4). Remote outputs are retained.
+
+A failed download can be retried without rerunning the command:
+
+```sh
+slopfab fetch output/remote/RUN_ID/remote.json
+```
+
+Verified files are checked and skipped; incomplete files restart from the
+beginning. Changed local files cause an error. Keep remote outputs until all
+downloads have succeeded. Recovery also retries an unfinished local project
+import. The current bundled remote executable is verified before further
+transfers.
+
+With `--agent`, responses include remote progress events and a final result or
+error. Successful results preserve the regular command's response fields, with
+downloaded file paths pointing locally. `remote_result` retains the original
+server response, and `artifacts` and `receipt` describe local delivery.
+Diagnostics stream on stderr. A connection loss during a synchronous command
+cannot guarantee that remote inference stopped; inspect its process and outputs
+before rerunning. Use submit/status/wait/cancel for remote queued jobs.
+
+## Review projects on both computers
+
+Create a local project and a remote project, then use both project flags:
+
+```sh
+slopfab projects create film
+slopfab projects create film --host gpu
+slopfab generate --host gpu video --project film --local-project film --prompt "A city at sunrise"
 slopfab projects open film
 ```
 
-`--project film` after `--` registers generation remotely. `--local-project film`
-before `--` imports downloaded primary media into the existing local project
-and rebuilds its review page. The local recipe records the SSH host, remote
-working directory, arguments, resolved plan and downloaded artifact paths.
-Other artifacts, including a video's WAV soundtrack and saved latents, stay in
-the download directory and are linked from that recipe. Importing copies the
-primary media locally; it does not transfer it again over the network.
+`--project` selects the remote project; `--local-project` imports downloaded
+primary media into the existing local review project and regenerates its page.
+Each run creates new local items and records the host, command, remote working
+directory, resolved plan and downloaded files. Sidecars and latents remain in
+the download directory and are referenced by the recipe. Re-fetching a receipt
+does not duplicate imported items. Remote IDs, edits and histories are not
+merged into the local manifest. `--project-item` replaces only the remote item.
 
-Each run creates new local items. Remote item IDs, histories and edits are not
-merged into the local manifest; `--project-item` after `--` replaces only the
-remote item. Existing local edits remain intact. Re-fetching the same receipt
-does not create duplicate local items. See [projects](projects.md) for local
-editing and browser previews.
+## Packaging and checks
 
-## Retry and progress
+Release archives always contain both platform binaries. `package.cmd` builds
+Windows and Linux through the existing build driver. `package.sh` builds Linux
+and requires a prebuilt Windows directory. `python tools/package_bundle.py`
+packages existing `dist/windows` and `dist/linux` builds into ZIP and tar.gz
+archives, with a binary manifest, checksums, documentation and licenses. Missing
+either executable is a packaging error. Native `cmake --install` and CI smoke
+test artifacts are development installations, not distributable releases.
 
-If a download fails, keep its receipt and retry:
-
-```sh
-slopfab remote fetch output/remote/RUN_ID/remote.json
-```
-
-This downloads missing artifacts without rerunning generation. Verified files
-are checked and skipped; incomplete files restart from the beginning. Changed
-local files cause an error instead of being overwritten. Keep the original
-remote outputs until all downloads succeed. The receipt also allows failed
-local project registration to be retried after fixing the project issue.
-
-With `--agent`, local output is NDJSON: `remote_started`, wrapped `remote_event`
-progress/artifact events, `download` events, then one local `result` or `error`.
-The successful result contains the receipt path, artifact paths relative to its
-directory, original remote result and optional local project items.
-Diagnostics stream on stderr.
-
-Generation is synchronous. Ctrl+C stops the local SSH operation, but an SSH
-disconnect cannot guarantee cancellation of inference remotely. If generation
-fails or the connection drops before the artifact manifest is received, inspect
-the remote process and outputs before starting another run. Remote job
-submission, detached execution and automatic source/input sync are outside
-this command's scope. The C API remains local.
-
-## Development checks
-
-`ctest --test-dir BUILD -C Release -R remote_cli --output-on-failure` uses a local
-SSH stand-in. It exercises the actual remote shell command and native worker,
-remote dry-run, every byte value in binary downloads, Unicode/quoted paths,
-checksum failures, retries, traversal rejection, exit statuses and idempotent
-local project imports. Synthetic generation events replace GPU inference;
-testing against a real SSH server and model is separate.
+`remote_cli` exercises real native workers through a local SSH stand-in on
+Windows and Linux: bootstrap uploads, binary changes/corruption, normal command
+routing, artifact-only downloads, retries, shell quoting, checksums and project
+imports. `package_bundle` checks that both archives contain both binaries and
+Linux executable permissions. These checks need no GPU; live SSH/GPU validation
+is separate.

@@ -154,26 +154,31 @@ continue supplying decoded pixels and PCM directly. See [agent CLI](agent-cli.md
 
 ```sh
 cmake --install build/linux-vulkan --prefix "$HOME/.local"
-bash package.sh --backend vulkan
-bash package.sh --backend both -- -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+bash package.sh --backend vulkan --windows-dir dist/windows
+bash package.sh --backend both --windows-dir dist/windows -- -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
 ```
 
 `package.sh` configures, builds and runs host/C API/reference-decode tests, then
-creates `dist/slopfab-VERSION-linux-x86_64-BACKEND.tar.gz`. It uses a separate
+creates `dist/slopfab-VERSION-windows-linux-x64.zip` and `.tar.gz`. Both archives
+contain both executables; a prebuilt Windows executable is required under
+`dist/windows` or `--windows-dir DIR`. It uses a separate
 directory `build/linux-glibc235-BACKEND`; `--build-dir DIR` overrides it.
 Additional CMake arguments follow `--`. Set `CMAKE_BUILD_PARALLEL_LEVEL` to
 change the default of two compilation jobs. Packaging stages files under Linux
 `/tmp` before copying the archive to `dist/`, so WSL checkouts on Windows drives
 do not need to support Linux permissions or shared-library symlinks.
 
-Archives contain `bin/slopfab`, the versioned C API library and SONAME symlinks
-under `lib/`, `include/slopfab/capi.h`, documentation and licenses. The tokenizer
+Archives contain `linux/slopfab`, `windows/slopfab.exe`, available C API libraries
+and headers under each platform directory, documentation, licenses and SHA-256
+checksums. `tools/package_bundle.py` can package existing `dist/windows` and
+`dist/linux` builds without rebuilding. It refuses single-platform packages.
+The tokenizer
 and Vulkan shaders are compiled in. Model weights, adapters, NVIDIA/Vulkan
 drivers, CUDA libraries, libpng/libjpeg runtimes are external dependencies. The
 CLI also needs libcurl for workflow HTTP requests (Ubuntu: `libcurl4`); QuickJS
 itself is embedded only in the executable. Extract
-the archive and add its `bin/` directory to `PATH`. C API consumers may load
-`lib/libslopfab.so` by absolute path or install it in their loader search path.
+the archive and add its `linux/` directory to `PATH`. C API consumers may load
+`linux/libslopfab.so` by absolute path or install it in their loader search path.
 The installed executable and shared library include relative `$ORIGIN` library
 search paths so the installation can be relocated.
 

@@ -5,7 +5,7 @@ Native C++ video, image and music generation on CUDA and Vulkan. No Python is re
 ## Features
 
 - **Agent projects:** [Project folders](docs/projects.md) with an offline media review page, clip editing prompts, saved generation recipes and explicit file naming rules.
-- **Remote generation:** [SSH generation](docs/remote.md) on Linux/WSL or Windows using an existing remote project, with result-only downloads, checksum verification and transfer retries.
+- **Remote commands:** [SSH execution](docs/remote.md) through `--host NAME` on regular commands, with automatic executable updates from the bundled Windows/Linux binaries and verified result downloads.
 - **Agent workflows:** [Embedded JavaScript](docs/scripting.md) for files, HTTP downloads, FFmpeg and parallel processes; [mods](docs/mods.md) can add CLI commands. QuickJS is linked only into the executable, never the DLL.
 - **Motions:** [JavaScript vector animations](docs/motions.md) rendered with embedded ThorVG, with transparent stills, video exports and overlays on generated video. ThorVG is linked only into the executable.
 - **Video review:** [Single frames and downscaled grids](docs/video_frames.md) through `slopfab video frames` or JavaScript, including direct capture from generation frames in RAM.
@@ -115,9 +115,13 @@ ctest --test-dir build -C Release --output-on-failure
 .\package.cmd
 ```
 
-Windows packaging uses `build/` and includes the CLI, DLL, C header, import
-library under `dist/`. Linux uses
-`bash package.sh --backend vulkan` or `--backend both`, with external GPU runtimes. Packages exclude model weights and CUDA libraries.
+Release packages always contain `windows/slopfab.exe` and `linux/slopfab`, plus
+available C API libraries, headers, documentation and checksums. `package.cmd`
+builds both platforms through Windows and WSL; `package.sh --backend both`
+builds Linux and requires the Windows build under `dist/windows` (override with
+`--windows-dir DIR`). To package existing builds, run `python tools/package_bundle.py`.
+Both `.zip` and `.tar.gz` archives are written under `dist/`; packaging fails if
+either executable is missing. Models, CUDA libraries and GPU drivers remain external.
 
 ## Models
 
