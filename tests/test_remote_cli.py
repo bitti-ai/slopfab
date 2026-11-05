@@ -69,7 +69,8 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     write_reply()
     run("projects", "create", "demo")
     generated = run(*options, "--local-project", "demo", "--", "video", "--prompt", prompt,
-                    extra_env={"SLOPFAB_TEST_REPLY": str(reply)})
+                    extra_env={"SLOPFAB_TEST_REPLY": str(reply),
+                               "SLOPFAB_TEST_POWERSHELL_SHELL": "1"})
     receipt = Path(generated["receipt"])
     for artifact in generated["artifacts"]:
         local = receipt.parent / artifact["local"]
@@ -78,10 +79,13 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     assert Path(generated["artifacts"][0]["local"]).parent == Path(generated["artifacts"][1]["local"]).parent
     assert len(generated["project_items"]) == 2
     assert Path(generated["index_path"]).is_file()
+    assert len(json.loads(receipt.read_text())["project_items"]) == 2
     run("remote", "fetch", str(receipt))
     project = run("projects", "show", "demo")["project"]
     assert len(project["items"]) == 2  # Idempotent project registration.
     assert project["items"][0]["generation"]["arguments"][2] == prompt
+    assert len(project["items"][0]["generation"]["artifacts"]) == 2
+    assert len(project["items"][1]["generation"]["artifacts"]) == 1
 
     # Corrupted transport cannot publish a final file; retry only downloads.
     downloads = root / "failed downloads"

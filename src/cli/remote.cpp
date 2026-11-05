@@ -312,7 +312,13 @@ Value collect(const Value& receipt, const fs::path& directory) {
           continue;
         std::string source;
         Array files;
+        std::set<std::string> result_paths;
+        if (const auto* result_files = result.find("artifacts"))
+          for (const auto& file : result_files->as_array())
+            result_paths.insert(field(file, "path"));
         for (const auto& artifact : artifacts) {
+          if (!result_paths.count(field(artifact, "remote")))
+            continue;
           const auto local = local_path(directory, field(artifact, "local")).u8string();
           if (field(artifact, "remote") == field(*plan, "output"))
             source = local;
@@ -339,6 +345,8 @@ Value collect(const Value& receipt, const fs::path& directory) {
   manifest["type"] = str("result");
   manifest["ok"] = Value(true);
   manifest["receipt"] = str((directory / "remote.json").u8string());
+  // Persist the finished project registration as well as the transfer state.
+  atomic_json(directory / "remote.json", Value(manifest));
   return Value(manifest);
 }
 }

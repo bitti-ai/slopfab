@@ -57,6 +57,10 @@ int main(int argc, char** argv) {
       return input.bad() ? 92 : 0;
     }
   }
+#ifdef _WIN32
+  if (std::getenv("SLOPFAB_TEST_POWERSHELL_SHELL"))
+    command = "powershell.exe -NoProfile -NonInteractive -Command \"" + command + "\"";
+#endif
   const auto status = std::system(command.c_str());
 #ifdef _WIN32
   return status;

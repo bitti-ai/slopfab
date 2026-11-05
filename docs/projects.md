@@ -55,6 +55,12 @@ project dependency.
 
 ## Output directory and filenames
 
+For generation on another computer, use [SSH generation](remote.md) with
+`--local-project NAME` before its `--` separator and `--project NAME` after it.
+The remote project records generation; the local project imports downloaded
+results and rebuilds its review page. Each run creates new local items, without
+copying the remote project manifest or merging its edits.
+
 The default root is `./output`. Set a persistent root with
 `slopfab settings set output_directory PATH`, or pass `--output-dir DIR` to
 project commands and project generation. This setting also controls default

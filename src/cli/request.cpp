@@ -487,6 +487,10 @@ Value capabilities() {
   return Value(Object{
       {"version", str(kVersion)},
       {"protocol_version", num(1)},
+      {"remote", Value(Object{{"command", str("slopfab remote generate OPTIONS -- GENERATION_ARGS")},
+          {"transport", str("OpenSSH")}, {"platforms", Value(Array{str("posix"), str("windows")})},
+          {"transfer", str("result artifacts only; no project or model synchronization")},
+          {"retry", str("slopfab remote fetch PATH/remote.json")}, {"cli_only", Value(true)}})},
       {"transcription", Value(Object{{"command",str("slopfab transcribe FILE --model MODEL.safetensors")},
           {"model",str("whisper")}, {"multilingual",Value(true)}, {"word_timestamps",Value(true)},
           {"embedded_tokenizer",Value(true)}, {"weights",str("Hugging Face safetensors, F16/BF16/F32")},
