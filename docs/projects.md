@@ -20,10 +20,12 @@ or open the returned `index_path` yourself. The command supports `--output-dir`
 and the configured output directory. If the page is missing, rebuild it with
 `slopfab projects render NAME`. The page shows images, video and
 music with custom playback controls, filters, a clip sequence and generation
-details. Select an item, choose an action, add direction and copy the resulting
-prompt into the agent. The prompt identifies the project, item, version,
-manifest, requested change and any parent video to rebuild. Refresh the page
-after the agent updates the project. Page actions only compose prompts; they
+details. The Clips and Generation prompts sections span the page width.
+Select an item and choose Edit, Regenerate or Remove. Edit starts with an empty
+Prompt field; the other actions fill a short request using the project name
+and displayed clip number, such as "Remove clip 24 from the launch-film video".
+Edit the text as needed and click Copy prompt to copy exactly that field into
+your agent. Refresh the page after the agent updates the project. Page actions
 never execute commands or silently change the manifest.
 
 The main player opens the latest active assembled video, ignoring a previous

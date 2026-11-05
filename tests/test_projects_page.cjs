@@ -14,12 +14,40 @@ const assert = require("assert/strict");
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1100 },
     });
+    page.setDefaultTimeout(15000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(
       pathToFileURL(path.resolve(process.argv[3])).href + "#clip-a",
     );
     assert.equal(await page.locator("#item-title").textContent(), "Final film");
+    assert.deepEqual(await page.locator("#action option").allTextContents(), [
+      "Edit video",
+      "Regenerate video",
+      "Remove video",
+    ]);
+    assert.equal(await page.locator("#notes").inputValue(), "");
+    assert(await page.locator("#prepare").isDisabled());
+    assert.equal(await page.locator("#sequence h3").textContent(), "Clips");
+    const workspace = await page.locator("#main-workspace").boundingBox();
+    for (const selector of ["#sequence", "main > .generation-prompts"]) {
+      const section = await page.locator(selector).boundingBox();
+      assert(Math.abs(section.width - workspace.width) < 1);
+      assert(Math.abs(section.x - workspace.x) < 1);
+    }
+    const projectName = await page.evaluate(() => project.name);
+    await page.locator("#action").selectOption("regenerate");
+    assert.equal(
+      await page.locator("#notes").inputValue(),
+      `Regenerate the ${projectName} video`,
+    );
+    await page.locator("#action").selectOption("remove");
+    assert.equal(
+      await page.locator("#notes").inputValue(),
+      `Remove the ${projectName} video`,
+    );
+    await page.locator("#action").selectOption("edit");
+    assert.equal(await page.locator("#notes").inputValue(), "");
     assert(
       (
         await page.locator("#sequence-list > button").first().textContent()
@@ -40,8 +68,9 @@ const assert = require("assert/strict");
     );
     await page.waitForFunction(
       () =>
-        document.querySelectorAll("#sequence-list .clip-thumbnail.ready")
-          .length === 2,
+        document.querySelectorAll(
+          "#sequence-list > button:not(.full-video) .clip-thumbnail.ready",
+        ).length === 2,
     );
     assert(
       await page
@@ -102,36 +131,60 @@ const assert = require("assert/strict");
     await page.locator("#sequence-list > button").first().click();
     assert.equal(await page.locator("#item-title").textContent(), "Final film");
     await page.locator("#sequence-list > button").nth(1).click();
+    assert.deepEqual(await page.locator("#action option").allTextContents(), [
+      "Edit clip",
+      "Regenerate clip",
+      "Remove clip",
+    ]);
     await page.getByLabel("Action", { exact: true }).selectOption("remove");
+    const prompt = `Remove clip 1 from the ${projectName} video`;
+    assert.equal(
+      await page.getByLabel("Prompt", { exact: true }).inputValue(),
+      prompt,
+    );
+    await page.evaluate(() =>
+      Object.defineProperty(navigator, "clipboard", {
+        value: {
+          writeText: async (text) => {
+            window.copiedText = text;
+          },
+        },
+        configurable: true,
+      }),
+    );
+    await page.locator("#prepare").click();
+    assert.equal(await page.evaluate(() => window.copiedText), prompt);
+    await page.locator("#action").selectOption("regenerate");
+    assert.equal(
+      await page.locator("#notes").inputValue(),
+      `Regenerate clip 1 in the ${projectName} video`,
+    );
+    await page.locator("#action").selectOption("edit");
+    assert.equal(await page.locator("#notes").inputValue(), "");
     await page
-      .getByLabel("Your direction", { exact: false })
+      .getByLabel("Prompt", { exact: true })
       .fill("Keep the music continuous across the cut.");
-    await page.getByRole("button", { name: "Create agent prompt" }).click();
-    const prompt = await page
-      .getByLabel("Prompt to copy", { exact: true })
-      .inputValue();
-    assert(prompt.includes("clip-a") && prompt.includes("Remove this item"));
-    assert(
-      prompt.includes("rebuild the parent video") &&
-        prompt.includes("Keep the music continuous"),
+    await page.locator("#prepare").click();
+    assert.equal(
+      await page.evaluate(() => window.copiedText),
+      "Keep the music continuous across the cut.",
     );
-    assert(
-      prompt.includes("project.json") &&
-        prompt.includes("exact manifest paths"),
-    );
-    // Force the file:// clipboard fallback, which must leave a selectable prompt.
+    // Force the file:// clipboard fallback, which selects the editable field.
     await page.evaluate(() =>
       Object.defineProperty(navigator, "clipboard", {
         value: undefined,
         configurable: true,
       }),
     );
-    await page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Copy prompt", exact: true })
-      .click();
-    assert((await page.locator("#copy-status").textContent()).length > 0);
-    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.locator("#prepare").click();
+    assert(
+      (await page.locator("#prompt-copy-status").textContent()).length > 0,
+    );
+    assert(
+      await page
+        .locator("#notes")
+        .evaluate((n) => n.selectionEnd - n.selectionStart === n.value.length),
+    );
     await page
       .getByRole("button", { name: "Review Cover image", exact: true })
       .click();
@@ -153,13 +206,18 @@ const assert = require("assert/strict");
       "Opening shot",
     );
     await page.locator("#popup-action").selectOption("edit");
+    assert.equal(await page.locator("#popup-notes").inputValue(), "");
+    assert(await page.locator("#popup-prepare").isDisabled());
+    await page.locator("#popup-notes").fill("Make the cover warmer.");
     await page.locator("#popup-prepare").click();
     assert(
-      (await page.locator("#agent-prompt").inputValue()).includes(
-        'Target: "cover"',
-      ),
+      (await page.locator("#popup-prompt-copy-status").textContent()).length >
+        0,
     );
-    await page.locator("#close-dialog").click();
+    assert.equal(
+      await page.locator("#notes").inputValue(),
+      "Keep the music continuous across the cut.",
+    );
     await page.keyboard.press("Escape");
     assert(!(await page.locator("#media-dialog").isVisible()));
     await page
@@ -181,7 +239,7 @@ const assert = require("assert/strict");
       .click();
     await page.getByRole("button", { name: "Close media preview" }).click();
     await page.getByRole("tab", { name: "Clips", exact: true }).click();
-    assert.equal(await page.locator("#grid .card").count(), 2);
+    assert.equal(await page.locator("#grid .card:visible").count(), 2);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({
       path: path.join(path.dirname(process.argv[3]), "mobile-review.png"),
@@ -352,11 +410,14 @@ const assert = require("assert/strict");
     assert.equal(await page.evaluate(() => window.injected), undefined);
     await page.evaluate(() => {
       project.items.find((i) => i.id === "clip-a").start = 1;
+      // Manifest changes normally arrive on page refresh, which clears cached cards.
+      sequenceCards.clear();
+      document.querySelector("#sequence-list").replaceChildren();
       choose(project.items.find((i) => i.id === "film"));
     });
     await page.waitForFunction(() => {
       const frame = document.querySelector(
-        "#sequence-list .clip-thumbnail.ready video",
+        '#sequence-list [data-item-id="clip-a"] .clip-thumbnail.ready video',
       );
       return frame && frame.currentTime >= 1;
     });

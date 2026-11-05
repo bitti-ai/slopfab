@@ -417,6 +417,10 @@
         border-radius: 6px;
         min-width: 0;
       }
+      #popup-workspace > .generation-prompts {
+        grid-column: 1 / -1;
+        margin-top: 0;
+      }
       .generation-prompts .section-row {
         flex-wrap: wrap;
       }
@@ -874,55 +878,21 @@
               <span id="item-badge" class="badge"></span>
             </div>
           </section>
-          <section
-            id="sequence"
-            class="sequence hidden"
-            aria-label="Video clips"
-          >
-            <div class="section-row">
-              <h3>Clips in this video</h3>
-              <span class="tiny muted">Select a clip to review or edit</span>
-            </div>
-            <div id="sequence-list" class="sequence-list"></div>
-          </section>
-          <section
-            class="generation-prompts"
-            aria-labelledby="generation-prompts-title"
-          >
-            <div class="section-row">
-              <h3 id="generation-prompts-title">Generation prompts</h3>
-              <select
-                id="prompt-version"
-                class="action prompt-version"
-                aria-label="Prompt version"
-              ></select>
-            </div>
-            <p id="prompt-source" class="tiny muted"></p>
-            <div id="prompt-fields"></div>
-            <span
-              id="generation-copy-status"
-              class="prompt-status tiny muted"
-              role="status"
-            ></span>
-          </section>
         </div>
         <aside class="inspector">
           <h2>Continue with your agent</h2>
           <p>
-            Choose an action, add direction, then copy the prompt into your
-            agent.
+            Choose an action, write your prompt, then copy it into your agent.
           </p>
           <label class="label" for="action">Action</label
           ><select id="action" class="action"></select
-          ><label class="label" for="notes"
-            >Your direction <span class="muted">(optional)</span></label
+          ><label class="label" for="notes">Prompt</label
           ><textarea
             id="notes"
             placeholder="A slower camera move, warmer light, a different rhythm…"
           ></textarea
-          ><button id="prepare" class="primary">
-            Create agent prompt <span aria-hidden="true">↗</span>
-          </button>
+          ><button id="prepare" class="primary">Copy prompt</button>
+          <p id="prompt-copy-status" class="tiny" role="status"></p>
           <p class="tiny">
             Nothing runs here. Your agent makes the changes; refresh this page
             afterward.
@@ -934,6 +904,33 @@
           </details>
         </aside>
       </div>
+      <section id="sequence" class="sequence hidden" aria-label="Video clips">
+        <div class="section-row">
+          <h3>Clips</h3>
+          <span class="tiny muted">Select a clip to review or edit</span>
+        </div>
+        <div id="sequence-list" class="sequence-list"></div>
+      </section>
+      <section
+        class="generation-prompts"
+        aria-labelledby="generation-prompts-title"
+      >
+        <div class="section-row">
+          <h3 id="generation-prompts-title">Generation prompts</h3>
+          <select
+            id="prompt-version"
+            class="action prompt-version"
+            aria-label="Prompt version"
+          ></select>
+        </div>
+        <p id="prompt-source" class="tiny muted"></p>
+        <div id="prompt-fields"></div>
+        <span
+          id="generation-copy-status"
+          class="prompt-status tiny muted"
+          role="status"
+        ></span>
+      </section>
       <section class="library" aria-label="Project media">
         <div class="section-row">
           <h2>Project library</h2>
@@ -979,25 +976,6 @@
         </button>
       </div>
       <div id="popup-workspace" class="workspace"></div>
-    </dialog>
-    <dialog id="prompt-dialog" aria-labelledby="dialog-title">
-      <h2 id="dialog-title">Ready for your agent</h2>
-      <p class="muted">Copy this prompt and paste it into your conversation.</p>
-      <textarea
-        id="agent-prompt"
-        aria-label="Prompt to copy"
-        readonly
-      ></textarea>
-      <div
-        id="copy-status"
-        class="status"
-        role="status"
-        aria-live="polite"
-      ></div>
-      <div class="buttons">
-        <button id="close-dialog" class="secondary">Close</button
-        ><button id="copy-prompt" class="primary">Copy prompt</button>
-      </div>
     </dialog>
     <script id="project-data" type="application/json">
       __SLOPFAB_PROJECT_DATA__
@@ -1386,6 +1364,7 @@
           );
           $("stage").append(p);
           $("action").append(new Option("Generate new content", "new"));
+          configurePrompt(item, $);
           $("details").textContent = "";
           $("sequence").classList.add("hidden");
           drawLibrary();
@@ -1433,16 +1412,14 @@
         const actions = item.removed
           ? [["restore", "Restore item"]]
           : [
+              ["edit", `Edit ${item.kind}`],
               ["regenerate", `Regenerate ${item.kind}`],
-              ["edit", "Edit with instructions"],
               ["remove", `Remove ${item.kind}`],
-              ["preview", "Create browser preview"],
             ];
-        if (item.kind === "video" && !item.removed)
-          actions.splice(2, 0, ["rebuild", "Rebuild video from clips"]);
         actions.forEach(([value, label]) =>
           $("action").append(new Option(label, value)),
         );
+        configurePrompt(item, $);
         $("details").textContent = JSON.stringify(
           {
             file: item.file,
@@ -1622,40 +1599,62 @@
         }
         empty.classList.toggle("hidden", items.length > 0);
       }
-      function agentPrompt(
-        item = selected,
-        $ = (id) => document.getElementById(id),
-      ) {
-        const action = $("action").value;
-        const instructions = {
-          new: "Generate new content for this project and register the results.",
-          regenerate:
-            "Regenerate this item using its saved request/recipe and my direction below. Use a fresh seed unless I request otherwise. Keep its stable item ID and preserve previous files.",
-          edit: "Edit this item according to my direction below. Keep its stable ID and preserve previous files.",
-          remove:
-            "Remove this item from the active project using projects remove. Retain the original files and history.",
-          restore: "Restore this item using projects restore.",
-          preview:
-            "Create a browser-compatible preview (MP4/WebM for video, PNG for images, or WAV/MP3 for music) using external tools as needed. Register it with projects update --preview; preserve the source.",
-          rebuild:
-            "Rebuild this video from its active clips in position order, respecting source start/end trims. Preserve audio/music choices. Use external FFmpeg as needed and register the new assembled file with projects update.",
+      function actionPrompt(item, action) {
+        if (action === "edit") return "";
+        if (!item)
+          return `Generate new content for the ${project.name} project`;
+        const verb = {
+          regenerate: "Regenerate",
+          remove: "Remove",
+          restore: "Restore",
+        }[action];
+        if (item.kind === "video") return `${verb} the ${project.name} video`;
+        if (item.kind === "clip") {
+          const clips = project.items
+            .filter(
+              (clip) =>
+                clip.kind === "clip" &&
+                clip.parent === item.parent &&
+                available(clip),
+            )
+            .sort((a, b) => (a.position || 0) - (b.position || 0));
+          const index = clips.findIndex((clip) => clip.id === item.id);
+          const target = index < 0 ? item.id : index + 1;
+          return `${verb} clip ${target} ${action === "remove" ? "from" : "in"} the ${project.name} video`;
+        }
+        return `${verb} ${item.kind} ${item.id} ${action === "remove" ? "from" : "in"} the ${project.name} project`;
+      }
+      function configurePrompt(item, lookup) {
+        const update = () => {
+          lookup("prepare").disabled = !lookup("notes").value.trim();
+          lookup("prompt-copy-status").textContent = "";
         };
-        let text = `Update my Slopfab project ${JSON.stringify(project.name)}.\nProject folder: ${JSON.stringify(project.directory)}\nRead ${JSON.stringify(project.manifest_path)} and PROJECT.md first. This page shows project revision ${project.revision}; verify the current manifest and reconcile any newer changes before editing.\n\n`;
-        if (item)
-          text += `Target: ${JSON.stringify(item.id)} (${item.kind}, version ${item.version})\nSource: ${JSON.stringify(item.file)}${item.parent ? `\nParent video: ${JSON.stringify(item.parent)}` : ""}\n\n`;
-        text += instructions[action] + "\n";
-        if (
-          item &&
-          item.parent &&
-          ["regenerate", "edit", "remove", "restore"].includes(action)
-        )
-          text +=
-            "Then rebuild the parent video from its remaining active clips in position order, using external FFmpeg if needed, and register the updated assembled video.\n";
-        const notes = $("notes").value.trim();
-        if (notes) text += `\nMy direction:\n${notes}\n`;
-        text +=
-          "\nUse slopfab help projects for the commands. Use --output-dir with the project folder’s parent directory to locate this project. For direct generation use --project NAME and --project-item ID when replacing an existing item. Resolve saved recipe paths against its working_directory and use the recorded plan for the actual seed/settings. Choose a new output filename. Register imported replacements/previews with projects update. Follow PROJECT.md naming rules; index.html reads exact manifest paths, not a folder scan. Keep unrelated items unchanged, regenerate index.html with projects render if necessary, and report what changed.\n";
-        return text;
+        lookup("action").onchange = () => {
+          lookup("notes").value = actionPrompt(item, lookup("action").value);
+          update();
+        };
+        lookup("notes").oninput = update;
+        lookup("action").onchange();
+      }
+      async function copyAgentPrompt(lookup) {
+        const text = lookup("notes");
+        if (!text.value.trim()) return;
+        try {
+          if (!navigator.clipboard) throw Error();
+          await navigator.clipboard.writeText(text.value);
+          lookup("prompt-copy-status").textContent =
+            "Copied. Paste it into your agent.";
+        } catch (error) {
+          text.focus();
+          text.select();
+          let copied = false;
+          try {
+            copied = document.execCommand("copy");
+          } catch (ignore) {}
+          lookup("prompt-copy-status").textContent = copied
+            ? "Copied. Paste it into your agent."
+            : "Prompt selected. Press Ctrl+C (Command+C on Mac) to copy.";
+        }
       }
       $("title").textContent = project.title || project.name;
       $("title").title = project.title || project.name;
@@ -1709,12 +1708,7 @@
       );
       $("location").textContent = project.directory;
       $("show-removed").onchange = drawLibrary;
-      function preparePrompt(item, lookup) {
-        $("agent-prompt").value = agentPrompt(item, lookup);
-        $("copy-status").textContent = "";
-        $("prompt-dialog").showModal();
-      }
-      $("prepare").onclick = () => preparePrompt(selected, $);
+      $("prepare").onclick = () => copyAgentPrompt($);
       // Share the review UI, but give the popup independent selection and playback.
       const popupLookup = (id) => document.getElementById("popup-" + id);
       function popupClone(selector) {
@@ -1737,16 +1731,13 @@
       function openLibraryItem(item) {
         if (media) media.pause();
         const popupPreview = el("div");
-        popupPreview.append(
-          popupClone(".viewer"),
-          popupClone(".generation-prompts"),
-        );
+        popupPreview.append(popupClone(".viewer"));
         $("popup-workspace").replaceChildren(
           popupPreview,
           popupClone(".inspector"),
+          popupClone(".generation-prompts"),
         );
-        popupLookup("prepare").onclick = () =>
-          preparePrompt(popupSelected, popupLookup);
+        popupLookup("prepare").onclick = () => copyAgentPrompt(popupLookup);
         $("media-dialog").showModal();
         choose(item, true);
       }
@@ -1768,25 +1759,6 @@
         )
           event.target.close();
       });
-      $("close-dialog").onclick = () => $("prompt-dialog").close();
-      $("copy-prompt").onclick = async () => {
-        const text = $("agent-prompt");
-        try {
-          if (!navigator.clipboard) throw Error();
-          await navigator.clipboard.writeText(text.value);
-          $("copy-status").textContent = "Copied. Paste it into your agent.";
-        } catch (e) {
-          text.focus();
-          text.select();
-          let copied = false;
-          try {
-            copied = document.execCommand("copy");
-          } catch (ignore) {}
-          $("copy-status").textContent = copied
-            ? "Copied. Paste it into your agent."
-            : "Prompt selected. Press Ctrl+C (Command+C on Mac) to copy.";
-        }
-      };
       const mainViewer = document.querySelector("#main-workspace .viewer");
       new ResizeObserver(() => {
         $("main-workspace").style.setProperty(
