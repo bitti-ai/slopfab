@@ -76,6 +76,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 
   slopfab::GenerateRequest req;
   std::vector<std::pair<std::string, bool>> reference_files;
+  std::string driving_audio;
   req.num_frames = 124;
   // Step defaults are resolved from the model/task recipe.
   req.seed = 0;
@@ -352,6 +353,12 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       const bool is_video = arg == "--reference-video";
       reference_files.emplace_back(next(is_video ? "--reference-video" : "--reference-audio"),
                                    is_video);
+    } else if (arg == "--driving-audio") {
+      if (!driving_audio.empty())
+        throw std::invalid_argument("--driving-audio may only be supplied once");
+      driving_audio = next("--driving-audio");
+      if (driving_audio.empty() || driving_audio.rfind("--", 0) == 0)
+        throw std::invalid_argument("--driving-audio requires a WAV path");
     } else if (arg == "--raw") {
       req.raw_output = true;
     } else if (arg == "--vulkan-arithmetic") {
@@ -570,12 +577,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.loras.back().strength = strength;
     } else if (arg == "--conditioning-settings") {
       const std::string path = next("--conditioning-settings");
-      std::ifstream in(path, std::ios::binary);
-      if (!in)
-        throw std::runtime_error("cannot read conditioning settings: " + path);
-      std::ostringstream contents;
-      contents << in.rdbuf();
-      req.conditioning = slopfab::parse_conditioning_settings(contents.str());
+      const auto first = path.find_first_not_of(" \t\r\n");
+      if (first != std::string::npos && path[first] == '{') {
+        req.conditioning = slopfab::parse_conditioning_settings(path);
+      } else {
+        std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+        if (!in)
+          throw std::runtime_error("cannot read conditioning settings: " + path);
+        std::ostringstream contents;
+        contents << in.rdbuf();
+        req.conditioning = slopfab::parse_conditioning_settings(contents.str());
+      }
     } else if (arg == "--sampling-settings") {
       const std::string path = next("--sampling-settings");
       std::ifstream in(path, std::ios::binary);
@@ -719,9 +731,33 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     bridge.right = slopfab::LatentClip::load(bridge_to);
     req.bridge = std::move(bridge);
   }
+  if (!driving_audio.empty() &&
+      std::count_if(reference_files.begin(), reference_files.end(),
+                    [](const auto& file) { return file.second; }) != 1)
+    throw std::invalid_argument("--driving-audio requires exactly one --reference-video");
   for (const auto& entry : reference_files) {
-    req.reference_media.push_back(std::make_shared<const slopfab::ReferenceMedia>(
-        slopfab::cli::decode_reference_file(entry.first, entry.second, executable)));
+    ReferenceMedia media;
+    if (entry.second && !driving_audio.empty()) {
+      DrivingAudioAttachment attachment;
+      media = decode_driving_reference(entry.first, driving_audio, executable, attachment);
+      auto absolute = [](const std::string& path) {
+        return std::filesystem::absolute(std::filesystem::u8path(path)).lexically_normal().u8string();
+      };
+      agent().reference_attachments.emplace_back(Object{
+          {"video_path", str(absolute(entry.first))}, {"audio_path", str(absolute(driving_audio))},
+          {"source_start_seconds", num(0)},
+          {"source_end_seconds", num(double(attachment.used_frames) / attachment.sample_rate)},
+          {"clip_start_seconds", num(0)}, {"clip_duration_seconds", num(media.duration_seconds())},
+          {"sample_rate", num(attachment.sample_rate)}, {"channels", num(attachment.channels)},
+          {"source_frames", num(double(attachment.source_frames))},
+          {"attached_frames", num(double(attachment.attached_frames))},
+          {"trimmed_frames", num(double(attachment.trimmed_frames))},
+          {"padded_frames", num(double(attachment.padded_frames))},
+          {"duration_policy", str("trim_end_or_pad_silence")}});
+    } else {
+      media = decode_reference_file(entry.first, entry.second, executable);
+    }
+    req.reference_media.push_back(std::make_shared<const ReferenceMedia>(std::move(media)));
     slopfab::validate_reference_media(req.reference_image_paths.size(), req.reference_media);
   }
   discover_generate_checkpoints(req, executable);

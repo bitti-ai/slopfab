@@ -1,6 +1,11 @@
 # --- tests ------------------------------------------------------------------
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
+  add_executable(slopfab_reference_decode_tests tests/test_reference_decode.cpp
+    src/cli/reference_decode.cpp src/cli/native_media.cpp)
+  target_link_libraries(slopfab_reference_decode_tests PRIVATE slopfab_core)
+  add_test(NAME reference_decode COMMAND slopfab_reference_decode_tests)
+  set_tests_properties(reference_decode PROPERTIES LABELS synthetic TIMEOUT 30)
   add_executable(slopfab_demucs_tests tests/test_demucs.cpp)
   target_link_libraries(slopfab_demucs_tests PRIVATE slopfab_demucs)
   add_test(NAME demucs COMMAND slopfab_demucs_tests)
@@ -21,6 +26,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME driving_audio_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_driving_audio_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(driving_audio_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME separate_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_separate_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(separate_cli PROPERTIES LABELS synthetic TIMEOUT 90)

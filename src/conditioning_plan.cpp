@@ -80,9 +80,17 @@ ResolvedConditioning resolve_conditioning_settings(const GenerateRequest& reques
 #undef FIELD
   }
   overlay(out, adapters);
-  if (request.preserve_driving_audio)
-    out.pin_target_audio = true;
   overlay(out, request.conditioning);
+  if (request.preserve_driving_audio) {
+    if (request.conditioning.include_reference_audio.value_or(false))
+      throw std::invalid_argument(
+          "--preserve-driving-audio conflicts with explicit include_reference_audio=true");
+    if (request.conditioning.pin_target_audio && !*request.conditioning.pin_target_audio)
+      throw std::invalid_argument(
+          "--preserve-driving-audio conflicts with explicit pin_target_audio=false");
+    out.pin_target_audio = true;
+    out.include_reference_audio = false;
+  }
   return out;
 }
 

@@ -108,6 +108,25 @@ SLOPFAB_TEST(conditioning_settings_metadata_conflicts_and_disabled_adapters) {
   CHECK(resolve_conditioning_settings(r).image_short_edge == 1024);
 }
 
+SLOPFAB_TEST(conditioning_preserve_audio_defaults_and_conflicts) {
+  using namespace slopfab;
+  GenerateRequest request;
+  request.preserve_driving_audio = true;
+  auto resolved = resolve_conditioning_settings(request);
+  CHECK(resolved.pin_target_audio && !resolved.include_reference_audio);
+  request.conditioning.include_reference_audio = false;
+  request.conditioning.pin_target_audio = true;
+  resolved = resolve_conditioning_settings(request);
+  CHECK(resolved.pin_target_audio && !resolved.include_reference_audio);
+  request.conditioning.include_reference_audio = true;
+  CHECK(rejected([&] { resolve_conditioning_settings(request); }));
+  request.conditioning.include_reference_audio = false;
+  request.conditioning.pin_target_audio = false;
+  CHECK(rejected([&] { resolve_conditioning_settings(request); }));
+  request.preserve_driving_audio = false;
+  CHECK(!resolve_conditioning_settings(request).pin_target_audio);
+}
+
 SLOPFAB_TEST(generation_options_shared_validation) {
   using namespace slopfab;
   GenerateRequest request;

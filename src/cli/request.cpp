@@ -67,13 +67,13 @@ std::vector<std::string> request_args(Value request) {
   keys(request,
        {"schema_version", "task", "model", "preset", "prompt", "negative_prompt", "lyrics",
         "duration_seconds", "resolution", "seed", "count", "output", "references", "loras",
-        "options", "deadline_seconds", "project", "project_item", "output_directory"},
+        "options", "deadline_seconds", "project", "project_item", "output_directory", "driving_audio"},
        "request");
   auto version = request.find("schema_version");
   if (!version || !version->is_number() || version->as_number() != 1)
     throw CliError("INVALID_REQUEST", "schema_version must be 1", 2, "schema_version");
   for (const char* key : {"model", "preset", "prompt", "negative_prompt", "lyrics", "project",
-                          "project_item", "output_directory"})
+                          "project_item", "output_directory", "driving_audio"})
     if (const auto* v = request.find(key))
       if (!v->is_string())
         throw CliError("INVALID_REQUEST", std::string(key) + " must be a string", 2, key);
@@ -115,6 +115,7 @@ std::vector<std::string> request_args(Value request) {
                                                         {"prompt", "--prompt"},
                                                         {"negative_prompt", "--negative-prompt"},
                                                         {"lyrics", "--lyrics"},
+                                                        {"driving_audio", "--driving-audio"},
                                                         {"duration_seconds", "--duration"},
                                                         {"seed", "--seed"},
                                                         {"count", "--count"},
@@ -318,6 +319,7 @@ std::vector<std::string> prepare_arguments(const std::vector<std::string>& input
   agent().project_revision = 0;
   agent().project_manifest_revision = 0;
   agent().generation_arguments.clear();
+  agent().reference_attachments.clear();
   for (const auto& argument : args)
     agent().generation_arguments.push_back(str(argument));
   if (!args.empty() && (args[0] == "image" || args[0] == "video" || args[0] == "music")) {
@@ -410,6 +412,9 @@ Value request_schema() {
       Value(Object{{"type", str("string")},
                    {"pattern", str("^[0-9]+$")},
                    {"description", str("Unsigned 64-bit integer, encoded as a decimal string.")}});
+  properties["driving_audio"] = Value(Object{
+      {"type", str("string")}, {"minLength", num(1)},
+      {"description", str("WAV attached at time zero to exactly one video reference. Trim excess samples or pad silence to the clip duration; no source slicing.")}});
   for (const char* key : {"duration_seconds", "deadline_seconds"})
     properties[key] = Value(
         Object{{"type", str("number")}, {"exclusiveMinimum", num(0)}, {"maximum", num(86400)}});
@@ -491,6 +496,13 @@ Value capabilities() {
           {"setup", str("slopfab remote setup NAME --directory PATH")}, {"automatic_binary_update", Value(true)}, {"transport", str("OpenSSH")}, {"platforms", Value(Array{str("linux"), str("windows")})},
           {"transfer", str("result artifacts only; no project or model synchronization")},
           {"retry", str("slopfab fetch PATH/remote.json")}, {"cli_only", Value(true)}})},
+      {"driving_audio", Value(Object{
+          {"option", str("--driving-audio FILE.wav")}, {"request_field", str("driving_audio")},
+          {"video_format", str("Y4M")}, {"audio_format", str("mono/stereo PCM16/24/32 or float32 WAV")},
+          {"video_references", num(1)}, {"start_seconds", num(0)},
+          {"duration_policy", str("trim_end_or_pad_silence")}, {"source_slicing", Value(false)},
+          {"preserve_option", str("--preserve-driving-audio")},
+          {"pin_target_audio", Value(true)}, {"include_reference_audio_when_pinned", Value(false)}})},
       {"separation", Value(Object{{"command", str("slopfab separate FILE --model MODEL.safetensors")},
           {"model", str("htdemucs")}, {"backends", Value(Array{str("cpu")})},
           {"sources", Value(Array{str("drums"), str("bass"), str("other"), str("vocals")})},
