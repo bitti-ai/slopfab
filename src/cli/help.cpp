@@ -164,6 +164,7 @@ const CommandHelp kCommands[] = {
      "  slopfab.spawn([EXE, ...ARGS])          concurrent child with poll(), wait(), kill()\n"
      "  slopfab.cli(['COMMAND', ...ARGS])      same CLI/config/jobs; parsed events and result\n"
      "  slopfab.http.json(URL)                fetch JSON; download(URL, PATH) streams to disk\n"
+     "    download(URL, PATH, {resume:true, connections:4, retries:2}) resumes parallel ranges\n"
      "  slopfab.tool('ffmpeg')                locate external FFmpeg for exec/spawn\n"
      "  slopfab.path.fileUrl(PATH)            absolute percent-encoded file URL\n"
      "  slopfab.frames.extract(OPTIONS)      video frame/grid PNG; see video frames --help\n"

@@ -132,8 +132,8 @@ export default () => {
 Response header names are lowercase. `http.json(url, options)` requires a 2xx
 response and parses its body. `http.download(url, destination, options)` streams
 binary data to disk and returns the same metadata with an empty body and an
-absolute path. It requires a 2xx response and publishes the destination atomically;
-failures remove the temporary `.part` file and preserve any old destination.
+absolute path. It requires a 2xx response and publishes the destination atomically.
+By default failures remove the temporary `.part` file and preserve any old destination.
 
 Options: `method` (GET), `headers` (object), `body` (text), `timeoutMs` (300000;
 0 disables the total HTTP timeout), `maxBytes` (16 MiB for in-memory responses),
@@ -143,6 +143,45 @@ validation are supported. Transport failures throw; `request` leaves HTTP status
 handling to the script. On Windows, blocking network calls can delay cancellation
 until the current I/O timeout; with `timeoutMs:0`, the per-operation timeout is
 60 seconds. Authentication can be supplied explicitly in request headers.
+
+For resumable downloads with native parallel byte-range transfers:
+
+```js
+const file = slopfab.http.download(url, 'weights/model.safetensors', {
+  resume: true, connections: 4, retries: 2, timeoutMs: 7200000
+});
+```
+
+`resume: true` enables persistent partial files and defaults to four connections.
+`connections` accepts 1–16; a value greater than one also enables this downloader
+and defaults `resume` to true. Set `connections: 1, resume: true` for a single
+resumable range. `resume: false` with multiple connections discards previous
+progress and removes parts on failure. `retries` accepts 0–10 (default 2), in
+addition to the first attempt. The total `timeoutMs` covers probing, retries,
+transfers and assembly; runtime deadlines and cancellation still apply.
+
+The downloader probes the original URL with `Range: bytes=0-0`, follows redirects,
+and requires a strong ETag before splitting or reusing bytes. Each range request
+uses `If-Range` and validates the returned status, ETag, Content-Range, encoding,
+and byte count before publishing. A changed URL, ETag, size or connection count
+invalidates saved progress. Servers that ignore ranges or lack a strong ETag fall
+back to a single streamed request, restarting that request on retry. These modes
+require GET without a body and manage `Range`, `If-Range` and `Accept-Encoding`
+headers internally. See the [HTTP range semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-14).
+
+State lives in `DESTINATION.download/` beside the destination, with one file per
+range and a JSON metadata record. Repeat the same download to resume after a
+failure or process restart. Successful assembly removes this directory. Assembly
+requires space for the parts plus a complete final file, while memory use stays
+bounded. A persistent `DESTINATION.download.lock` file prevents concurrent writers;
+the OS releases its lock when the process exits. The final destination is never a
+partial file, and `overwrite: true` preserves the old file until publication.
+
+Results also contain `connections` (actual range count, or 1 for fallback) and
+`resumedBytes` (bytes reused from previous attempts). On Windows, resumable-mode
+blocking network calls have at most a 15-second per-operation timeout; cancellation
+can wait for an in-flight call. JavaScript callbacks run only on the caller's
+thread; the native transfer workers do not enter the JavaScript runtime.
 
 ## Runtime behavior and extension
 

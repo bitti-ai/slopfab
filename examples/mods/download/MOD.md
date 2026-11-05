@@ -1,7 +1,7 @@
 ---
 name: download
 description: List model, LoRA, upscaler and Whisper URLs and download selected files.
-version: "1.1"
+version: "1.2"
 command: download
 script: main.js
 ---
@@ -32,8 +32,21 @@ and intended task; this catalog is a set of options, not a requirement to fetch
 every file. Review the source repository's model license before use.
 
 Run `slopfab download MODEL FILE_ID DESTINATION` to download one selected file.
-The destination must not exist. Model files are large; downloads allow up to two
-hours and do not resume partial transfers. Register the containing weights root
+The destination must not exist. Downloads use Slopfab's native HTTP downloader
+with four parallel connections, two retries per failed request, and a two-hour
+total timeout. Interrupted transfers keep their completed and partial ranges in
+`DESTINATION.download/`. Run the same command with the same destination to resume.
+Keep that directory intact until completion; it is removed after the final file
+is assembled and published. A small `DESTINATION.download.lock` file remains to
+coordinate concurrent invocations; its presence does not mean a download is active.
+
+Resume requires byte-range support and a matching strong ETag. Changed remote
+files restart safely. Servers without reliable range support or a strong ETag
+use a single streamed download, which restarts after interruption. The final
+destination appears only after the complete transfer; assembly temporarily needs
+space for both the parts and the final file. No external download program is used.
+
+Register the containing weights root
 with `slopfab settings set weight_paths PATH` after placing files in the desired
 `transformer/`, `text_encoder/` and `vae/` folders.
 
