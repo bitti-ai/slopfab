@@ -136,8 +136,9 @@ bundled generator variants, shared components, LoRAs and upscalers, plus
 [Whisper Large v3 Turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
 for transcription. Run `slopfab download whisper` to see its file ID and URL.
 See the [download mod](../examples/mods/download/MOD.md) for groups and companion
-requirements; edit the catalog to add models without recompiling Slopfab. Examples ship in
-release packages but are not activated automatically.
+requirements; edit the catalog to add models without recompiling Slopfab.
+Release packages install the download mod beside both executables, ready to use.
+Other examples ship under `examples/` and are not activated automatically.
 
 The invocation's working directory remains unchanged; use
 `slopfab.scriptDirectory` to locate companion assets. Use `--` before arguments

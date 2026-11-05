@@ -1,4 +1,4 @@
-"""Create a release containing both native CLIs. No single-platform fallback."""
+"""Package existing Windows and Linux builds with the download mod; never rebuild."""
 import argparse
 import hashlib
 import json
@@ -48,6 +48,8 @@ def package(windows: Path, linux: Path, destination: Path, version: str):
                         shutil.copyfile(path, target / path.name)
             if platform == "linux":
                 (target / "slopfab").chmod(0o755)
+            # Executable-relative mods work from any invocation directory.
+            shutil.copytree(ROOT / "examples/mods/download", target / "mods/download")
         for filename in ("README.md", "LICENSE"):
             shutil.copyfile(ROOT / filename, stage / filename)
         shutil.copytree(ROOT / "docs", stage / "docs", ignore=shutil.ignore_patterns("AGENTS.md*"))
@@ -62,6 +64,7 @@ def package(windows: Path, linux: Path, destination: Path, version: str):
         shutil.copyfile(ROOT / "third_party/thorvg/LODEPNG-LICENSE.txt", licenses / "LODEPNG-LICENSE.txt")
         shutil.copyfile(ROOT / "third_party/seedvr2/NOTICE", licenses / "SEEDVR2-NOTICE.txt")
         manifest = {"schema_version": 1, "version": version, "binaries": {}}
+        (stage / "VERSION").write_text(version + "\n", encoding="ascii", newline="\n")
         for relative in binaries:
             path = stage / relative
             manifest["binaries"][relative] = {"sha256": checksum(path), "bytes": path.stat().st_size}
@@ -101,10 +104,14 @@ def package(windows: Path, linux: Path, destination: Path, version: str):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--windows-dir", type=Path, default=ROOT / "dist/windows")
-    parser.add_argument("--linux-dir", type=Path, default=ROOT / "dist/linux")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
-    parser.add_argument("--version", default=re.search(r"project\(slopfab .*?VERSION ([0-9.]+)", (ROOT / "CMakeLists.txt").read_text())[1])
+    parser.add_argument("--windows-dir", type=Path, default=ROOT / "build/Release",
+                        help="directory containing slopfab.exe (default: checkout/build/Release)")
+    parser.add_argument("--linux-dir", type=Path, default=ROOT / "build/linux-cli",
+                        help="directory containing slopfab (default: checkout/build/linux-cli)")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "dist",
+                        help="archive destination (default: checkout/dist)")
+    parser.add_argument("--version", default=(ROOT / "VERSION").read_text(encoding="ascii").strip(),
+                        help="package version override (default: checkout/VERSION)")
     args = parser.parse_args()
     try:
         for archive in package(args.windows_dir, args.linux_dir, args.output_dir, args.version):

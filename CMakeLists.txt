@@ -3,7 +3,9 @@ cmake_minimum_required(VERSION 3.24)
 # CUDA is enabled lazily: the core loader and CLI build without it so the
 # project stays useful on machines without a toolkit, and so early phases can
 # be developed and tested before any kernels exist.
-project(slopfab LANGUAGES CXX VERSION 0.1.0)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SLOPFAB_VERSION LIMIT_COUNT 1)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+project(slopfab LANGUAGES CXX VERSION ${SLOPFAB_VERSION})
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

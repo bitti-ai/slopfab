@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zipfile
 
-from package_bundle import package
+from package_bundle import ROOT, package
 
 
 class PackageTests(unittest.TestCase):
@@ -41,7 +41,13 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(archive.read(prefix + "linux/slopfab"), linux_bytes)
                 self.assertIn(b"Meta Platforms", archive.read(prefix + "licenses/demucs-LICENSE.txt"))
                 manifest = json.loads(archive.read(prefix + "package.json"))
+                self.assertEqual(manifest["version"], "1.2.3")
+                self.assertEqual(archive.read(prefix + "VERSION"), b"1.2.3\n")
                 self.assertEqual(manifest["binaries"]["linux/slopfab"]["sha256"], hashlib.sha256(linux_bytes).hexdigest())
+                for platform in ("windows", "linux"):
+                    for filename in ("MOD.md", "main.js", "catalog.json"):
+                        self.assertEqual(archive.read(prefix + f"{platform}/mods/download/{filename}"),
+                                         (ROOT / "examples/mods/download" / filename).read_bytes())
                 for line in archive.read(prefix + "SHA256SUMS").decode().splitlines():
                     digest, relative = line.split("  ", 1)
                     self.assertEqual(hashlib.sha256(archive.read(prefix + relative)).hexdigest(), digest)
@@ -51,6 +57,10 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(archive.extractfile(prefix + "windows/slopfab.exe").read(), win_bytes)
                 self.assertEqual(archive.extractfile(prefix + "linux/slopfab").read(), linux_bytes)
                 self.assertTrue(archive.getmember(prefix + "linux/slopfab").mode & 0o111)
+                for platform in ("windows", "linux"):
+                    catalog = json.load(archive.extractfile(prefix + f"{platform}/mods/download/catalog.json"))
+                    self.assertIn("whisper", catalog)
+                    self.assertIn("minimaxh3", catalog)
             self.assertEqual(len(list((root / "out").iterdir())), 2)
 
 

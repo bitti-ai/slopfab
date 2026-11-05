@@ -170,8 +170,12 @@ do not need to support Linux permissions or shared-library symlinks.
 
 Archives contain `linux/slopfab`, `windows/slopfab.exe`, available C API libraries
 and headers under each platform directory, documentation, licenses and SHA-256
-checksums. `tools/package_bundle.py` can package existing `dist/windows` and
-`dist/linux` builds without rebuilding. It refuses single-platform packages.
+checksums. The download mod is installed beside each executable under
+`mods/download/`. `tools/package_bundle.py` (or `package.cmd` on Windows) packages
+existing `build/Release` and `build/linux-cli` outputs without rebuilding; use
+`--windows-dir dist/windows --linux-dir dist/linux` for `build.cmd` outputs.
+The package version comes from the root `VERSION` file, currently `0.1.0`.
+It refuses single-platform packages.
 The tokenizer
 and Vulkan shaders are compiled in. Model weights, adapters, NVIDIA/Vulkan
 drivers, CUDA libraries, libpng/libjpeg runtimes are external dependencies. The

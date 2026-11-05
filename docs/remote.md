@@ -182,11 +182,31 @@ merged into the local manifest. `--project-item` replaces only the remote item.
 
 ## Packaging and checks
 
-Release archives always contain both platform binaries. `package.cmd` builds
-Windows and Linux through the existing build driver. `package.sh` builds Linux
-and requires a prebuilt Windows directory. `python tools/package_bundle.py`
-packages existing `dist/windows` and `dist/linux` builds into ZIP and tar.gz
-archives, with a binary manifest, checksums, documentation and licenses. Missing
+Release archives always contain both platform binaries. `package.cmd` packages
+the current `build/Release` Windows and `build/linux-cli` Linux outputs without
+rebuilding. It requires Python 3.10+ and can be run from any working directory.
+`VERSION` defines the build and package version, currently `0.1.0` (separate
+from the C ABI version). Run `package.cmd --help` for options:
+
+```bat
+package.cmd
+package.cmd --windows-dir dist/windows --linux-dir dist/linux
+package.cmd --windows-dir "D:\builds\windows" --linux-dir "D:\builds\linux" --output-dir dist
+```
+
+The archives are `dist/slopfab-0.1.0-windows-linux-x64.zip` and `.tar.gz`.
+Each includes `windows/slopfab.exe`, `linux/slopfab`, the download mod installed
+under each platform's `mods/download/`, available C API libraries and headers,
+a binary manifest, checksums, documentation and licenses. Run
+`windows\slopfab.exe download` or `./linux/slopfab download` after extraction.
+`--version MAJOR.MINOR.PATCH` overrides the archive version for one invocation.
+
+`package.sh` builds Linux and requires a prebuilt Windows directory.
+`python tools/package_bundle.py` is the same packaging entry point as `package.cmd`.
+Packaging uses the supplied binaries as-is; run `build.cmd` first if fresh builds
+are needed, then select its `dist/windows` and `dist/linux` outputs. Both binaries
+must support `slopfab run` and executable mods to use the bundled download command;
+packaging does not upgrade older binaries. Missing
 either executable is a packaging error. Native `cmake --install` and CI smoke
 test artifacts are development installations, not distributable releases.
 
