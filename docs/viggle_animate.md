@@ -115,6 +115,9 @@ lighting. A standalone portrait on white is not an equivalent input.
 
 ## Soundtrack preservation
 
+Attach a WAV with `--reference-video driving.y4m --driving-audio driving.wav`.
+The CLI aligns it to the reference clip from time zero, trimming excess samples
+or padding silence; see [reference media](reference_media.md#cli-adapter).
 `--preserve-driving-audio` encodes the driving soundtrack once, pads/truncates
 it to the aligned output duration plus one video frame, and takes the required
 normalized posterior-mean latents for each stereo channel. The target audio
@@ -128,7 +131,7 @@ it does not promise sample-identical PCM or establish the cause of earlier
 corrupted audio.
 
 ```sh
-slopfab generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.mp4 --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.mp4
+slopfab generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.y4m --driving-audio driving.wav --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.y4m
 ```
 
 Reference clips must be 2-15 seconds; trim longer sources first. The C API takes

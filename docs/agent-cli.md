@@ -66,6 +66,11 @@ For [vocal and stem separation](separation.md), use `slopfab separate FILE
 and writes drums, bass, other and vocals; `--two-stems vocals` writes vocals
 and an instrumental track. Discover options with `slopfab help separate`.
 
+To attach a soundtrack to a driving video, use `--reference-video clip.y4m
+--driving-audio clip.wav`. Add `--preserve-driving-audio` to pin it as target
+audio. JSON requests use `driving_audio`; [reference media](reference_media.md#cli-adapter)
+documents format validation, trim/pad behavior and recipe provenance.
+
 Use `slopfab run workflow.js -- ARGS` for [embedded JavaScript workflows](scripting.md).
 The `slopfab` host API handles files, HTTP, subprocesses (including FFmpeg), and
 all CLI operations through `slopfab.cli(args)`. `capabilities.data.scripting`

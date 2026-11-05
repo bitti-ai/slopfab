@@ -33,6 +33,15 @@ Store the same JSON as a string under SafeTensors metadata key `slopfab.conditio
 
 Sizes must be positive; token and frame limits must be nonnegative. Settings select existing implementations and cannot grant unsupported transformer capabilities. `video_first` currently requires one video, one image, an explicit prompt embedding and no continuation/refmods. `video_first` and `pin_target_audio` require `include_reference_audio=false`; pinning also requires a soundtrack and excludes continuation, still images and initial latents. Positive `fixed_prompt_tokens` requires `require_prompt_embedding=true`.
 
+The CLI accepts a settings file or inline JSON with `--conditioning-settings`;
+JSON requests may use an object under `options["conditioning-settings"]`.
+`--preserve-driving-audio` sets `pin_target_audio=true` and
+`include_reference_audio=false`, overriding model defaults. An explicit request
+for `include_reference_audio=true` or `pin_target_audio=false` is an error when
+the flag is present. This is independent of argument order. Use
+`--reference-video clip.y4m --driving-audio clip.wav` to attach the soundtrack;
+`--reference-audio` creates a separate reference and cannot supply pinned audio.
+
 `--animate` remains a compatibility preset resolved into these same fields. Metadata and explicit overrides can change its defaults while structural restrictions remain enforced. Preprocessing settings contribute to cache identity; sampling-only changes do not invalidate prompt or reference caches.
 
 The CLI now leaves an unspecified canvas to the shared planner, so model geometry and `canvas_from_reference_video` take effect. Its former forced 864x480 canvas is available with `--resolution 864x480`; ordinary H3 planning uses a 768 short edge capped to the trained area. See the sampling guide for the accompanying unified step default.

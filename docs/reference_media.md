@@ -68,25 +68,80 @@ include the audio VAE checkpoint identity.
 
 ## CLI adapter
 
-With `SLOPFAB_WITH_FFMPEG=ON`, the CLI accepts:
+The CLI reads native Y4M video and WAV audio. A separate audio reference remains
+independent of the video:
 
 ```text
-slopfab generate --prompt "A scene inspired by the references" --reference-video clip.mp4 --reference-audio sound.wav
+slopfab generate --prompt "A scene inspired by the references" --reference-video clip.y4m --reference-audio sound.wav
 ```
 
-This decodes the clip, includes its first audio stream when present, adds the
-separate audio reference, and generates using CUDA by default. Select Vulkan with
-`--inference-backend vulkan`. Supply the usual model and
-output options as needed. Add `--dry-run` to inspect the plan; its packed row
-count includes video and audio conditions. Reference videos require a video
-target of at least 22 frames; still-image output with a reference video is rejected.
+To attach a soundtrack to the video itself, use `--driving-audio`. Exactly one
+`--reference-video` is required; repeating the attachment option is an error.
+Use `--preserve-driving-audio` to pin the attached soundtrack as clean target
+audio throughout generation:
+
+```sh
+slopfab --agent generate --prompt "A scene following the driving clip" --reference-video clip03.y4m --driving-audio clip03.wav --preserve-driving-audio --out output/clip03.y4m
+```
+
+Supply the usual model and output options as needed. Select Vulkan with
+`--inference-backend vulkan`. Add `--dry-run` to inspect the resolved settings
+and attachment before generation. This works through `sf.cli([...])` in a
+Slopfab JavaScript workflow without a Python adapter.
+
+The WAV starts at time zero. The adapter preserves its sample rate and mono/stereo
+channels, trims excess samples from the end, or right-pads a short recording
+with silence to the video's duration. It keeps
+`floor(video_duration * sample_rate)` complete sample frames; a fractional final
+sample is omitted. The source can be shorter than two seconds or longer than
+the video. PCM16/24/32 and float32 are accepted; float samples must be finite
+and within [-1,1], otherwise the attachment is rejected rather than clipped.
+There is no source-offset option or automatic song-interval slicing: trim the
+desired interval externally before attaching it. MP4 soundtrack extraction is
+not part of this adapter.
+
+`--preserve-driving-audio` resolves `pin_target_audio=true` and defaults
+`include_reference_audio=false`. Explicit `include_reference_audio=true` or
+`pin_target_audio=false` in conditioning settings conflicts with the flag,
+regardless of argument order. Without the preserve flag, the attachment is
+ordinary reference-audio conditioning unless conditioning settings disable it.
+A standalone `--reference-audio` never satisfies the pinned soundtrack requirement;
+pinned mode accepts exactly one decoded video reference and no standalone audio.
+The existing continuation, still-image and initial-latent exclusions still apply.
+
+JSON requests expose the same attachment as `driving_audio` (or the advanced
+`options["driving-audio"]`, but do not supply both):
+
+```json
+{
+  "schema_version": 1,
+  "task": "video",
+  "prompt": "A scene following the driving clip",
+  "references": [{"type": "video", "path": "clip03.y4m"}],
+  "driving_audio": "clip03.wav",
+  "options": {"preserve-driving-audio": true}
+}
+```
+
+Plans and saved project generation recipes include `reference_attachments` in
+the resolved plan. Each entry records absolute video/audio paths, the consumed
+source interval `[source_start_seconds, source_end_seconds)`, clip timing,
+sample rate, channels, source/attached sample-frame counts and trim/pad counts.
+Resolved `conditioning.pin_target_audio` and `conditioning.include_reference_audio`
+are also recorded. Recipes retain the original arguments and working directory.
+
+Reference videos require a target of at least 22 frames; still-image output
+with a reference video is rejected. Pinned audio passes through the audio VAE;
+unchanged target latents do not imply sample-identical output PCM. Target-duration
+alignment after attachment remains the engine's existing trim/pad behavior.
 
 `src/cli/reference_decode.cpp` belongs to the executable, never the DLL. It
 reads progressive BT.709 limited-range 8-bit 4:2:0 Y4M video and mono/stereo
 PCM16/24/32 or float32 WAV audio without external processes. Convert compressed
 media externally. Video retains its native frame rate and has no embedded
-soundtrack; supply audio separately when supported. Existing limits remain:
-2?15 seconds, at most 8192 pixels per axis, 2 GiB decoded video and 256 MiB WAV
+soundtrack; `--driving-audio` attaches a separate WAV to that same object.
+Existing limits remain: 2–15 second reference clips, at most 8192 pixels per axis,
+2 GiB decoded video and 256 MiB WAV
 chunks. Still images use the platform decoder. Model preprocessing is shared
 with host-provided decoded inputs.
 

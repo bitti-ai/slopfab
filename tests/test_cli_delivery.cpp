@@ -137,7 +137,11 @@ int main() {
       request.prompt = "Project image";
       request.negative_prompt = "Unwanted lettering";
       request.music.lyrics = "Original lyrics\nSecond line";
+      request.seed = 42;
       agent().generation_arguments = {str("image"), str("--prompt"), str(request.prompt)};
+      agent().reference_attachments = {Value(Object{{"video_path", str("clip.y4m")},
+          {"audio_path", str("clip.wav")}, {"source_start_seconds", num(0)},
+          {"source_end_seconds", num(2)}, {"padded_frames", num(8000)}})};
       samples.audio = nullptr;
       auto generate = [&]() {
         prepare_project_generation(request, false, 1);
@@ -147,7 +151,7 @@ int main() {
         return record_project_generation(request,
                                          Value(Object{{"index", num(0)},
                                                       {"ok", Value(true)},
-                                                      {"plan", Value(Object{{"seed", str("42")}})},
+                                                      {"plan", plan_json(request, resolve_plan(request))},
                                                       {"artifacts", Value(delivery.artifacts)}}));
       };
       auto first = generate();
@@ -168,6 +172,13 @@ int main() {
               "project regeneration lost stable ID/history");
       require(item.find("generation")->find("plan")->find("seed")->as_string() == "42",
               "project recipe lost resolved seed");
+      const auto& attachment = item.find("generation")->find("plan")
+                                   ->find("reference_attachments")->as_array().at(0);
+      require(attachment.find("audio_path")->as_string() == "clip.wav" &&
+                  attachment.find("video_path")->as_string() == "clip.y4m" &&
+                  attachment.find("source_end_seconds")->as_number() == 2 &&
+                  attachment.find("padded_frames")->as_number() == 8000,
+              "project recipe lost driving soundtrack provenance");
       const auto& prompts = *item.find("generation")->find("prompts");
       require(prompts.find("prompt")->as_string() == "Revised project image" &&
                   prompts.find("negative_prompt")->as_string() == "Unwanted lettering" &&
@@ -198,6 +209,7 @@ int main() {
       agent().project.clear();
       agent().project_item.clear();
       agent().project_output.clear();
+      agent().reference_attachments.clear();
     }
     for (const auto& entry : std::filesystem::directory_iterator(root))
       require(entry.path().extension() != ".tmp", "temporary artifact was leaked");

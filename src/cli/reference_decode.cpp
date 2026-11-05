@@ -2,6 +2,7 @@
 #include "native_media.h"
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace slopfab::cli {
 ReferenceMedia decode_reference_file(const std::string& path, bool video, const char*) {
