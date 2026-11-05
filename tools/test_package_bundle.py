@@ -39,6 +39,7 @@ class PackageTests(unittest.TestCase):
             with zipfile.ZipFile(archives[0]) as archive:
                 self.assertEqual(archive.read(prefix + "windows/slopfab.exe"), win_bytes)
                 self.assertEqual(archive.read(prefix + "linux/slopfab"), linux_bytes)
+                self.assertIn(b"Meta Platforms", archive.read(prefix + "licenses/demucs-LICENSE.txt"))
                 manifest = json.loads(archive.read(prefix + "package.json"))
                 self.assertEqual(manifest["binaries"]["linux/slopfab"]["sha256"], hashlib.sha256(linux_bytes).hexdigest())
                 for line in archive.read(prefix + "SHA256SUMS").decode().splitlines():

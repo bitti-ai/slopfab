@@ -109,10 +109,10 @@ try {
             '-DSLOPFAB_BUILD_C_API=ON', '-DSLOPFAB_BUILD_TESTS=ON',
             '-DSLOPFAB_EMBED_TOKENIZER=ON', "-DSLOPFAB_TOKENIZER_FILE=$tokenizer")
         Invoke-Checked 'cmake' @('--build', $WindowsBuildDir, '--config', 'Release',
-            '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests', 'slopfab_whisper_tests', 'slopfab_remote_ssh_fixture',
+            '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests', 'slopfab_whisper_tests', 'slopfab_demucs_tests', 'slopfab_remote_ssh_fixture',
             '--parallel', "$Jobs")
         Invoke-Checked 'ctest' @('--test-dir', $WindowsBuildDir, '-C', 'Release',
-            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli|remote_cli|package_bundle)$')
+            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli|demucs|separate_cli|remote_cli|package_bundle)$')
 
         $destination = Join-Path $root 'dist\windows'
         New-Item -ItemType Directory -Path $destination -Force | Out-Null
@@ -124,6 +124,7 @@ try {
         Publish-File (Join-Path $root 'third_party\thorvg\LICENSE') (Join-Path $destination 'THORVG-LICENSE.txt')
         Publish-File (Join-Path $root 'third_party\thorvg\LODEPNG-LICENSE.txt') (Join-Path $destination 'LODEPNG-LICENSE.txt')
         Publish-File (Join-Path $root 'third_party\whisper\LICENSE') (Join-Path $destination 'WHISPER-LICENSE.txt')
+        Publish-File (Join-Path $root 'third_party\demucs\LICENSE') (Join-Path $destination 'DEMUCS-LICENSE.txt')
         $hashes = foreach ($name in @('slopfab.exe', 'slopfab.dll', 'slopfab_c.lib', 'capi.h')) {
             $digest = (Get-FileHash -LiteralPath (Join-Path $destination $name) -Algorithm SHA256).Hash.ToLowerInvariant()
             "$digest  $name"
@@ -136,7 +137,7 @@ try {
         @("slopfab C API $($version -join '.')", 'Windows x64 Release; CUDA 12.8; Vulkan enabled',
             'CUDA targets: sm_86 and sm_120a; full tokenizer embedded',
             "Source: $root", "Build directory: $WindowsBuildDir", "Built UTC: $([DateTime]::UtcNow.ToString('o'))",
-            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup, whisper, transcribe_cli') |
+            'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup, whisper, transcribe_cli, demucs, separate_cli') |
             Set-Content -LiteralPath (Join-Path $destination 'build-info.txt') -Encoding UTF8
         Write-Host "build: wrote $destination\slopfab.exe and slopfab.dll"
     }

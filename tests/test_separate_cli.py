@@ -1,6 +1,7 @@
 """Offline separation checks with a tiny, synthetic HTDemucs checkpoint."""
 import json
 import math
+import shutil
 from pathlib import Path
 import struct
 import subprocess
@@ -10,7 +11,7 @@ import tempfile
 exe = str(Path(sys.argv[1]).resolve())
 
 
-def checkpoint(path, dtype="F32", mutate=None):
+def checkpoint(path, dtype="F32", mutate=None, metadata=None):
     tensors = {}
 
     def tensor(name, shape, values=None):
@@ -61,6 +62,8 @@ def checkpoint(path, dtype="F32", mutate=None):
     if mutate:
         mutate(tensors)
     header, payload = {}, bytearray()
+    if metadata is not None:
+        header["__metadata__"] = metadata
     for name, (shape, values) in tensors.items():
         values = values or [0.] * math.prod(shape)
         if dtype == "BF16":
@@ -127,6 +130,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-separate-") as directory:
         instrumental = read_wav(root / dtype / "instrumental.wav")
         assert max(abs(a-b) for a, b in zip(vocals, four[3])) < 1e-6
         assert max(abs(v+i-a) for v, i, a in zip(vocals, instrumental, audio)) < 3e-7
+    run(*base, "--two-stems", "bass", "--backend", "auto", "--out", "bass")
+    bass = read_wav(root / "bass/bass.wav")
+    no_bass = read_wav(root / "bass/no_bass.wav")
+    assert max(abs(v+i-a) for v, i, a in zip(bass, no_bass, audio)) < 3e-7
     before = (root / "four/vocals.wav").read_bytes()
     run(*base, "--out", "four", ok=False)
     assert (root / "four/vocals.wav").read_bytes() == before
@@ -147,6 +154,16 @@ with tempfile.TemporaryDirectory(prefix="slopfab-separate-") as directory:
     run("separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False)
     assert not list((root / "bad").glob("*.wav"))
     assert not list(root.rglob("*.tmp")) and not list(root.rglob("*.slopfab-reserved"))
+    for mutation, message in [
+        (lambda t: t.update({"encoder.0.conv.weight": ([8, 4, 7, 1], None)}), "shape"),
+        (lambda t: t.update({"unexpected.weight": ([1], None)}), "unsupported tensor"),
+        (lambda t: t.update({"tdecoder.3.conv_tr.bias": ([8], [float("nan")]*8)}), "non-finite tensor"),
+    ]:
+        checkpoint(root / "bad.safetensors", mutate=mutation)
+        result = run("separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False)
+        assert message in result.stderr, result.stderr
+    checkpoint(root / "bad.safetensors", metadata={"sources": "vocals,other,bass,drums"})
+    assert "incompatible metadata" in run("separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False).stderr
     # Silence, a single mono sample, and non-finite input must all terminate safely.
     wav(root / "silence.wav", [0.] * 16, channels=1)
     run("separate", "silence.wav", "--model", "model.safetensors", "--out", "silence")
@@ -156,5 +173,16 @@ with tempfile.TemporaryDirectory(prefix="slopfab-separate-") as directory:
     assert len(read_wav(root / "one/vocals.wav")) == 2
     wav(root / "nan.wav", [float("nan"), 0.])
     run("separate", "nan.wav", "--model", "model.safetensors", ok=False)
+    wav(root / "rate.wav", [0.1 * math.sin(t * 0.1) for t in range(960)], channels=1, rate=48000)
+    run("separate", "rate.wav", "--model", "model.safetensors", "--ffmpeg", "missing-ffmpeg", ok=False)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        subprocess.run([ffmpeg, "-nostdin", "-v", "error", "-i", str(root / "rate.wav"),
+                        str(root / "compressed.flac")], check=True, timeout=20)
+        for source in ("rate.wav", "compressed.flac"):
+            run("separate", source, "--model", "model.safetensors", "--segment", "0.05",
+                "--out", source + "-stems", "--ffmpeg", ffmpeg)
+            assert len(read_wav(root / (source + "-stems") / "vocals.wav")) == 882 * 2
+    assert not list(root.rglob("*.tmp")) and not list(root.rglob("*.slopfab-reserved"))
 
 print("Demucs CLI separation, dtypes, reconstruction, validation and output protection passed")

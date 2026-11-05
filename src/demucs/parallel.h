@@ -8,6 +8,8 @@
 namespace slopfab::demucs {
 // Native threads keep packaged CLIs independent of OpenMP runtime libraries.
 template <class Function> void parallel_for(int count, Function function) {
+  if (count <= 0)
+    return;
   unsigned workers =
       std::min(unsigned(count), std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
   std::vector<std::thread> threads;

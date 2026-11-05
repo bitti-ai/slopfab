@@ -80,3 +80,5 @@ The first command compares a small synthetic HTDemucs network against PyTorch;
 the second uses the released checkpoint. Both compare the STFT, inverse STFT,
 complete network and overlapping chunks, using a short inference window to
 keep the checks practical on CPU.
+Add `--segment 7.8` to verify the full trained window, including a partial final
+chunk. This takes longer than the default short-window check.

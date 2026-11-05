@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--real", action="store_true")
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--segment", type=float, default=0.08,
+                        help="verification window in seconds; 7.8 tests the trained duration")
     args = parser.parse_args()
     import torch
     from safetensors.torch import save_file, load_file
@@ -47,7 +49,9 @@ def main():
     if args.exe is None:
         parser.error("verify requires --exe")
     # Include non-multiple lengths, stereo asymmetry, DC and a partial tail.
-    segment = 0.08
+    segment = args.segment
+    if not 0.05 <= segment <= 7.8:
+        parser.error("segment must be 0.05..7.8")
     model.segment = segment
     length = int(segment * 44100)
     wave = torch.randn(1, 2, length) * 0.1 + 0.03
