@@ -156,7 +156,7 @@ NativeVideo read_y4m(const std::string& path) {
   return result;
 }
 
-ReferenceAudio read_wav(const std::string& path) {
+ReferenceAudio read_wav(const std::string& path, bool clamp_samples) {
   std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
   uint8_t head[12];
   read(in, head, 12);
@@ -216,7 +216,7 @@ ReferenceAudio read_wav(const std::string& path) {
     }
     if (!std::isfinite(v))
       throw std::invalid_argument("non-finite WAV sample");
-    result.interleaved[i] = std::clamp(v, -1.0f, 1.0f);
+    result.interleaved[i] = clamp_samples ? std::clamp(v, -1.0f, 1.0f) : v;
   }
   return result;
 }

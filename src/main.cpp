@@ -9,6 +9,7 @@
 #include "cli/projects.h"
 #include "cli/prompting.h"
 #include "cli/transcribe.h"
+#include "cli/separate.h"
 #include "cli/remote.h"
 #include <cstdio>
 #include <set>
@@ -143,6 +144,8 @@ int cli_main(int argc, char** argv) {
       return prompts_command(args);
     if (command == "transcribe")
       return transcribe_command(args);
+    if (command == "separate")
+      return separate_command(args);
     if (command == "projects")
       return projects_command(args);
     if (command == "remote")

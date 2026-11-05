@@ -87,6 +87,19 @@ const CommandHelp kCommands[] = {
      "Models, sources and inputs stay remote. See docs/remote.md for setup and packaging.\n"},
     {"fetch", "slopfab fetch PATH/remote.json", "Retry result downloads without rerunning the remote command.",
      "Uses the saved SSH connection and checksums. Verified local files are skipped.\n"},
+    {"separate", "slopfab separate FILE --model MODEL.safetensors [options]",
+     "Separate vocals or four stems with native HTDemucs from safetensors weights.",
+     "  --model FILE                standard HTDemucs state_dict safetensors (or model folder)\n"
+     "  --out DIRECTORY             default output/<input-name>-stems\n"
+     "  --two-stems NAME            vocals, drums, bass or other; default writes all four\n"
+     "                              vocals writes vocals.wav and instrumental.wav\n"
+     "  --segment SECONDS           0.05..7.8 (default 7.8); shorter can reduce quality\n"
+     "  --overlap FRACTION          0..0.9 (default 0.25), triangular overlap-add\n"
+     "  --backend cpu|auto          native FP32 CPU inference; no GPU backend yet\n"
+     "  --ffmpeg PATH               decoder/resampler for non-44.1kHz WAV and other media\n"
+     "  --overwrite                 replace existing stems\n"
+     "Outputs are stereo 44.1kHz float32 WAV, without clipping or per-stem normalization.\n"
+     "Two-stem accompaniment is the input minus the selected stem. See docs/separation.md.\n"},
     {"transcribe", "slopfab transcribe FILE --model MODEL.safetensors [options]",
      "Transcribe speech or song vocals locally with native Whisper and embedded model assets.",
      "  --model FILE                standard Hugging Face Whisper safetensors (or model folder)\n"

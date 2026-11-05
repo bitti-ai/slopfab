@@ -16,5 +16,5 @@ struct NativeVideo {
 };
 
 NativeVideo read_y4m(const std::string& path);
-ReferenceAudio read_wav(const std::string& path);
+ReferenceAudio read_wav(const std::string& path, bool clamp_samples = true);
 }

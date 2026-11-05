@@ -6,7 +6,8 @@
 
 namespace slopfab::demucs {
 void validate_options(const Options& o) {
-  if (o.model.empty()) throw std::invalid_argument("Demucs: a safetensors model is required");
+  if (o.model.empty())
+    throw std::invalid_argument("Demucs: a safetensors model is required");
   if (!std::isfinite(o.segment) || o.segment < 0.05 || o.segment > 7.8)
     throw std::invalid_argument("Demucs: segment must be between 0.05 and 7.8 seconds");
   if (!std::isfinite(o.overlap) || o.overlap < 0 || o.overlap > 0.9)
@@ -18,9 +19,11 @@ Result separate(const std::vector<float>& stereo, const Options& o) {
   if (stereo.empty() || stereo.size() % 2 || stereo.size() > (1ull << 28))
     throw std::invalid_argument("Demucs: expected nonempty stereo PCM (at most 1 GiB)");
   for (float v : stereo)
-    if (!std::isfinite(v)) throw std::invalid_argument("Demucs: non-finite input audio");
+    if (!std::isfinite(v))
+      throw std::invalid_argument("Demucs: non-finite input audio");
   auto progress = [&](double fraction, const std::string& stage) {
-    if (o.progress && !o.progress(fraction, stage)) throw std::runtime_error("Demucs: cancelled");
+    if (o.progress && !o.progress(fraction, stage))
+      throw std::runtime_error("Demucs: cancelled");
   };
   progress(0, "loading Demucs");
   Model model(o.model);
@@ -42,7 +45,8 @@ Result separate(const std::vector<float>& stereo, const Options& o) {
   }
   float scale = float(std::sqrt(variance / std::max(1, length - 1)));
   // Constant/anti-phase stereo must not divide by zero.
-  if (scale < 1e-8f) scale = 1;
+  if (scale < 1e-8f)
+    scale = 1;
   if (silent) {
     progress(1, "complete");
     return result;
@@ -72,7 +76,8 @@ Result separate(const std::vector<float>& stereo, const Options& o) {
       for (int s = 0; s < 4; ++s)
         for (int c = 0; c < 2; ++c) {
           float v = stems.at(2 * s + c, 0, t + left);
-          if (!std::isfinite(v)) throw std::runtime_error("Demucs: non-finite model output");
+          if (!std::isfinite(v))
+            throw std::runtime_error("Demucs: non-finite model output");
           result.stems[s][size_t(offset + t) * 2 + c] += weight[t] * v;
         }
     }

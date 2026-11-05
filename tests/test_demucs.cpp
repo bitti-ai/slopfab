@@ -7,9 +7,12 @@
 
 using namespace slopfab;
 using namespace slopfab::demucs;
+
 void require(bool ok, const char* text) {
-  if (!ok) throw std::runtime_error(text);
+  if (!ok)
+    throw std::runtime_error(text);
 }
+
 int main(int argc, char** argv) {
   try {
     if (argc == 6 && std::string(argv[1]) == "probe") {
@@ -21,14 +24,16 @@ int main(int argc, char** argv) {
       wave.v = to_f32(pcm);
       auto spec = spectrogram(wave);
       auto inverse = inverse_spectrogram(spec, wave.t);
-      auto out = model.forward(wave, [](const std::string&) {});
+      auto out = model.forward(wave, [](const std::string&) {
+      });
       Options options;
       options.model = argv[2];
       options.segment = std::stod(argv[5]);
       auto mixed = to_f32(input.at("mixed"));
       auto separated = separate(mixed, options);
       std::vector<float> stems;
-      for (const auto& stem : separated.stems) stems.insert(stems.end(), stem.begin(), stem.end());
+      for (const auto& stem : separated.stems)
+        stems.insert(stems.end(), stem.begin(), stem.end());
       write_safetensors(argv[4], {{"spec", {spec.c, spec.f, spec.t}, spec.v},
                                   {"inverse", {inverse.c, inverse.t}, inverse.v},
                                   {"output", {4, 2, wave.t}, out.v},
@@ -44,7 +49,8 @@ int main(int argc, char** argv) {
       require(spec.c == 4 && spec.f == 2048 && spec.t == (length + 1023) / 1024,
               "spectrogram shape");
       auto inverse = inverse_spectrogram(spec, length);
-      for (float v : inverse.v) require(std::isfinite(v), "inverse finite");
+      for (float v : inverse.v)
+        require(std::isfinite(v), "inverse finite");
       if (length == 8192) {
         // Dropped Nyquist and zero exterior STFT frames affect the edges.
         for (int t = 2048; t < length - 2048; ++t)
@@ -58,22 +64,44 @@ int main(int argc, char** argv) {
     for (double segment : {0., -1., 8., double(INFINITY), double(NAN)}) {
       options.segment = segment;
       bool rejected = false;
-      try { validate_options(options); } catch (const std::invalid_argument&) { rejected = true; }
+      try {
+        validate_options(options);
+      } catch (const std::invalid_argument&) {
+        rejected = true;
+      }
       require(rejected, "invalid segment accepted");
     }
     options.segment = 7.8;
     for (double overlap : {-0.1, 1., double(INFINITY), double(NAN)}) {
       options.overlap = overlap;
       bool rejected = false;
-      try { validate_options(options); } catch (const std::invalid_argument&) { rejected = true; }
+      try {
+        validate_options(options);
+      } catch (const std::invalid_argument&) {
+        rejected = true;
+      }
       require(rejected, "invalid overlap accepted");
     }
     options.overlap = 0.25;
     for (const std::vector<float>& input : {std::vector<float>{}, {1}, {NAN, 0}}) {
       bool rejected = false;
-      try { separate(input, options); } catch (const std::invalid_argument&) { rejected = true; }
+      try {
+        separate(input, options);
+      } catch (const std::invalid_argument&) {
+        rejected = true;
+      }
       require(rejected, "invalid audio accepted");
     }
+    options.progress = [](double, const std::string&) {
+      return false;
+    };
+    bool cancelled = false;
+    try {
+      separate({0, 0}, options);
+    } catch (const std::runtime_error& e) {
+      cancelled = std::string(e.what()).find("cancelled") != std::string::npos;
+    }
+    require(cancelled, "cancellation must precede model loading");
     std::cout << "Demucs spectral and validation checks passed\n";
     return 0;
   } catch (const std::exception& e) {

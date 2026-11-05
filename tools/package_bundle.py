@@ -56,7 +56,7 @@ def package(windows: Path, linux: Path, destination: Path, version: str):
                             ignore=shutil.ignore_patterns("AGENTS.md*"))
         licenses = stage / "licenses"
         licenses.mkdir()
-        for dependency in ("sageattention", "motioncache", "vulkan", "seedvr2", "quickjs", "thorvg", "whisper"):
+        for dependency in ("sageattention", "motioncache", "vulkan", "seedvr2", "quickjs", "thorvg", "whisper", "demucs"):
             source = ROOT / "third_party" / dependency / ("LICENSE.md" if dependency == "vulkan" else "LICENSE")
             shutil.copyfile(source, licenses / f"{dependency}-LICENSE.txt")
         shutil.copyfile(ROOT / "third_party/thorvg/LODEPNG-LICENSE.txt", licenses / "LODEPNG-LICENSE.txt")

@@ -8,7 +8,6 @@ Only export/--real downloads and deserializes the official upstream checkpoint.
 The application itself reads safetensors directly and does not use Python.
 """
 import argparse
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -69,8 +68,7 @@ def main():
                   str(root / "input.safetensors"))
         subprocess.run([str(args.exe.resolve()), "probe", str(root / "model.safetensors"),
                         str(root / "input.safetensors"), str(root / "output.safetensors"),
-                        str(segment)], check=True,
-                       env={**os.environ, "OMP_NUM_THREADS": str(args.threads)})
+                        str(segment)], check=True)
         actual = load_file(str(root / "output.safetensors"))
         for key, reference in {"spec": spec, "inverse": inverse, "output": output,
                                "separated": separated}.items():

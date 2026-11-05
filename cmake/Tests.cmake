@@ -21,6 +21,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME separate_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_separate_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(separate_cli PROPERTIES LABELS synthetic TIMEOUT 90)
     add_executable(slopfab_remote_ssh_fixture tests/remote_ssh_fixture.cpp)
     add_test(NAME remote_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remote_cli.py" "$<TARGET_FILE:slopfab>"

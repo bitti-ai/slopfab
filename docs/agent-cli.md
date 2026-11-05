@@ -61,6 +61,11 @@ can provide a download command. `capabilities` reports compiled support; `doctor
 available devices. `models list` reports files, which does not prove checkpoint
 compatibility or that inference fits in memory.
 
+For [vocal and stem separation](separation.md), use `slopfab separate FILE
+--model MODEL.safetensors --out DIRECTORY`. Standard HTDemucs runs on the CPU
+and writes drums, bass, other and vocals; `--two-stems vocals` writes vocals
+and an instrumental track. Discover options with `slopfab help separate`.
+
 Use `slopfab run workflow.js -- ARGS` for [embedded JavaScript workflows](scripting.md).
 The `slopfab` host API handles files, HTTP, subprocesses (including FFmpeg), and
 all CLI operations through `slopfab.cli(args)`. `capabilities.data.scripting`
