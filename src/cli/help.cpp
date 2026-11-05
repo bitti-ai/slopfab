@@ -70,6 +70,21 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"remote", "slopfab remote generate OPTIONS -- GENERATION_ARGS | remote fetch RECEIPT",
+     "Generate over SSH using an existing remote project and download only result artifacts.",
+     "  --host HOST                 SSH alias or user@hostname (required)\n"
+     "  --directory PATH            absolute remote working directory (required)\n"
+     "  --platform posix|windows    remote operating system (default posix; WSL uses posix)\n"
+     "  --executable PATH           remote slopfab executable (default slopfab on PATH)\n"
+     "  --local-dir DIR             local download root (default output/remote)\n"
+     "  --local-project NAME        register downloaded results in an existing local project\n"
+     "  --ssh PATH                  local OpenSSH client (default ssh on PATH)\n"
+     "  -- GENERATION_ARGS          arguments for remote generate; paths refer to remote files\n"
+     "  fetch RECEIPT               retry downloads from a saved remote.json without regenerating\n"
+     "Requires matching slopfab installations and SSH key/agent authentication. Configure ports,\n"
+     "keys and jump hosts in SSH config. No source, models or reference inputs are synchronized.\n"
+     "Downloads use a unique run directory; existing local files are never overwritten.\n"
+     "See docs/remote.md for Linux/Windows examples and local project registration.\n"},
     {"transcribe", "slopfab transcribe FILE --model MODEL.safetensors [options]",
      "Transcribe speech or song vocals locally with native Whisper and embedded model assets.",
      "  --model FILE                standard Hugging Face Whisper safetensors (or model folder)\n"

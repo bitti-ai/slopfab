@@ -9,6 +9,7 @@
 #include "cli/projects.h"
 #include "cli/prompting.h"
 #include "cli/transcribe.h"
+#include "cli/remote.h"
 #include <cstdio>
 #include <set>
 #ifdef _WIN32
@@ -21,6 +22,9 @@
 using namespace slopfab::cli;
 
 int cli_main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "remote" &&
+      (std::string(argv[2]) == "_run" || std::string(argv[2]) == "_fetch"))
+    return remote_worker(argv[0], std::string(argv[2]) == "_fetch");
 #ifdef _WIN32
   SetConsoleOutputCP(CP_UTF8);
   SetConsoleCP(CP_UTF8);
@@ -116,6 +120,8 @@ int cli_main(int argc, char** argv) {
       return transcribe_command(args);
     if (command == "projects")
       return projects_command(args);
+    if (command == "remote")
+      return remote_command(args);
     if (command == "settings")
       return settings_command(args);
     if (command == "generate" || command == "validate") {

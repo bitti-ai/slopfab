@@ -606,4 +606,20 @@ Value record_project_generation(const GenerateRequest& request, const Value& res
       {"manifest_path", str((directory / "project.json").u8string())},
       {"index_path", str((directory / "index.html").u8string())}});
 }
+
+Value register_remote_generation(const fs::path& directory, const std::string& id,
+                                 const std::string& source, const Value& recipe) {
+  identifier(id);
+  // A successful registration may precede a local receipt update. Retrying a
+  // transfer must not create another item or overwrite subsequent local edits.
+  auto project = load(directory);
+  for (const auto& item : project.find("items")->as_array()) {
+    if (field(item, "id") != id) continue;
+    const auto* generation = item.find("generation");
+    if (generation && field(*generation, "remote_receipt") == field(recipe, "remote_receipt"))
+      return item;
+    invalid("remote import item ID is already in use: " + id);
+  }
+  return change_item(directory, "add", id, Options{{"--file", source}}, recipe);
+}
 }
