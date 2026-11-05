@@ -63,7 +63,7 @@ cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DSLOPFAB_EMBED_TOKENIZER=ON "-DSLOPFAB_TOKENIZER_FILE=$root/ref/text_encoder/tokenizer.json"
 cmake --build "$build_dir" --config Release --parallel "$jobs" \
   --target slopfab slopfab_c slopfab_capi_tests slopfab_embedded_tokenizer_tests slopfab_startup_tests slopfab_whisper_tests slopfab_demucs_tests slopfab_reference_decode_tests slopfab_remote_ssh_fixture
-ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli|demucs|separate_cli|reference_decode|driving_audio_cli|remote_cli|package_bundle)$'
+ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|download_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli|demucs|separate_cli|reference_decode|driving_audio_cli|remote_cli|package_bundle)$'
 
 major=$(awk '/^#define SLOPFAB_CAPI_VERSION_MAJOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')
 minor=$(awk '/^#define SLOPFAB_CAPI_VERSION_MINOR / {print $3}' "$root/include/slopfab/capi.h" | tr -d '\r')
@@ -108,7 +108,7 @@ publish "$root/third_party/thorvg/LODEPNG-LICENSE.txt" LODEPNG-LICENSE.txt
   printf 'CUDA targets: sm_86 and sm_120a; full tokenizer embedded\n'
   printf 'Source: %s\nBuild directory: %s\nCUDA compiler: %s\n' "$root" "$build_dir" "$cuda_compiler"
   printf 'Built UTC: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup, whisper, transcribe_cli, demucs, separate_cli, reference_decode, driving_audio_cli\n'
+  printf 'Tests passed: capi, embedded_tokenizer, agent_cli, agent_instructions_cli, prompting_cli, settings_cli, mods_cli, scripting_cli, download_cli, motions_cli, frames_cli, clipproj_cli, projects_cli, cli_startup, whisper, transcribe_cli, demucs, separate_cli, reference_decode, driving_audio_cli\n'
   printf 'CUDA driver and matching toolkit shared libraries are external dependencies.\n'
 } > "$destination/build-info.txt"
 printf 'build: wrote %s/slopfab and libslopfab.so (ABI %s)\n' "$destination" "$version"

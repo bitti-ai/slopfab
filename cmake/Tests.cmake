@@ -26,6 +26,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME download_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_download_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(download_cli PROPERTIES LABELS synthetic TIMEOUT 120)
     add_test(NAME driving_audio_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_driving_audio_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(driving_audio_cli PROPERTIES LABELS synthetic TIMEOUT 60)

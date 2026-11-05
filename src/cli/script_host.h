@@ -33,4 +33,18 @@ private:
 
 Value script_http(const std::string& url, const Value& options, const std::string& destination,
                   const std::function<void()>& check);
+
+// Native streaming callbacks; workers never enter the JavaScript runtime.
+struct HttpStream {
+  std::function<void(int, const Object&)> headers;
+  std::function<void(const char*, size_t)> write;
+};
+
+Value script_http_request(const std::string& url, const Value& options,
+                          const std::string& destination, const std::function<void()>& check,
+                          HttpStream* stream = nullptr);
+Value script_download(const std::string& url, const Value& options, const std::string& destination,
+                      const std::function<void()>& check);
+void publish_http_download(const std::filesystem::path& temporary,
+                           const std::filesystem::path& destination, bool overwrite);
 }

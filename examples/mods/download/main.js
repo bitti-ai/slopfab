@@ -11,7 +11,9 @@ export default ([model, fileId, destination, ...extra]) => {
   const file = entry.files.find(item => item.id === fileId);
   if (!file) throw Error(`Unknown file: ${fileId}. List files with slopfab download ${model}`);
   sf.fs.mkdir(sf.path.dirname(sf.path.resolve(destination)));
-  const downloaded = sf.http.download(file.url, destination, {timeoutMs: 7200000});
+  const downloaded = sf.http.download(file.url, destination,
+    {timeoutMs: 7200000, resume: true, connections: 4, retries: 2});
   return {model, file: file.id, path: downloaded.path, bytes: downloaded.bytes,
+    connections: downloaded.connections, resumedBytes: downloaded.resumedBytes,
     sha256: sf.sha256(downloaded.path)};
 };

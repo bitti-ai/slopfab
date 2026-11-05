@@ -21,9 +21,22 @@ struct Transfer {
   std::function<void()> check;
   std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
   uint64_t timeout = 300000, limit = 16 * 1024 * 1024, bytes = 0;
-  std::string body, failure;
+  std::string body;
+  std::exception_ptr failure;
   std::ofstream file;
   Object headers;
+  HttpStream* stream = nullptr;
+  int status = 0;
+  bool accepted = false;
+
+  void accept(int code) {
+    status = code;
+    if (accepted)
+      return;
+    if (stream)
+      stream->headers(status, headers);
+    accepted = true;
+  }
 
   void tick() {
     check();
@@ -35,8 +48,14 @@ struct Transfer {
 
   void write(const char* data, size_t size) {
     tick();
+    // libcurl can deliver redirect bodies before the final response.
+    if (status >= 300 && status < 400)
+      return;
     bytes += size;
-    if (file.is_open()) {
+    if (stream) {
+      accept(status);
+      stream->write(data, size);
+    } else if (file.is_open()) {
       file.write(data, std::streamsize(size));
       if (!file)
         throw std::runtime_error("cannot write HTTP download");
@@ -50,6 +69,16 @@ struct Transfer {
   void header(std::string line) {
     if (line.rfind("HTTP/", 0) == 0) {
       headers.clear();
+      accepted = false;
+      bytes = 0;
+      std::istringstream response(line);
+      std::string protocol;
+      response >> protocol >> status;
+      return;
+    }
+    if (line == "\r\n" || line == "\n") {
+      if (status >= 200 && !(status >= 300 && status < 400))
+        accept(status);
       return;
     }
     const auto colon = line.find(':');
@@ -76,10 +105,41 @@ void valid_header(const std::string& value) {
 
 Value script_http(const std::string& url, const Value& options, const std::string& destination,
                   const std::function<void()>& check) {
+  if (!destination.empty()) {
+    const auto connections = script_uint(options, "connections", 1);
+    if (connections < 1 || connections > 16)
+      throw std::runtime_error("download connections must be 1..16");
+  }
+  if (!destination.empty() &&
+      (script_bool(options, "resume") || script_uint(options, "connections", 1) > 1))
+    return script_download(url, options, destination, check);
+  return script_http_request(url, options, destination, check);
+}
+
+void publish_http_download(const fs::path& temporary, const fs::path& path, bool overwrite) {
+#ifdef _WIN32
+  if (!MoveFileExW(temporary.c_str(), path.c_str(),
+                   MOVEFILE_WRITE_THROUGH | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0)))
+    throw std::runtime_error("cannot publish download");
+#else
+  if (overwrite)
+    fs::rename(temporary, path);
+  else {
+    if (::link(temporary.c_str(), path.c_str()) != 0)
+      throw std::runtime_error("cannot publish download (destination exists or is unwritable)");
+    fs::remove(temporary);
+  }
+#endif
+}
+
+Value script_http_request(const std::string& url, const Value& options,
+                          const std::string& destination, const std::function<void()>& check,
+                          HttpStream* stream) {
   if ((url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0) ||
       url.find('\0') != std::string::npos)
     throw std::runtime_error("HTTP URL must use http:// or https://");
   Transfer transfer;
+  transfer.stream = stream;
   transfer.check = check;
   transfer.timeout = script_uint(options, "timeoutMs", transfer.timeout);
   transfer.limit = script_uint(options, "maxBytes", transfer.limit);
@@ -127,8 +187,8 @@ Value script_http(const std::string& url, const Value& options, const std::strin
                                  nullptr, nullptr, 0);
     if (!session.handle)
       throw std::runtime_error("cannot create HTTP session");
-    const int timeout =
-        int(std::min<uint64_t>(transfer.timeout ? transfer.timeout : 60000, INT_MAX));
+    const int timeout = int(
+        std::min<uint64_t>(transfer.timeout ? transfer.timeout : 60000, stream ? 15000 : INT_MAX));
     WinHttpSetTimeouts(session.handle, timeout, timeout, timeout, timeout);
     connection.handle = WinHttpConnect(session.handle, host.c_str(), parts.nPort, 0);
     const auto wide_method = fs::u8path(method).wstring();
@@ -172,6 +232,7 @@ Value script_http(const std::string& url, const Value& options, const std::strin
           transfer.header(line);
       }
     }
+    transfer.accept(status);
     char chunk[65536];
     DWORD received;
     for (;;) {
@@ -213,6 +274,8 @@ Value script_http(const std::string& url, const Value& options, const std::strin
                      long(std::min<uint64_t>(transfer.timeout, LONG_MAX)));
     curl_easy_setopt(curl.handle, CURLOPT_USERAGENT, "slopfab-workflows/1");
     curl_easy_setopt(curl.handle, CURLOPT_CUSTOMREQUEST, method.c_str());
+    if (method == "HEAD")
+      curl_easy_setopt(curl.handle, CURLOPT_NOBODY, 1L);
     if (!body.empty()) {
       curl_easy_setopt(curl.handle, CURLOPT_POSTFIELDS, body.data());
       curl_easy_setopt(curl.handle, CURLOPT_POSTFIELDSIZE_LARGE, curl_off_t(body.size()));
@@ -232,8 +295,8 @@ Value script_http(const std::string& url, const Value& options, const std::strin
           try {
             t.write(p, s * n);
             return s * n;
-          } catch (const std::exception& e) {
-            t.failure = e.what();
+          } catch (...) {
+            t.failure = std::current_exception();
             return 0;
           }
         });
@@ -245,8 +308,8 @@ Value script_http(const std::string& url, const Value& options, const std::strin
           try {
             t.header(std::string(p, s * n));
             return s * n;
-          } catch (const std::exception& e) {
-            t.failure = e.what();
+          } catch (...) {
+            t.failure = std::current_exception();
             return 0;
           }
         });
@@ -259,18 +322,20 @@ Value script_http(const std::string& url, const Value& options, const std::strin
           try {
             t.tick();
             return 0;
-          } catch (const std::exception& e) {
-            t.failure = e.what();
+          } catch (...) {
+            t.failure = std::current_exception();
             return 1;
           }
         });
     const auto rc = curl_easy_perform(curl.handle);
+    if (transfer.failure)
+      std::rethrow_exception(transfer.failure);
     if (rc != CURLE_OK)
-      throw std::runtime_error(transfer.failure.empty() ? curl_easy_strerror(rc)
-                                                        : transfer.failure);
+      throw std::runtime_error(curl_easy_strerror(rc));
     long code = 0;
     curl_easy_getinfo(curl.handle, CURLINFO_RESPONSE_CODE, &code);
     status = int(code);
+    transfer.accept(status);
 #endif
     transfer.tick();
     if (!destination.empty()) {
@@ -279,19 +344,7 @@ Value script_http(const std::string& url, const Value& options, const std::strin
       transfer.file.close();
       if (!transfer.file)
         throw std::runtime_error("cannot finish download");
-#ifdef _WIN32
-      if (!MoveFileExW(temporary.c_str(), path.c_str(),
-                       MOVEFILE_WRITE_THROUGH | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0)))
-        throw std::runtime_error("cannot publish download");
-#else
-      if (overwrite)
-        fs::rename(temporary, path);
-      else {
-        if (::link(temporary.c_str(), path.c_str()) != 0)
-          throw std::runtime_error("cannot publish download (destination exists or is unwritable)");
-        fs::remove(temporary);
-      }
-#endif
+      publish_http_download(temporary, path, overwrite);
     }
     return Value(Object{{"status", num(status)},
                         {"ok", Value(status >= 200 && status < 300)},
