@@ -1,13 +1,421 @@
 {
   "minimaxh3": {
     "source": "https://huggingface.co/Comfy-Org/MiniMax-H3",
-    "note": "Choose one transformer and a compatible text encoder plus video/audio VAEs; listing does not guarantee local backend compatibility.",
+    "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Singularity and Singularity v2 use the Turbo LoRA; Animate also needs animate-conditioning and the Viggle Animate LoRA from minimaxh3-loras. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained.",
     "files": [
-      {"id": "fl2va-w6a8", "role": "transformer", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors"},
-      {"id": "ref2va-bf16", "role": "transformer", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_bf16.safetensors"},
-      {"id": "text-bf16", "role": "text_encoder", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_bf16.safetensors"},
-      {"id": "video-vae", "role": "vae", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors"},
-      {"id": "audio-vae", "role": "vae", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors"}
+      {
+        "id": "fl2va-w6a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_w6a8.safetensors",
+        "minVramGb": 16
+      },
+      {
+        "id": "ref2va-bf16",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_bf16.safetensors"
+      },
+      {
+        "id": "text-bf16",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_bf16.safetensors"
+      },
+      {
+        "id": "video-vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors",
+        "minVramGb": 6
+      },
+      {
+        "id": "audio-vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors",
+        "minVramGb": 1
+      },
+      {
+        "id": "fl2va-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "minVramGb": 21
+      },
+      {
+        "id": "fl2va-w4a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI/resolve/main/minimax_h3_fl2va_pruned-w4a8_convrot_pruned.safetensors",
+        "minVramGb": 13
+      },
+      {
+        "id": "text-nvfp4",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "minVramGb": 16
+      },
+      {
+        "id": "ref2va-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "minVramGb": 21
+      },
+      {
+        "id": "ref2va-w4a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/koongrizzly/MiniMax_H3_int4_W4A8_ConvRot_Pruned/resolve/main/diffusion_models/minimax_h3_ref2va_hybrid_b20-49_pruned_w4a8_mixed.safetensors",
+        "minVramGb": 13
+      },
+      {
+        "id": "ref2va-w6a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_w6a8.safetensors",
+        "minVramGb": 16
+      },
+      {
+        "id": "fasth3-omni-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/FastVideo/FastH3-Omni-Comfy/resolve/main/diffusion_models/fasth3_omniref_8step_pruned_int8_convrot.safetensors",
+        "minVramGb": 22
+      },
+      {
+        "id": "fasth3-omni-w4a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/berryber09/FastH3-OmniRef-8step-pruned-w4a8/resolve/main/fasth3_omniref_8step_pruned_w4a8.safetensors",
+        "minVramGb": 17
+      },
+      {
+        "id": "video-vae-int8",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors",
+        "minVramGb": 3
+      },
+      {
+        "id": "singularity-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/WarmBloodAban/Minimax-h3_Singularity/resolve/main/Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors",
+        "minVramGb": 21
+      },
+      {
+        "id": "singularity-w4a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/WarmBloodAban/Minimax-h3_Singularity/resolve/main/Minimax-h3_Singularity_ref2va_v1.3_Pruned_w4a8.safetensors",
+        "minVramGb": 12
+      },
+      {
+        "id": "singularity-v2-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/WAS/Minimax-h3_Singularity_v2_pruned/resolve/main/Minimax-h3_Singularity_ref2va_v2_pruned_int8_convrot_r2.safetensors",
+        "minVramGb": 21
+      },
+      {
+        "id": "singularity-v2-w6a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/WAS/Minimax-h3_Singularity_v2_pruned/resolve/main/Minimax-h3_Singularity_ref2va_v2_pruned_w6a8_r2.safetensors",
+        "minVramGb": 16
+      },
+      {
+        "id": "singularity-v2-w4a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/WAS/Minimax-h3_Singularity_v2_pruned/resolve/main/Minimax-h3_Singularity_ref2va_v2_pruned_w4a8.safetensors",
+        "minVramGb": 12
+      },
+      {
+        "id": "animate-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/Viggle-Animate-pruned_rank8_int8_convrot.safetensors",
+        "minVramGb": 21
+      },
+      {
+        "id": "animate-conditioning",
+        "role": "prompt_embedding",
+        "url": "https://huggingface.co/drbaph/Viggle-Animate-ComfyUI/resolve/main/text_cond/fixed_embed_fwd_anyframe.safetensors",
+        "name": "Animate conditioning"
+      },
+      {
+        "id": "sol-h3-vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Efficient-Large-Model/Sol-H3-VAE/resolve/main/sol_h3_vae.safetensors",
+        "minVramGb": 6
+      }
+    ],
+    "name": "MiniMax H3"
+  },
+  "moss-image": {
+    "files": [
+      {
+        "id": "int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_sft_int8_convrot.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "text-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/text_encoders/qwen3.5_9b_int8_convrot.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "image-vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/vae/flux2-vae_small.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "tokenizer",
+        "role": "tokenizer",
+        "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/resolve/main/tokenizer/tokenizer.json",
+        "minVramGb": 0
+      }
+    ],
+    "name": "MOSS Image",
+    "note": "Download the transformer, text encoder, image VAE and tokenizer.",
+    "source": "https://huggingface.co/Comfy-Org/MOSS-Image"
+  },
+  "fibo2": {
+    "files": [
+      {
+        "id": "edit-turbo-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_edit_turbo_int8_convrot.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "text-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/text_encoders/qwen3vl_4b_int8_convrot.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "image-vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/vae/flux2-vae.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "base-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_dev_int8_convrot.safetensors",
+        "minVramGb": 0
+      }
+    ],
+    "name": "Fibo 2.0",
+    "note": "Choose Edit Turbo or Base, plus the text encoder and image VAE.",
+    "source": "https://huggingface.co/Comfy-Org/Fibo-2.0"
+  },
+  "yue2": {
+    "files": [
+      {
+        "id": "bf16",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/YuE2/resolve/main/checkpoints/yue2_3b_bf16.safetensors",
+        "minVramGb": 9
+      },
+      {
+        "id": "int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/YuE2/resolve/main/checkpoints/yue2_3b_int8_convrot.safetensors",
+        "minVramGb": 0
+      }
+    ],
+    "name": "YuE2",
+    "note": "Choose one transformer precision.",
+    "source": "https://huggingface.co/Comfy-Org/YuE2"
+  },
+  "minimax-music3": {
+    "files": [
+      {
+        "id": "fp32",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/diffusion_models/minimax_music3_dit_fp32.safetensors",
+        "minVramGb": 10
+      },
+      {
+        "id": "fp16",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/diffusion_models/minimax_music3_dit_fp16.safetensors",
+        "minVramGb": 5
+      },
+      {
+        "id": "int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
+        "minVramGb": 3
+      },
+      {
+        "id": "text-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
+        "minVramGb": 9
+      },
+      {
+        "id": "audio-vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/vae/minimax_music3_dav.safetensors",
+        "minVramGb": 1
+      }
+    ],
+    "name": "MiniMax Music3",
+    "note": "Choose one transformer precision, plus the text encoder and audio VAE.",
+    "source": "https://huggingface.co/Comfy-Org/MiniMax-Music-3"
+  },
+  "krea2": {
+    "files": [
+      {
+        "id": "turbo-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_int8_convrot.safetensors",
+        "minVramGb": 14
+      },
+      {
+        "id": "text-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_int8_convrot.safetensors",
+        "minVramGb": 5
+      },
+      {
+        "id": "image-vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/vae/qwen_image_vae.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "raw-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_raw_int8_convrot.safetensors",
+        "minVramGb": 14
+      }
+    ],
+    "name": "Krea 2",
+    "note": "Choose Turbo or Raw, plus the text encoder and Qwen-Image VAE. The tokenizer is embedded in Slopfab.",
+    "source": "https://huggingface.co/Comfy-Org/Krea-2"
+  },
+  "minimaxh3-loras": {
+    "files": [
+      {
+        "id": "taomate-3step",
+        "role": "lora",
+        "url": "https://huggingface.co/CZMartin22/TaoMate-H3-3step-ComfyUI/resolve/main/TaoMate-H3-3step-ComfyUI.safetensors",
+        "name": "TaoMate 3-Step",
+        "stepOverride": 3
+      },
+      {
+        "id": "turbo-4step",
+        "role": "lora",
+        "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+        "name": "Turbo",
+        "stepOverride": 4
+      },
+      {
+        "id": "viggle-animate-4step",
+        "role": "lora",
+        "url": "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/viggle_animate_distillation_bf16.safetensors",
+        "name": "Viggle Animate Distillation",
+        "stepOverride": 4
+      },
+      {
+        "id": "lightx2v-turbo-6step",
+        "role": "lora",
+        "url": "https://huggingface.co/silveroxides/MiniMax-H3_tests/resolve/main/experimental/minimax_h3_fl2v_lightx2v_turbo_4to8step_v0.1-v1.0_768p_v4_step600_dareties.safetensors",
+        "name": "LightX2V Turbo",
+        "stepOverride": 6
+      },
+      {
+        "id": "dmad-4step",
+        "role": "lora",
+        "url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors",
+        "name": "DMAD 4-Step",
+        "samplingPreset": "dmad-4step"
+      },
+      {
+        "id": "pika-h3-flex-fl2va",
+        "role": "lora",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/pika_h3_flex_fl2va_v1_bf16.safetensors",
+        "name": "Pika H3 First/Last",
+        "samplingPreset": "pika-6step"
+      },
+      {
+        "id": "pika-h3-flex-ref2va",
+        "role": "lora",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/pika_h3_flex_ref2va_v1_bf16.safetensors",
+        "name": "Pika H3 Reference",
+        "samplingPreset": "pika-6step"
+      },
+      {
+        "id": "hyperflow-8step",
+        "role": "lora",
+        "url": "https://huggingface.co/VideoRebirthAI/hyperflow/resolve/main/minimax_h3_hyperflow_8step_v1.0.safetensors",
+        "name": "Hyperflow 8-Step",
+        "stepOverride": 8
+      }
+    ],
+    "name": "MiniMax H3 LoRAs",
+    "note": "Optional H3 adapters. stepOverride and samplingPreset describe Slopus defaults; downloading does not configure generation or prepare companion sampling grids.",
+    "source": "https://huggingface.co/Comfy-Org/MiniMax-H3"
+  },
+  "realesrgan": {
+    "files": [
+      {
+        "id": "model",
+        "role": "upscaler",
+        "url": "https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged/resolve/main/RealESRGAN_x4plus.safetensors",
+        "name": "RealESRGAN x4plus"
+      }
+    ],
+    "name": "Real-ESRGAN",
+    "note": "RealESRGAN x4plus image/video upscaler.",
+    "source": "https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged"
+  },
+  "seedvr2": {
+    "files": [
+      {
+        "id": "model",
+        "role": "upscaler",
+        "url": "https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/diffusion_models/seedvr2_3b_fp16.safetensors",
+        "name": "SeedVR2 3B FP16"
+      },
+      {
+        "id": "vae",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/vae/seedvr2_ema_vae_fp16.safetensors",
+        "name": "SeedVR2 VAE"
+      }
+    ],
+    "name": "SeedVR2",
+    "note": "Download both the 3B FP16 model and VAE.",
+    "source": "https://huggingface.co/Comfy-Org/SeedVR2"
+  },
+  "latent-upscale": {
+    "files": [
+      {
+        "id": "model",
+        "role": "upscaler",
+        "url": "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors",
+        "name": "MiniMax H3 latent upscaler"
+      }
+    ],
+    "name": "MiniMax H3 latent upscaler",
+    "note": "FP16 latent upscaler for MiniMax H3.",
+    "source": "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler"
+  },
+  "taeh3": {
+    "files": [
+      {
+        "id": "model",
+        "role": "vae",
+        "url": "https://raw.githubusercontent.com/madebyollin/taehv/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeh3.safetensors",
+        "name": "TAEH3 preview VAE"
+      }
+    ],
+    "name": "TAEH3 generation previews",
+    "note": "Preview VAE pinned to the same upstream revision as Slopus.",
+    "source": "https://github.com/madebyollin/taehv/tree/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c"
+  },
+  "whisper": {
+    "name": "Whisper",
+    "source": "https://huggingface.co/openai/whisper-large-v3-turbo",
+    "note": "Standard Hugging Face safetensors for native Slopfab transcription. Tokenizer and mel assets are embedded; pass the downloaded file to transcribe --model.",
+    "files": [
+      {
+        "id": "large-v3-turbo",
+        "role": "speech_recognition",
+        "url": "https://huggingface.co/openai/whisper-large-v3-turbo/resolve/main/model.safetensors"
+      }
     ]
   }
 }
