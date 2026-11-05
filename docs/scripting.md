@@ -94,6 +94,7 @@ when overriding PATH for a child.
 | `cwd` | Current directory. |
 | `env` | Object overriding inherited variables; `null` deletes a variable. |
 | `stdin` | Text supplied on stdin; otherwise empty/EOF. |
+| `stdinFile` | Stream an existing file to stdin, relative to child `cwd`; mutually exclusive with `stdin`. |
 | `stdoutFile`, `stderrFile` | Redirect to files relative to child `cwd`, replacing them; the corresponding returned string is empty. |
 | `maxOutputBytes` | 16 MiB per captured stream; redirect large/binary output to files. |
 | `timeoutMs` | 0 (no child timeout); enforced when polling/waiting. |

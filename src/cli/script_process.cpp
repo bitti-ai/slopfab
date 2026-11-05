@@ -181,8 +181,15 @@ Value ScriptProcesses::spawn(const std::vector<std::string>& argv, const Value& 
   child->err = err.empty() ? child->directory / "stderr" : fs::absolute(cwd / fs::u8path(err));
   if (child->out == child->err)
     throw std::runtime_error("stdoutFile and stderrFile must differ");
-  const auto input = child->directory / "stdin";
-  {
+  const auto input_file = script_string(options, "stdinFile");
+  no_nul(input_file);
+  if (!input_file.empty() && options.find("stdin"))
+    throw std::runtime_error("stdin and stdinFile are mutually exclusive");
+  const auto input = input_file.empty() ? child->directory / "stdin"
+                                        : fs::absolute(cwd / fs::u8path(input_file));
+  if (!input_file.empty() && (input == child->out || input == child->err))
+    throw std::runtime_error("stdinFile must differ from output files");
+  if (input_file.empty()) {
     std::ofstream f(input, std::ios::binary);
     const auto data = script_string(options, "stdin");
     f.write(data.data(), std::streamsize(data.size()));

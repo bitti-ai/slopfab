@@ -44,11 +44,11 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
   _setmode(_fileno(stdout), _O_BINARY);
 #endif
-  if (decoded.find("_fetch") != std::string::npos && std::getenv("SLOPFAB_TEST_TRUNCATE")) {
+  if (decoded.find("_ssh-fetch") != std::string::npos && std::getenv("SLOPFAB_TEST_TRUNCATE")) {
     std::fwrite("broken", 1, 6, stdout);
     return 0;
   }
-  if (decoded.find("_run") != std::string::npos) {
+  if (decoded.find("_ssh-run") != std::string::npos) {
     if (const auto* reply = std::getenv("SLOPFAB_TEST_REPLY")) {
       std::ifstream input(reply, std::ios::binary);
       char bytes[4096];

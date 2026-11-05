@@ -70,21 +70,23 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
-    {"remote", "slopfab remote generate OPTIONS -- GENERATION_ARGS | remote fetch RECEIPT",
-     "Generate over SSH using an existing remote project and download only result artifacts.",
-     "  --host HOST                 SSH alias or user@hostname (required)\n"
-     "  --directory PATH            absolute remote working directory (required)\n"
-     "  --platform posix|windows    remote operating system (default posix; WSL uses posix)\n"
-     "  --executable PATH           remote slopfab executable (default slopfab on PATH)\n"
-     "  --local-dir DIR             local download root (default output/remote)\n"
-     "  --local-project NAME        register downloaded results in an existing local project\n"
-     "  --ssh PATH                  local OpenSSH client (default ssh on PATH)\n"
-     "  -- GENERATION_ARGS          arguments for remote generate; paths refer to remote files\n"
-     "  fetch RECEIPT               retry downloads from a saved remote.json without regenerating\n"
-     "Requires matching slopfab installations and SSH key/agent authentication. Configure ports,\n"
-     "keys and jump hosts in SSH config. No source, models or reference inputs are synchronized.\n"
-     "Downloads use a unique run directory; existing local files are never overwritten.\n"
-     "See docs/remote.md for Linux/Windows examples and local project registration.\n"},
+    {"remote", "slopfab remote setup|show|update|remove NAME | remote list",
+     "Configure SSH hosts and install/update their executable from the bundled Windows/Linux binaries.",
+     "  setup NAME --directory PATH  register a host and provision slopfab in its existing project\n"
+     "  --host SSH_HOST              SSH alias or user@hostname (default NAME)\n"
+     "  --platform linux|windows     inferred from --directory when omitted; WSL uses linux\n"
+     "  --binary-dir PACKAGE_ROOT    local folder containing windows/slopfab.exe and linux/slopfab\n"
+     "  --ssh PATH                   local SSH client (default ssh on PATH)\n"
+     "  show NAME | list             inspect saved connections\n"
+     "  update NAME                 verify/upload the current bundled executable\n"
+     "  remove NAME                 forget a connection; retain remote files\n"
+     "Execute regular commands with --host NAME (alias --remote NAME), for example:\n"
+     "  slopfab generate --host gpu image --prompt \"A red apple\"\n"
+     "  slopfab devices --host gpu\n"
+     "Each invocation verifies the remote binary checksum and installs an update when needed.\n"
+     "Models, sources and inputs stay remote. See docs/remote.md for setup and packaging.\n"},
+    {"fetch", "slopfab fetch PATH/remote.json", "Retry result downloads without rerunning the remote command.",
+     "Uses the saved SSH connection and checksums. Verified local files are skipped.\n"},
     {"transcribe", "slopfab transcribe FILE --model MODEL.safetensors [options]",
      "Transcribe speech or song vocals locally with native Whisper and embedded model assets.",
      "  --model FILE                standard Hugging Face Whisper safetensors (or model folder)\n"
@@ -617,6 +619,8 @@ const CommandHelp* find_command(std::string_view name) {
 // True when the argument list asks for help. Checked before any other option,
 // so `--help` works even alongside otherwise invalid arguments.
 bool option_takes_value(std::string_view a, std::string_view command) {
+  if (a == "--host" || a == "--remote" || a == "--download-dir" ||
+      a == "--download" || a == "--local-project") return true;
   if (command == "transcribe" && (a == "--word-timestamps" || a == "--no-context"))
     return false;
   if (command == "prompts" && (a == "--layout" || a == "--instrumental" || a == "--continuation"))
@@ -684,6 +688,9 @@ bool wants_help(int argc, char** argv, std::string_view command) {
 
 int print_command_help(const CommandHelp& c) {
   const std::string next =
+      "Remote execution: --host NAME (or --remote NAME) uses a saved SSH host. "
+      "--download-dir DIR chooses local results; --download PATH collects an extra remote output. "
+      "--local-project NAME imports generation results locally. See slopfab help remote.\n"
       "Add --agent for NDJSON responses and generation progress. Use schema for JSON requests; capabilities for supported tasks; doctor for setup checks.";
   if (agent().enabled) {
     emit({{"type", str("help")},

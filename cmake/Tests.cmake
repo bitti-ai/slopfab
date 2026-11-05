@@ -22,6 +22,9 @@ if(SLOPFAB_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remote_cli.py" "$<TARGET_FILE:slopfab>"
       "$<TARGET_FILE:slopfab_remote_ssh_fixture>")
     set_tests_properties(remote_cli PROPERTIES LABELS synthetic TIMEOUT 120)
+    add_test(NAME package_bundle COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_package_bundle.py")
+    set_tests_properties(package_bundle PROPERTIES LABELS synthetic TIMEOUT 30)
     add_test(NAME transcribe_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_transcribe_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(transcribe_cli PROPERTIES LABELS synthetic TIMEOUT 60)

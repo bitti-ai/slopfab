@@ -22,15 +22,16 @@
 using namespace slopfab::cli;
 
 int cli_main(int argc, char** argv) {
-  if (argc == 3 && std::string(argv[1]) == "remote" &&
-      (std::string(argv[2]) == "_run" || std::string(argv[2]) == "_fetch"))
-    return remote_worker(argv[0], std::string(argv[2]) == "_fetch");
+  if (argc == 2 && (std::string(argv[1]) == "_ssh-run" || std::string(argv[1]) == "_ssh-fetch"))
+    return remote_worker(argv[0], std::string(argv[1]) == "_ssh-fetch");
 #ifdef _WIN32
   SetConsoleOutputCP(CP_UTF8);
   SetConsoleCP(CP_UTF8);
 #endif
   bool machine = false;
   std::vector<std::string> args;
+  std::string remote_host, download_directory, local_project;
+  std::vector<std::string> downloads;
   try {
     for (int i = 1; i < argc; ++i) {
       const std::string a = argv[i];
@@ -40,6 +41,22 @@ int cli_main(int argc, char** argv) {
       }
       if (a == "--agent") {
         machine = true;
+        continue;
+      }
+      // `remote setup --host ...` configures the SSH destination; everywhere
+      // else these global flags route the regular command to a saved host.
+      if ((args.empty() || args.front() != "remote") &&
+          (a == "--host" || a == "--remote" || a == "--download-dir" ||
+           a == "--local-project" || a == "--download")) {
+        if (++i == argc) throw CliError("INVALID_REQUEST", "missing value for " + a);
+        if (a == "--download") downloads.push_back(argv[i]);
+        else {
+          auto& value = a == "--host" || a == "--remote" ? remote_host :
+                        a == "--download-dir" ? download_directory : local_project;
+          if (!value.empty()) throw CliError("INVALID_REQUEST", "duplicate remote option: " + a);
+          value = argv[i];
+          if (value.empty()) throw CliError("INVALID_REQUEST", "empty value for " + a);
+        }
         continue;
       }
       if (a == "--config" || a == "--jobs-dir") {
@@ -61,6 +78,10 @@ int cli_main(int argc, char** argv) {
     }
     initialize_agent(machine,
                      std::filesystem::absolute(std::filesystem::u8path(argv[0])).u8string());
+    if (!remote_host.empty())
+      return remote_execute(remote_host, args, download_directory, local_project, downloads);
+    if (!download_directory.empty() || !local_project.empty() || !downloads.empty())
+      throw CliError("INVALID_REQUEST", "download options require --host or --remote");
     ensure_agent_instructions();
     ensure_settings();
     if (args.empty()) {
@@ -122,6 +143,8 @@ int cli_main(int argc, char** argv) {
       return projects_command(args);
     if (command == "remote")
       return remote_command(args);
+    if (command == "fetch")
+      return remote_fetch(args);
     if (command == "settings")
       return settings_command(args);
     if (command == "generate" || command == "validate") {

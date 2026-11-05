@@ -1,4 +1,5 @@
 #include "remote.h"
+#include "remote_transport.h"
 #include "commands.h"
 #include "agent_instructions.h"
 #include "settings.h"
@@ -18,7 +19,6 @@
 #endif
 
 namespace slopfab::cli {
-namespace {
 namespace fs = std::filesystem;
 
 std::string field(const Value& v, const char* key, const std::string& fallback = {}) {
@@ -26,7 +26,7 @@ std::string field(const Value& v, const char* key, const std::string& fallback =
   return p ? p->as_string() : fallback;
 }
 
-std::string digest(const fs::path& path) {
+std::string remote_digest(const fs::path& path) {
   static const char hex[] = "0123456789abcdef";
   std::string result;
   for (auto byte : sha256_file(path.u8string())) {
@@ -61,7 +61,7 @@ void no_nul(const std::string& s) {
     throw CliError("INVALID_REQUEST", "remote arguments cannot contain NUL");
 }
 
-std::string shell_quote(const std::string& s) {
+std::string remote_shell_quote(const std::string& s) {
   no_nul(s);
   std::string out = "'";
   for (char c : s)
@@ -69,42 +69,13 @@ std::string shell_quote(const std::string& s) {
   return out + "'";
 }
 
-std::vector<std::string> ssh_arguments(const Value& connection, bool fetch) {
+std::vector<std::string> remote_ssh(const Value& connection, const std::string& command) {
   const auto host = field(connection, "host");
   if (host.empty() || host.front() == '-' ||
       host.find_first_not_of(
           "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-@:%[]") !=
           std::string::npos)
     throw CliError("INVALID_REQUEST", "--host must be an SSH alias or [user@]hostname");
-  auto exe = field(connection, "executable", "slopfab");
-  no_nul(exe);
-  if (exe.empty())
-    throw CliError("INVALID_REQUEST", "remote executable is empty");
-  const auto platform = field(connection, "platform", "posix");
-  const std::string action = fetch ? "_fetch" : "_run";
-  std::string command;
-  if (platform == "windows") {
-    // Start the native process with inherited binary handles. A PowerShell pipeline
-    // would decode/re-encode stdout and corrupt downloaded media.
-    const std::string script =
-        "$ErrorActionPreference='Stop';$p=New-Object System.Diagnostics.Process;"
-        "$p.StartInfo.UseShellExecute=$false;$p.StartInfo.FileName="
-        "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" +
-        base64(exe) + "'));$p.StartInfo.Arguments='remote " + action +
-        "';[void]$p.Start();$p.WaitForExit();exit $p.ExitCode";
-    std::string wide;
-    for (char c : script) {
-      wide += c;
-      wide += '\0';
-    }
-    command = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + base64(wide);
-  } else if (platform == "posix") {
-    command = "exec " + shell_quote(exe) + " remote " + action;
-  } else {
-    throw CliError("INVALID_REQUEST", "--platform must be posix or windows");
-  }
-  // Use the user's SSH config for keys, ports, jump hosts and known hosts.
-  // stdin carries only the JSON control request, never project/input files.
   return {field(connection, "ssh", "ssh"),
           "-T",
           "-o",
@@ -117,6 +88,37 @@ std::vector<std::string> ssh_arguments(const Value& connection, bool fetch) {
           "ServerAliveCountMax=3",
           host,
           command};
+}
+
+std::vector<std::string> ssh_arguments(const Value& connection, bool fetch) {
+  auto exe = field(connection, "executable", "slopfab");
+  no_nul(exe);
+  if (exe.empty())
+    throw CliError("INVALID_REQUEST", "remote executable is empty");
+  const auto platform = field(connection, "platform", "posix");
+  const std::string action = fetch ? "fetch" : "run";
+  std::string command;
+  if (platform == "windows") {
+    // Start the native process with inherited binary handles. A PowerShell pipeline
+    // would decode/re-encode stdout and corrupt downloaded media.
+    const std::string script =
+        "$ErrorActionPreference='Stop';$p=New-Object System.Diagnostics.Process;"
+        "$p.StartInfo.UseShellExecute=$false;$p.StartInfo.FileName="
+        "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" +
+        base64(exe) + "'));$p.StartInfo.Arguments='_ssh-" + action +
+        "';[void]$p.Start();$p.WaitForExit();exit $p.ExitCode";
+    std::string wide;
+    for (char c : script) {
+      wide += c;
+      wide += '\0';
+    }
+    command = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + base64(wide);
+  } else if (platform == "posix" || platform == "linux") {
+    command = "exec " + remote_shell_quote(exe) + " _ssh-" + action;
+  } else {
+    throw CliError("INVALID_REQUEST", "--platform must be posix or windows");
+  }
+  return remote_ssh(connection, command);
 }
 
 struct Scratch {
@@ -134,18 +136,18 @@ struct Scratch {
 
 // Tail spooled streams while the child is running. ScriptProcesses handles
 // cancellation and process cleanup without blocking on either SSH pipe.
-int exchange(const Value& connection, const Value& request, const fs::path& output, bool fetch,
-             const std::function<void(const Value&)>& event = {}) {
-  const auto argv = ssh_arguments(connection, fetch);
+int remote_process(const std::vector<std::string>& argv, const Value& input, const fs::path& output,
+                   bool fetch, const std::function<void(const Value&)>& event) {
   Scratch scratch;
   auto errors = scratch.directory / "stderr.log";
   ScriptProcesses processes([] {
     if (cancelled())
       throw_cancelled();
   });
-  const auto child = processes.spawn(argv, Value(Object{{"stdin", str(json::stringify(request))},
-                                                        {"stdoutFile", str(output.u8string())},
-                                                        {"stderrFile", str(errors.u8string())}}));
+  auto options = input.as_object();
+  options["stdoutFile"] = str(output.u8string());
+  options["stderrFile"] = str(errors.u8string());
+  const auto child = processes.spawn(argv, Value(options));
   std::ifstream out, err(errors, std::ios::binary);
   if (!fetch)
     out.open(output, std::ios::binary);
@@ -196,6 +198,28 @@ int exchange(const Value& connection, const Value& request, const fs::path& outp
   }
 }
 
+int exchange(const Value& connection, const Value& request, const fs::path& output, bool fetch,
+             const std::function<void(const Value&)>& event = {}) {
+  return remote_process(ssh_arguments(connection, fetch),
+                        Value(Object{{"stdin", str(json::stringify(request))}}), output, fetch,
+                        event);
+}
+
+std::string remote_ps_string(const std::string& value) {
+  no_nul(value);
+  return "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + base64(value) + "'))";
+}
+
+std::string remote_powershell(const std::string& script) {
+  // Callers construct ASCII scripts, with any UTF-8 strings separately encoded.
+  std::string wide;
+  for (char c : "$ProgressPreference='SilentlyContinue';" + script) {
+    wide += c;
+    wide += '\0';
+  }
+  return "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + base64(wide);
+}
+
 std::string filename(std::string path) {
   std::replace(path.begin(), path.end(), '\\', '/');
   auto name = path.substr(path.find_last_of('/') + 1);
@@ -231,7 +255,27 @@ fs::path local_path(const fs::path& root, const std::string& relative) {
   return resolved;
 }
 
-Value collect(const Value& receipt, const fs::path& directory) {
+Value localize(const Value& value, const std::map<std::string, std::string>& paths) {
+  if (value.is_string()) {
+    auto found = paths.find(value.as_string());
+    return found == paths.end() ? value : str(found->second);
+  }
+  if (value.is_array()) {
+    Array result;
+    for (const auto& child : value.as_array())
+      result.push_back(localize(child, paths));
+    return Value(result);
+  }
+  if (value.is_object()) {
+    Object result;
+    for (const auto& child : value.as_object())
+      result[child.first] = localize(child.second, paths);
+    return Value(result);
+  }
+  return value;
+}
+
+Value collect(const Value& receipt, const fs::path& directory, bool provisioned = false) {
   auto manifest = receipt.as_object();
   const auto& connection = manifest.at("connection");
   auto artifacts = manifest.at("artifacts").as_array();
@@ -256,7 +300,7 @@ Value collect(const Value& receipt, const fs::path& directory) {
     if (entry.count("downloaded") && entry.at("downloaded").as_bool()) {
       if (!fs::is_regular_file(path) ||
           double(fs::file_size(path)) != entry.at("bytes").as_number() ||
-          digest(path) != entry.at("sha256").as_string())
+          remote_digest(path) != entry.at("sha256").as_string())
         throw CliError("OUTPUT_EXISTS", "downloaded artifact changed: " + path.u8string(), 6);
       continue;
     }
@@ -264,7 +308,7 @@ Value collect(const Value& receipt, const fs::path& directory) {
       // Recover a crash after publication but before the receipt was updated.
       if (!fs::is_regular_file(path) ||
           double(fs::file_size(path)) != entry.at("bytes").as_number() ||
-          digest(path) != entry.at("sha256").as_string())
+          remote_digest(path) != entry.at("sha256").as_string())
         throw CliError("OUTPUT_EXISTS", "refusing to replace local artifact: " + path.u8string(),
                        6);
       entry["downloaded"] = Value(true);
@@ -276,13 +320,17 @@ Value collect(const Value& receipt, const fs::path& directory) {
     fs::create_directories(path.parent_path());
     const auto temporary = path.parent_path() / (".download-" + unique_id() + ".tmp");
     try {
+      if (!provisioned) {
+        manifest["connection"] = remote_provision(manifest.at("connection"));
+        provisioned = true;
+      }
       const int status = exchange(
           connection, Value(Object{{"path", entry.at("remote")}, {"bytes", entry.at("bytes")}}),
           temporary, true);
       if (status || double(fs::file_size(temporary)) != entry.at("bytes").as_number() ||
-          digest(temporary) != entry.at("sha256").as_string())
+          remote_digest(temporary) != entry.at("sha256").as_string())
         throw CliError("TRANSFER_FAILED",
-                       "SSH download failed; retry with remote fetch " +
+                       "SSH download failed; retry with slopfab fetch " +
                            (directory / "remote.json").u8string(),
                        6, {}, true);
       // Hard-link publication is atomic and fails if another writer claimed the
@@ -342,6 +390,14 @@ Value collect(const Value& receipt, const fs::path& directory) {
     manifest["project_items"] = Value(items);
     manifest["index_path"] = str((project / "index.html").u8string());
   }
+  std::map<std::string, std::string> paths;
+  for (const auto& artifact : artifacts)
+    paths[field(artifact, "remote")] = local_path(directory, field(artifact, "local")).u8string();
+  // Preserve the regular command's response fields for callers using the same
+  // CLI locally and remotely. Keep original server paths in remote_result.
+  for (const auto& entry : manifest.at("remote_result").as_object())
+    if (!manifest.count(entry.first))
+      manifest[entry.first] = localize(entry.second, paths);
   manifest["type"] = str("result");
   manifest["ok"] = Value(true);
   manifest["receipt"] = str((directory / "remote.json").u8string());
@@ -349,12 +405,11 @@ Value collect(const Value& receipt, const fs::path& directory) {
   atomic_json(directory / "remote.json", Value(manifest));
   return Value(manifest);
 }
-}
 
-int remote_command(const std::vector<std::string>& args) {
+int remote_fetch(const std::vector<std::string>& args) {
   start_request();
-  if (args.size() == 2 && args[0] == "fetch") {
-    const auto receipt = fs::absolute(fs::u8path(args[1]));
+  if (args.size() == 1) {
+    const auto receipt = fs::absolute(fs::u8path(args[0]));
     if (receipt.filename() != "remote.json")
       throw CliError("INVALID_REQUEST", "fetch expects a remote.json receipt");
     FileLock lock(receipt.parent_path() / ".remote.lock");
@@ -366,53 +421,40 @@ int remote_command(const std::vector<std::string>& args) {
     emit(collect(value, receipt.parent_path()).as_object(), true);
     return 0;
   }
-  if (args.empty() || args[0] != "generate")
-    throw CliError("INVALID_REQUEST",
-                   "use remote generate OPTIONS -- GENERATION_ARGS or remote fetch RECEIPT");
-  Object connection;
-  fs::path destination = "output/remote";
-  std::string remote_directory;
-  std::string local_project;
-  size_t i = 1;
-  std::set<std::string> seen;
-  for (; i < args.size() && args[i] != "--"; ++i) {
-    auto option = args[i];
-    if (!seen.insert(option).second || i + 1 == args.size())
-      throw CliError("INVALID_REQUEST", "duplicate or missing value for " + option);
-    const auto value = args[++i];
-    no_nul(value);
-    if (option == "--host")
-      connection["host"] = str(value);
-    else if (option == "--platform")
-      connection["platform"] = str(value);
-    else if (option == "--executable")
-      connection["executable"] = str(value);
-    else if (option == "--ssh")
-      connection["ssh"] = str(value);
-    else if (option == "--directory")
-      remote_directory = value;
-    else if (option == "--local-dir")
-      destination = fs::u8path(value);
-    else if (option == "--local-project")
-      local_project = value;
-    else
-      throw CliError("INVALID_REQUEST", "unknown remote option: " + option);
-  }
-  if (remote_directory.empty() || i == args.size() || ++i == args.size())
-    throw CliError("INVALID_REQUEST",
-                   "remote generate requires --host, --directory and -- GENERATION_ARGS");
-  ssh_arguments(Value(connection), false); // Validate before creating a local run.
+  throw CliError("INVALID_REQUEST", "use slopfab fetch PATH/remote.json");
+}
+
+int remote_execute(const std::string& host, const std::vector<std::string>& args,
+                   const std::string& destination, const std::string& local_project,
+                   const std::vector<std::string>& downloads) {
+  start_request();
+  if (args.empty() || args[0] == "remote" || args[0] == "fetch" || args[0].rfind("_ssh-", 0) == 0 ||
+      args[0] == "worker")
+    throw CliError("INVALID_REQUEST", "select a regular command for remote execution");
+  if (args.size() > 1 && args[0] == "projects" && args[1] == "open")
+    throw CliError(
+        "INVALID_REQUEST",
+        "projects open launches a local browser; use projects show --host NAME or open a downloaded project locally");
   fs::path project;
   if (!local_project.empty()) {
+    if (args[0] != "generate" && args[0] != "wait" && args[0] != "status")
+      throw CliError("INVALID_REQUEST", "--local-project applies to generation results");
     project = project_directory(local_project);
-    read_json(project / "project.json"); // Fail before spending remote GPU time.
+    read_json(project / "project.json");
   }
-  Array arguments;
-  for (; i < args.size(); ++i) {
-    no_nul(args[i]);
-    arguments.push_back(str(args[i]));
+  const auto connection = remote_provision(remote_profile(host)).as_object();
+  const auto remote_directory = connection.at("directory").as_string();
+  Array arguments, requested_files;
+  for (const auto& arg : args) {
+    no_nul(arg);
+    arguments.push_back(str(arg));
   }
-  const auto directory = fs::absolute(destination) / unique_id();
+  for (const auto& file : downloads) {
+    no_nul(file);
+    requested_files.push_back(str(file));
+  }
+  const auto directory =
+      fs::absolute(fs::u8path(destination.empty() ? "output/remote" : destination)) / unique_id();
   fs::create_directories(directory);
   FileLock lock(directory / ".remote.lock");
   Scratch scratch;
@@ -421,29 +463,31 @@ int remote_command(const std::vector<std::string>& args) {
   emit({{"type", str("remote_started")},
         {"directory", str(directory.u8string())},
         {"host", connection.at("host")}});
-  const auto status =
-      exchange(Value(connection),
-               Value(Object{{"directory", str(remote_directory)}, {"arguments", Value(arguments)}}),
-               scratch.directory / "events.ndjson", false, [&](const Value& event) {
-                 const auto type = field(event, "type");
-                 if (type == "remote_manifest")
-                   ready = event;
-                 else if (type == "result" || type == "error")
-                   terminal = event;
-                 else
-                   emit({{"type", str("remote_event")}, {"event", event}});
-               });
-  if (status || terminal.is_null() || !terminal.find("ok") || !terminal.find("ok")->as_bool()) {
+  const auto status = exchange(Value(connection),
+                               Value(Object{{"directory", str(remote_directory)},
+                                            {"arguments", Value(arguments)},
+                                            {"downloads", Value(requested_files)}}),
+                               scratch.directory / "events.ndjson", false, [&](const Value& event) {
+                                 const auto type = field(event, "type");
+                                 if (type == "remote_manifest")
+                                   ready = event;
+                                 else if (type == "remote_response")
+                                   terminal = *event.find("response");
+                                 else if (type == "result" || type == "error")
+                                   terminal = event;
+                                 else
+                                   emit({{"type", str("remote_event")}, {"event", event}});
+                               });
+  if (status || terminal.is_null() || (terminal.find("ok") && !terminal.find("ok")->as_bool())) {
     Object error{
         {"type", str("error")},
         {"ok", Value(false)},
         {"remote", terminal},
         {"error",
-         Value(Object{
-             {"code", str("REMOTE_FAILED")},
-             {"message",
-              str("remote generation or SSH failed; inspect remote outputs before retrying")},
-             {"exit_code", num(status)}})}};
+         Value(Object{{"code", str("REMOTE_FAILED")},
+                      {"message",
+                       str("remote command or SSH failed; inspect remote outputs before retrying")},
+                      {"exit_code", num(status)}})}};
     emit(std::move(error), true);
     return status > 0 && status < 256 ? status : 1;
   }
@@ -488,8 +532,27 @@ int remote_command(const std::vector<std::string>& args) {
     receipt_fields["local_project"] = str(project.u8string());
   Value receipt(receipt_fields);
   atomic_json(directory / "remote.json", receipt);
-  emit(collect(receipt, directory).as_object(), true);
+  emit(collect(receipt, directory, true).as_object(), true);
   return 0;
+}
+
+// Traverse only result containers and explicit artifact descriptors. Never copy
+// model/reference paths or scan the working directory for changed files.
+void result_artifacts(const Value& value, std::set<std::string>& paths) {
+  if (value.is_array()) {
+    for (const auto& child : value.as_array())
+      result_artifacts(child, paths);
+    return;
+  }
+  if (!value.is_object())
+    return;
+  if (value.find("media_type") && value.find("path") && value.find("path")->is_string())
+    paths.insert(field(value, "path"));
+  if (const auto* output = value.find("output"); output && output->is_string())
+    paths.insert(output->as_string());
+  for (const char* key : {"artifacts", "results", "result", "data", "job"})
+    if (const auto* child = value.find(key))
+      result_artifacts(*child, paths);
 }
 
 int remote_worker(const std::string& executable, bool fetch) {
@@ -535,20 +598,58 @@ int remote_worker(const std::string& executable, bool fetch) {
       no_nul(value.as_string());
       arguments.push_back(value.as_string());
     }
-    const int status = run_generation_arguments(arguments);
+    if (arguments.empty() || arguments[0] == "remote" || arguments[0] == "fetch" ||
+        arguments[0] == "worker" || arguments[0].rfind("_ssh-", 0) == 0)
+      throw CliError("INVALID_REQUEST", "invalid remote command");
+    std::vector<std::string> child{executable, "--agent"};
+    child.insert(child.end(), arguments.begin(), arguments.end());
+    Scratch scratch;
+    Value response;
+    std::set<std::string> paths;
+    const int status = remote_process(child, Value(Object{}), scratch.directory / "events.ndjson",
+                                      false, [&](const Value& event) {
+                                        response = event;
+                                        if (field(event, "type") == "artifact")
+                                          result_artifacts(event, paths);
+                                        emit(event.as_object());
+                                      });
+    if (response.is_null())
+      throw CliError("REMOTE_PROTOCOL", "command produced no response", 6);
+    emit({{"type", str("remote_response")}, {"ok", Value(status == 0)}, {"response", response}});
     if (status)
-      return finish_command(status);
+      return status;
+    result_artifacts(response, paths);
+    // Older diagnostic writers return text rather than artifact metadata. Their
+    // explicit output flags are known outputs, unlike arbitrary input paths.
+    const std::set<std::string> legacy{"decode",      "upscale",       "upscale-latents",
+                                       "encode-text", "encode-refmod", "bundle-refmods",
+                                       "prepare-lora"};
+    if (legacy.count(arguments[0])) {
+      bool has_output = false;
+      for (size_t i = 1; i + 1 < arguments.size(); ++i) {
+        const auto option = arguments[i];
+        if (option == "--out" || option == "--output" || option == "--dump") {
+          paths.insert(arguments[++i]);
+          has_output = true;
+        } else if (option_takes_value(option, arguments[0]))
+          ++i;
+      }
+      if (arguments[0] == "decode" && !has_output)
+        paths.insert("out.y4m");
+    }
+    if (const auto* files = request.find("downloads"))
+      for (const auto& file : files->as_array())
+        paths.insert(file.as_string());
     Array artifacts;
-    for (const auto& result : agent().results) {
-      if (const auto* files = result.find("artifacts"))
-        for (const auto& artifact : files->as_array()) {
-          auto entry = artifact.as_object();
-          auto path = fs::absolute(fs::u8path(field(artifact, "path")));
-          entry["path"] = str(path.u8string());
-          entry["bytes"] = num(double(fs::file_size(path)));
-          entry["sha256"] = str(digest(path));
-          artifacts.emplace_back(entry);
-        }
+    for (const auto& name : paths) {
+      no_nul(name);
+      const auto path = fs::absolute(fs::u8path(name));
+      if (!fs::is_regular_file(path))
+        throw CliError("OUTPUT_FAILED", "reported remote output is missing: " + path.u8string(), 6);
+      artifacts.emplace_back(Object{{"path", str(path.u8string())},
+                                    {"bytes", num(double(fs::file_size(path)))},
+                                    {"sha256", str(remote_digest(path))},
+                                    {"media_type", str("application/octet-stream")}});
     }
     emit({{"type", str("remote_manifest")}, {"artifacts", Value(artifacts)}}, true);
     return 0;

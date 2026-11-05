@@ -41,7 +41,7 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/cli/script_bootstrap.js" SLOPFAB_SCRI
 string(REPLACE "\n" "\n)SLOPFAB_JS\"\nR\"SLOPFAB_JS(" SLOPFAB_SCRIPT_BOOTSTRAP "${SLOPFAB_SCRIPT_BOOTSTRAP}")
 configure_file(src/cli/script_bootstrap.h.in generated/script_bootstrap.h @ONLY)
 target_sources(slopfab PRIVATE src/cli/projects.cpp)
-target_sources(slopfab PRIVATE src/cli/remote.cpp)
+target_sources(slopfab PRIVATE src/cli/remote.cpp src/cli/remote_setup.cpp)
 target_sources(slopfab PRIVATE src/cli/agent_instructions.cpp)
 target_sources(slopfab PRIVATE src/cli/prompting.cpp)
 target_include_directories(slopfab PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
