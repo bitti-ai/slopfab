@@ -1,6 +1,10 @@
 # --- tests ------------------------------------------------------------------
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
+  add_executable(slopfab_demucs_tests tests/test_demucs.cpp)
+  target_link_libraries(slopfab_demucs_tests PRIVATE slopfab_demucs)
+  add_test(NAME demucs COMMAND slopfab_demucs_tests)
+  set_tests_properties(demucs PROPERTIES LABELS synthetic TIMEOUT 60)
   add_executable(slopfab_whisper_tests tests/test_whisper.cpp)
   target_link_libraries(slopfab_whisper_tests PRIVATE slopfab_whisper)
   if(MSVC)
