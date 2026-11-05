@@ -168,10 +168,11 @@ change the default of two compilation jobs. Packaging stages files under Linux
 `/tmp` before copying the archive to `dist/`, so WSL checkouts on Windows drives
 do not need to support Linux permissions or shared-library symlinks.
 
-Archives contain `linux/slopfab`, `windows/slopfab.exe`, available C API libraries
-and headers under each platform directory, documentation, licenses and SHA-256
-checksums. The download mod is installed beside each executable under
-`mods/download/`. `tools/package_bundle.py` (or `package.cmd` on Windows) packages
+Archives contain only `slopfab`, `slopfab.exe` and `mods/` at the top level,
+without an enclosing directory. The download and licenses commands are installed
+under `mods/download/` and `mods/licenses/`. Run `./slopfab licenses` to print
+the license and notice texts included in the licenses mod.
+`tools/package_bundle.py` (or `package.cmd` on Windows) packages
 existing `build/Release` and `build/linux-cli` outputs without rebuilding; use
 `--windows-dir dist/windows --linux-dir dist/linux` for `build.cmd` outputs.
 The package version comes from the root `VERSION` file, currently `0.1.0`.
@@ -181,8 +182,8 @@ and Vulkan shaders are compiled in. Model weights, adapters, NVIDIA/Vulkan
 drivers, CUDA libraries, libpng/libjpeg runtimes are external dependencies. The
 CLI also needs libcurl for workflow HTTP requests (Ubuntu: `libcurl4`); QuickJS
 itself is embedded only in the executable. Extract
-the archive and add its `linux/` directory to `PATH`. C API consumers may load
-`linux/libslopfab.so` by absolute path or install it in their loader search path.
+the archive and add the extraction directory to `PATH`. C API libraries and
+headers are available from the build outputs or `cmake --install` separately.
 The installed executable and shared library include relative `$ORIGIN` library
 search paths so the installation can be relocated.
 

@@ -137,8 +137,11 @@ bundled generator variants, shared components, LoRAs and upscalers, plus
 for transcription. Run `slopfab download whisper` to see its file ID and URL.
 See the [download mod](../examples/mods/download/MOD.md) for groups and companion
 requirements; edit the catalog to add models without recompiling Slopfab.
-Release packages install the download mod beside both executables, ready to use.
-Other examples ship under `examples/` and are not activated automatically.
+Release packages install the download and licenses mods in `mods/` beside both
+executables. `slopfab licenses` prints the complete bundled license and notice
+texts offline, labeled by their source paths. Its readable output goes to stderr;
+stdout contains a structured list of the sources. Other examples remain in the
+source repository and are not included in release packages.
 
 The invocation's working directory remains unchanged; use
 `slopfab.scriptDirectory` to locate companion assets. Use `--` before arguments

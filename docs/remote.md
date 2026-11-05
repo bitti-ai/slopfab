@@ -195,17 +195,27 @@ package.cmd --windows-dir "D:\builds\windows" --linux-dir "D:\builds\linux" --ou
 ```
 
 The archives are `dist/slopfab-0.1.0-windows-linux-x64.zip` and `.tar.gz`.
-Each includes `windows/slopfab.exe`, `linux/slopfab`, the download mod installed
-under each platform's `mods/download/`, available C API libraries and headers,
-a binary manifest, checksums, documentation and licenses. Run
-`windows\slopfab.exe download` or `./linux/slopfab download` after extraction.
+Each extracts directly into the chosen folder, with exactly these top-level entries:
+
+```text
+slopfab.exe
+slopfab
+mods/
+  download/
+  licenses/
+```
+
+Run `slopfab.exe download` or `./slopfab download` after extraction.
+`slopfab licenses` prints the Slopfab license and all bundled third-party licenses
+and notices. The license texts live inside `mods/licenses/`; no documentation,
+libraries, headers, manifests or checksum files are added to the archive.
 `--version MAJOR.MINOR.PATCH` overrides the archive version for one invocation.
 
 `package.sh` builds Linux and requires a prebuilt Windows directory.
 `python tools/package_bundle.py` is the same packaging entry point as `package.cmd`.
 Packaging uses the supplied binaries as-is; run `build.cmd` first if fresh builds
 are needed, then select its `dist/windows` and `dist/linux` outputs. Both binaries
-must support `slopfab run` and executable mods to use the bundled download command;
+must support `slopfab run` and executable mods to use the bundled commands;
 packaging does not upgrade older binaries. Missing
 either executable is a packaging error. Native `cmake --install` and CI smoke
 test artifacts are development installations, not distributable releases.
@@ -213,6 +223,6 @@ test artifacts are development installations, not distributable releases.
 `remote_cli` exercises real native workers through a local SSH stand-in on
 Windows and Linux: bootstrap uploads, binary changes/corruption, normal command
 routing, artifact-only downloads, retries, shell quoting, checksums and project
-imports. `package_bundle` checks that both archives contain both binaries and
-Linux executable permissions. These checks need no GPU; live SSH/GPU validation
+imports. `package_bundle` checks the exact archive layout, both binaries, both
+mods, complete license texts and Linux executable permissions. These checks need no GPU; live SSH/GPU validation
 is separate.

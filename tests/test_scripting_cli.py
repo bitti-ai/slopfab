@@ -185,6 +185,23 @@ with tempfile.TemporaryDirectory(prefix="slopfab-js-") as directory:
     assert all(item['url'].startswith('https://huggingface.co/') for item in catalog['files'])
     assert run('download','--','--help',code=6)['error']['code']=='SCRIPT_ERROR'
 
+    # The license mod prints full readable texts and keeps structured stdout.
+    license_mod = example.parent / 'licenses'
+    installed = root / 'mods' / 'licenses'
+    shutil.copytree(license_mod, installed)
+    repo = example.parents[2]
+    licenses = [{'source': name, 'text': (repo / name).read_text(encoding='utf-8')}
+                for name in ('LICENSE', 'third_party/whisper/LICENSE')]
+    (installed / 'licenses.json').write_text(json.dumps(licenses), encoding='utf-8')
+    for agent_args in ([], ['--agent']):
+        result = subprocess.run([exe, '--config', str(config), *agent_args, 'licenses'],
+                                cwd=root, capture_output=True, text=True, encoding='utf-8', timeout=20)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)['data']['licenses'] == [entry['source'] for entry in licenses]
+        for entry in licenses:
+            assert f"=== {entry['source']} ===\n\n{entry['text']}" in result.stderr
+    assert run('licenses', 'unexpected', code=6)['error']['code'] == 'SCRIPT_ERROR'
+
     # Use a real FFmpeg when it is installed; no media/model fixture required.
     ffmpeg=Path(exe).parents[2]/'external'/'ffmpeg'/'bin'/'ffmpeg.exe'
     ffmpeg=str(ffmpeg) if ffmpeg.exists() else shutil.which('ffmpeg')
