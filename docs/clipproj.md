@@ -16,6 +16,19 @@ on the same small card.
 
 ## Files and commands
 
+The download mod lists smaller encoders and matching projections in
+`slopfab download minimaxh3-clipproj`. For the 4B INT8 ConvRot / v3.1 ridge pair:
+
+```sh
+slopfab download minimaxh3-clipproj text-4b-int8
+slopfab download minimaxh3-clipproj projection-4b-v3.1
+```
+
+Files download into `weights/` beside the executable. The same group includes
+`text-4b-fp8`, `text-8b-int8`, `text-8b-fp8`, `projection-8b-v3.1`, and
+`-mlp` variants of both projections. Choose one encoder and one matching-size
+projection; downloading them does not enable ClipProj automatically.
+
 Supply both an encoder and a projection of the same size, for example:
 
 - `qwen3vl_4b_int8_convrot.safetensors`

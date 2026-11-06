@@ -135,6 +135,8 @@ The last command downloads a large model file into `weights/` beside the running
 Slopfab executable, independent of the working directory. An optional destination
 argument overrides that location. The catalog includes Slopus's
 bundled generator variants, shared components, LoRAs and upscalers, plus
+[smaller H3 text encoders and ClipProj projections](clipproj.md)
+(`slopfab download minimaxh3-clipproj`),
 [HTDemucs](separation.md) for vocal/stem separation and
 [Whisper Large v3 Turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
 for transcription. Run `slopfab download whisper` to see its file ID and URL.

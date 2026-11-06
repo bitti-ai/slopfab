@@ -1,7 +1,7 @@
 {
   "minimaxh3": {
     "source": "https://huggingface.co/Comfy-Org/MiniMax-H3",
-    "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Singularity and Singularity v2 use the Turbo LoRA; Animate also needs animate-conditioning and the Viggle Animate LoRA from minimaxh3-loras. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained.",
+    "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Singularity and Singularity v2 use the Turbo LoRA; Animate also needs animate-conditioning and the Viggle Animate LoRA from minimaxh3-loras. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained. Smaller text encoders and their required projections are listed in minimaxh3-clipproj.",
     "files": [
       {
         "id": "fl2va-w6a8",
@@ -135,6 +135,53 @@
       }
     ],
     "name": "MiniMax H3"
+  },
+  "minimaxh3-clipproj": {
+    "name": "MiniMax H3 ClipProj",
+    "source": "https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3",
+    "note": "Choose one Qwen3-VL 4B or 8B encoder and one matching-size ClipProj v3.1 projection (ridge or MLP). INT8 ConvRot and FP8-scaled encoder options are provided; INT4/NVFP4 student weights are unsupported. These pairs provide text-only H3 conditioning. See docs/clipproj.md for support and validation limits.",
+    "files": [
+      {
+        "id": "text-4b-fp8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/Qwen3-VL/resolve/02f0d3eefb59528799653d16735818801177ef1f/text_encoders/qwen3vl_4b_fp8_scaled.safetensors"
+      },
+      {
+        "id": "text-4b-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/4742d4bec410034142c8e65559e5f00c6f29eccb/text_encoders/qwen3vl_4b_int8_convrot.safetensors"
+      },
+      {
+        "id": "projection-4b-v3.1",
+        "role": "clip_projection",
+        "url": "https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/resolve/2ebdbcdc27a29a9607efdb221a9afcb9a0cdd808/mmh3-4b-ClipProj-v3.1.safetensors"
+      },
+      {
+        "id": "projection-4b-v3.1-mlp",
+        "role": "clip_projection",
+        "url": "https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/resolve/2ebdbcdc27a29a9607efdb221a9afcb9a0cdd808/mmh3-4b-ClipProj-v3.1-mlp.safetensors"
+      },
+      {
+        "id": "text-8b-fp8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/Qwen3-VL/resolve/02f0d3eefb59528799653d16735818801177ef1f/text_encoders/qwen3vl_8b_fp8_scaled.safetensors"
+      },
+      {
+        "id": "text-8b-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/Qwen3-VL/resolve/02f0d3eefb59528799653d16735818801177ef1f/text_encoders/qwen3vl_8b_int8_convrot.safetensors"
+      },
+      {
+        "id": "projection-8b-v3.1",
+        "role": "clip_projection",
+        "url": "https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/resolve/2ebdbcdc27a29a9607efdb221a9afcb9a0cdd808/mmh3-8b-ClipProj-v3.1.safetensors"
+      },
+      {
+        "id": "projection-8b-v3.1-mlp",
+        "role": "clip_projection",
+        "url": "https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3/resolve/2ebdbcdc27a29a9607efdb221a9afcb9a0cdd808/mmh3-8b-ClipProj-v3.1-mlp.safetensors"
+      }
+    ]
   },
   "moss-image": {
     "files": [
