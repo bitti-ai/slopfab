@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "slopfab/device_tensor.h"
 
 namespace slopfab::seedvr2 {
 
@@ -20,6 +21,11 @@ struct Options {
   uint64_t seed = 666;
   int device = 0;
   bool color_match = true;
+#if SLOPFAB_WITH_CUDA
+  DeviceBackend backend = DeviceBackend::kCuda;
+#else
+  DeviceBackend backend = DeviceBackend::kVulkan;
+#endif
 };
 
 struct Window {
@@ -29,7 +35,7 @@ struct Window {
 void validate(const Options& options);
 std::vector<Window> attention_windows(int frames, int height, int width, bool shifted);
 
-// CPU orchestration is deliberately independent of the CUDA model. At most
+// CPU orchestration is independent of the inference backend. At most
 // one segment and one overlapping output frame are retained, regardless of
 // clip duration. Frames are packed RGB float in [0,1], already at target size.
 using Frame = std::vector<float>;
@@ -38,7 +44,7 @@ using WriteFrame = std::function<void(const Frame&)>;
 using RestoreSegment = std::function<std::vector<Frame>(const std::vector<Frame>&, uint64_t)>;
 uint64_t stream(const Options&, const ReadFrame&, const WriteFrame&, const RestoreSegment&);
 
-// Native CUDA inference; no Python/ComfyUI runtime. Weights are memory mapped
+// Native CUDA or Vulkan inference; no Python/ComfyUI runtime. Weights are memory mapped
 // and cached within a device-memory budget. Instances are not thread safe.
 class Restorer {
 public:

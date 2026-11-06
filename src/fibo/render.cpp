@@ -1,4 +1,4 @@
-#include "runtime.cuh"
+#include "slopfab/fibo.h"
 #include <algorithm>
 #include <stdexcept>
 #ifdef _WIN32

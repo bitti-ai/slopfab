@@ -9,6 +9,8 @@ if(TARGET slopfab_cuda OR TARGET slopfab_vulkan)
     src/vae/taeh3.cpp
     src/generation/lcs_calibration.cpp
     src/upscale.cpp
+    src/seedvr2/upscaler.cpp
+    src/seedvr2/restorer.cpp
     src/latent_upscale.cpp
     src/generate.cpp
     src/generation/helpers.cpp
@@ -25,7 +27,6 @@ if(TARGET slopfab_cuda OR TARGET slopfab_vulkan)
   set_target_properties(slopfab_generation PROPERTIES POSITION_INDEPENDENT_CODE ON)
   if(TARGET slopfab_cuda)
     target_sources(slopfab_generation PRIVATE src/krea/generate.cpp src/moss/generate.cpp src/fibo/generate.cpp)
-    target_sources(slopfab_generation PRIVATE src/seedvr2/upscaler.cpp)
     target_link_libraries(slopfab_generation PUBLIC slopfab_cuda)
   endif()
   if(TARGET slopfab_vulkan)

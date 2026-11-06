@@ -79,9 +79,17 @@ extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
     const slopfab_seedvr2_options* options, slopfab_seedvr2_read_fn read_frame,
     slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
     slopfab_seedvr2_progress_fn progress, void* user, uint64_t* frames_written) {
+  return slopfab_seedvr2_upscale_backend(options, SLOPFAB_WITH_CUDA ? 0 : 1, read_frame,
+                                        write_frame, cancelled, progress, user, frames_written);
+}
+
+extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale_backend(
+    const slopfab_seedvr2_options* options, int32_t backend, slopfab_seedvr2_read_fn read_frame,
+    slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
+    slopfab_seedvr2_progress_fn progress, void* user, uint64_t* frames_written) {
   if (frames_written)
     *frames_written = 0;
-  if (!options || options->struct_size != sizeof(slopfab_seedvr2_options) || !read_frame ||
+  if ((backend != 0 && backend != 1) || !options || options->struct_size != sizeof(slopfab_seedvr2_options) || !read_frame ||
       !write_frame || !frames_written || !options->transformer_path ||
       !*options->transformer_path || !options->vae_path || !*options->vae_path ||
       (options->color_match != 0 && options->color_match != 1))
@@ -97,12 +105,13 @@ extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
     o.device = options->device;
     o.color_match = options->color_match != 0;
     o.seed = options->seed;
+    o.backend = backend == 0 ? slopfab::DeviceBackend::kCuda : slopfab::DeviceBackend::kVulkan;
     try {
       slopfab::seedvr2::validate(o);
     } catch (const std::invalid_argument& e) {
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
     }
-#if SLOPFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
     bool stopped = false;
     auto cancel = [&] {
       stopped = stopped || (cancelled && cancelled(user));
@@ -148,7 +157,7 @@ extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
     (void)cancelled;
     (void)progress;
     (void)user;
-    return fail(SLOPFAB_ERR_RUNTIME, "SeedVR2 requires a CUDA-enabled build");
+    return fail(SLOPFAB_ERR_RUNTIME, "SeedVR2 requires a CUDA or Vulkan build");
 #endif
   });
 }

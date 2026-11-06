@@ -81,5 +81,5 @@ slopfab_shader("src/vulkan/tensor_music.comp.spv" "68f8645a8a2a4a9068e06f13fc8ba
 slopfab_shader("src/vulkan/tensor_sol_vae.comp" "e2707edcd20e0a8cbb8674ef3e7809894480b8576cf8e215fdf159dc7ced0f76" SOURCE -)
 slopfab_shader("src/vulkan/tensor_sol_vae.comp.spv" "4e0e641c130247188a8abd5f424b607873449f598f03ec3a9c5a80fb5721ed3b" BINARY SLOPFAB_TENSOR_SOL_VAE_SPV_BYTES)
 
-slopfab_shader("src/vulkan/tensor_krea.comp" "233b82bac24848f9f56d830bb2da2b8fff520b136bf24b018483ef34796870ee" SOURCE -)
-slopfab_shader("src/vulkan/tensor_krea.comp.spv" "b5f7b060b73917f59b2ca05b8c052321085641b9386e04576d63400d941e50ae" BINARY SLOPFAB_TENSOR_KREA_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_krea.comp" "28699aac55889cb75187e9f7081472a6724b13daf7dafe736c82dc4c7a72e544" SOURCE -)
+slopfab_shader("src/vulkan/tensor_krea.comp.spv" "f0aacb7528f098d70b0b4592d30927bae47f3baeeb40aa7fd8d6105db8c2f5f2" BINARY SLOPFAB_TENSOR_KREA_SPV_BYTES)

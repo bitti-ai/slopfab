@@ -7,9 +7,11 @@ namespace slopfab {
 namespace {
 class SeedVr2Upscaler final : public Upscaler {
   std::string checkpoint_;
+  DeviceBackend backend_;
 
 public:
-  explicit SeedVr2Upscaler(std::string checkpoint) : checkpoint_(std::move(checkpoint)) {
+  SeedVr2Upscaler(std::string checkpoint, DeviceBackend backend)
+      : checkpoint_(std::move(checkpoint)), backend_(backend) {
   }
 
   PixelBuffer upscale(const PixelBuffer& input, int frames, int height, int width,
@@ -21,6 +23,7 @@ public:
       throw std::invalid_argument("SeedVR2: input buffer does not match RGB dimensions");
     auto o = seedvr2_options(options, height, width);
     o.transformer = checkpoint_;
+    o.backend = backend_;
     int read = 0, written = 0;
     auto notify = [&] {
       if (progress && !progress(written, frames))
@@ -73,7 +76,7 @@ public:
 };
 }
 
-std::unique_ptr<Upscaler> make_seedvr2_upscaler(const std::string& checkpoint) {
-  return std::make_unique<SeedVr2Upscaler>(checkpoint);
+std::unique_ptr<Upscaler> make_seedvr2_upscaler(const std::string& checkpoint, DeviceBackend backend) {
+  return std::make_unique<SeedVr2Upscaler>(checkpoint, backend);
 }
 }

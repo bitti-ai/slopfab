@@ -43,6 +43,8 @@ if(SLOPFAB_ENABLE_VULKAN)
     src/fibo/ops_vulkan.cpp
     src/fibo/text_vulkan.cpp
     src/fibo/transformer_vulkan.cpp
+    src/seedvr2/vulkan_runtime.cpp
+    src/seedvr2/model_vulkan.cpp
     src/vulkan/tensor_music.cpp
     src/music/vulkan_runtime.cpp
     src/music/yue_vulkan.cpp

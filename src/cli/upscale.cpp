@@ -77,8 +77,6 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
       throw std::invalid_argument("unknown upscale argument: " + a);
   }
   args.finish();
-  if (args.method == UpscaleMethod::kSeedVr2 && backend != DeviceBackend::kCuda)
-    throw std::invalid_argument("SeedVR2 requires the CUDA backend");
   if (input.empty() || output.empty())
     throw std::invalid_argument("upscale requires --input and --out");
   auto in = std::filesystem::absolute(std::filesystem::u8path(input));

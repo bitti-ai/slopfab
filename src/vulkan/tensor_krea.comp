@@ -105,9 +105,78 @@ void image_operation(uint op,uint g,uint t) {
     put32(i,yy>=0&&yy<int(p[4])&&xx>=0&&xx<int(p[5])?x32((uint(yy)*p[5]+uint(xx))*ci+c/(k*k)):0);
   }
 }
+
+// SeedVR2 temporal VAE and shifted-window attention (seedvr2/vulkan_runtime.h).
+void seed_operation(uint op,uint g,uint t) {
+  uint n=p[1],cols=p[2],i=g*256+t;
+  if(op==32) {
+    uint frame=g/32,group=g%32,gc=cols/32,count=n*gc;
+    precise float sum=0;
+    for(uint j=t;j<count;j+=256)sum+=xf((frame*n+j/gc)*cols+group*gc+j%gc);
+    s[t]=sum;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+    float mean=s[0]/float(count);barrier();sum=0;
+    for(uint j=t;j<count;j+=256){float a=xf((frame*n+j/gc)*cols+group*gc+j%gc)-mean;sum+=a*a;}
+    s[t]=sum;barrier();for(uint d=128;d>0;d/=2){if(t<d)s[t]+=s[t+d];barrier();}
+    float inv=inversesqrt(s[0]/float(count)+1e-6);
+    for(uint j=t;j<count;j+=256){uint c=group*gc+j%gc,at=(frame*n+j/gc)*cols+c;
+      precise float a=bf((xf(at)-mean)*inv*wf(c)+bf_(c));
+      put(at,p[3]!=0?a/(1+exp(-a)):a);
+    }return;
+  }
+  if(op==34) {
+    uint heads=cols/128,head=g%heads,token=g/heads;
+    if(token>=n)return;
+    uint nv=p[3],nt=p[4],h=p[5],ww=p[11],wh=p[10],local=token<nv?token:token-nv;
+    bool text=token>=nv;
+    uint source=text?local:((local/(wh*ww)+p[7])*h+local/ww%wh+p[8])*p[6]+local%ww+p[9];
+    uint at=source*3*cols+head*128+t;
+    float a=0,bv=0;
+    if(t<128){a=text?wf(at):xf(at);bv=text?wf(at+cols):xf(at+cols);}
+    s[t]=a*a;squares[t]=bv*bv;barrier();
+    for(uint d=64;d>0;d/=2){if(t<d){s[t]+=s[t+d];squares[t]+=squares[t+d];}barrier();}
+    float qi=inversesqrt(s[0]/128+1e-5),ki=inversesqrt(squares[0]/128+1e-5);
+    if(t<128){dq[t]=bf(a*qi*b32((text?256:0)+t));dk[t]=bf(bv*ki*b32((text?384:128)+t));}barrier();
+    if(t<128){a=dq[t];bv=dk[t];
+      if(t<126){uint axis=t/42,pair=(t%42)/2;
+        uint pos=text?local:axis==0?local/(wh*ww)+nt:axis==1?local/ww%wh:local%ww;
+        float angle=float(pos)*b32(512+pair),co=cos(angle),si=sin(angle);
+        a=dq[t]*co+(t%2!=0?dq[t-1]:-dq[t+1])*si;
+        bv=dk[t]*co+(t%2!=0?dk[t-1]:-dk[t+1])*si;
+      }
+      uint dst=token*3*cols+head*128+t;
+      put(dst,a);put(dst+cols,bv);put(dst+2*cols,text?wf(at+2*cols):xf(at+2*cols));
+    }return;
+  }
+  if(i>=n)return;
+  if(op==31){
+    uint r=i%cols,row=i/cols+p[3],kw=p[10],kh=p[9],kt=p[8],ow=p[14],oh=p[13],stride=p[11];
+    uint kx=r%kw;r/=kw;uint ky=r%kh;r/=kh;uint kz=r%kt,c=r/kt;
+    int xx=int(row%ow*stride+kx)-(stride==2?0:int(kw/2));
+    int yy=int(row/ow%oh*stride+ky)-(stride==2?0:int(kh/2));
+    int zz=max(0,int(row/(oh*ow)*p[12]+kz)-int(kt-1));
+    put(i,xx<0||xx>=int(p[6])||yy<0||yy>=int(p[5])||zz>=int(p[4])?0:
+        xf(((uint(zz)*p[5]+uint(yy))*p[6]+uint(xx))*p[7]+c));
+  }
+  if(op==33){uint c=i%cols,e=c*6+p[3]*3;
+    if(p[4]!=0)put(i,xf(i)*bf(wf(e+2)+bf_(c)));
+    else put(i,bf(xf(i)*bf(wf(e+1)+bf_(cols+c)))+bf(wf(e)+bf_(c)));
+  }
+  if(op==35){uint token=i/cols,wh=p[9],ww=p[10];
+    uint row=((token/(wh*ww)+p[6])*p[4]+token/ww%wh+p[7])*p[5]+token%ww+p[8];
+    y[row*cols+i%cols]=x[i];
+  }
+  if(op==36){if(p[4]==0)put32(i,w32(i)+xf(p[3]*cols+i));else put(i,x32(i)/float(p[4]));}
+  if(op==37){uint c=i%cols,ow=p[4]*2,oh=p[3]*2,tr=p[5],xx=i/cols%ow,yy=i/cols/ow%oh,zz=i/cols/ow/oh;
+    uint z=zz==0?0:zz+tr-1,channel=(((yy%2)*2+xx%2)*tr+z%tr)*cols+c;
+    y[i]=x[((z/tr*p[3]+yy/2)*p[4]+xx/2)*(cols*4*tr)+channel];
+  }
+  if(op==38)put(i,xf(i)+wf(i%cols));
+}
+
 void main() {
   uint t=gl_LocalInvocationID.x,g=gl_WorkGroupID.x+gl_WorkGroupID.y*p[15];
   uint i=g*256+t,op=p[0],n=p[1],cols=p[2];
+  if(op>=31){seed_operation(op,g,t);return;}
   if(op>=16){image_operation(op,g,t);return;}
   if(op==0 || op==10) {
     if(g>=n)return;

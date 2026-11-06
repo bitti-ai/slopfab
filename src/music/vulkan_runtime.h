@@ -14,7 +14,7 @@ struct Engine {
   vk::Device device;
   vk::TensorContext context;
   vk::TensorBatch pending;
-  Engine();
+  explicit Engine(int device_index = -1);
   ~Engine();
   vk::TensorBatch& batch();
   void flush();
@@ -35,7 +35,7 @@ struct Tensor {
 
 class Runtime {
 public:
-  explicit Runtime(const std::string& path);
+  explicit Runtime(const std::string& path, int device_index = -1);
   ~Runtime();
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;

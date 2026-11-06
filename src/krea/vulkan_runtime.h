@@ -11,7 +11,7 @@ using music_gpu::round_bf;
 
 class Runtime : public music_gpu::Runtime {
 public:
-  explicit Runtime(const std::string& path);
+  explicit Runtime(const std::string& path, int device_index = -1);
   Tensor attend(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int kv_heads,
                 bool causal = false);
 };

@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 49
+#define SLOPFAB_CAPI_VERSION_MINOR 50
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
@@ -148,6 +148,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
     const slopfab_seedvr2_options* options, slopfab_seedvr2_read_fn read_frame,
     slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
     slopfab_seedvr2_progress_fn progress, void* user, uint64_t* frames_written);
+
+/* Since 1.50: same streaming contract with explicit backend (0 CUDA, 1 Vulkan).
+ * The original entry point uses CUDA when built, otherwise Vulkan. The options
+ * structure is unchanged; device selects an ordinal within the chosen backend. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale_backend(
+    const slopfab_seedvr2_options* options, int32_t backend,
+    slopfab_seedvr2_read_fn read_frame, slopfab_seedvr2_write_fn write_frame,
+    slopfab_seedvr2_cancel_fn cancelled, slopfab_seedvr2_progress_fn progress,
+    void* user, uint64_t* frames_written);
 
 /* ABI 1.22: stream existing RGB frames through Real-ESRGAN x4plus.
  * Uses the callback contract above; input is width*height*3 packed floats,

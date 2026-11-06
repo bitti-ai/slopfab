@@ -12,7 +12,7 @@ namespace slopfab::music_gpu {
 namespace {
 thread_local Runtime* current = nullptr;
 
-vk::Device make_device(vk::Instance& instance) {
+vk::Device make_device(vk::Instance& instance, int device_index) {
   auto devices = instance.enumerate_devices();
   if (devices.empty())
     throw std::runtime_error("Vulkan music: no compute device");
@@ -21,6 +21,11 @@ vk::Device make_device(vk::Instance& instance) {
   for (auto it = devices.begin(); it != devices.end(); ++it)
     if (it->info().device_local_bytes() > selected->info().device_local_bytes())
       selected = it;
+  if (device_index >= 0) {
+    if (size_t(device_index) >= devices.size())
+      throw std::invalid_argument("Vulkan device index out of range");
+    selected = devices.begin() + device_index;
+  }
   vk::DeviceOptions options;
   options.portable_arithmetic = true;
   options.enable_storage_buffer_16bit = true;
@@ -52,8 +57,8 @@ float round_bf(float v) {
   return v;
 }
 
-Engine::Engine()
-    : instance(vk::Instance::create()), device(make_device(instance)),
+Engine::Engine(int device_index)
+    : instance(vk::Instance::create()), device(make_device(instance, device_index)),
       context(device, context_options()) {
 }
 
@@ -130,10 +135,10 @@ Tensor::Tensor(int r, int c) : rows(r), cols(c) {
   data = engine->allocate(r, c);
 }
 
-Runtime::Runtime(const std::string& path) {
+Runtime::Runtime(const std::string& path, int device_index) {
   checkpoint.open(path);
   previous_ = current;
-  engine = current ? current->engine : std::make_shared<Engine>();
+  engine = current && device_index < 0 ? current->engine : std::make_shared<Engine>(device_index);
   current = this;
 }
 

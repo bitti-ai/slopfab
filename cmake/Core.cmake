@@ -3,6 +3,7 @@
 add_library(slopfab_core STATIC
   src/krea/plan.cpp
   src/fibo/plan.cpp
+  src/fibo/render.cpp
   src/music/plan.cpp
   src/music/tokenizer.cpp
   src/core/sampling_effect.cpp
@@ -81,7 +82,7 @@ target_include_directories(slopfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 # decoders can be compared and the code cannot rot unbuilt — which is why
 # these are linked whether or not FFmpeg is on. Both ship with Windows.
 if(WIN32)
-  target_link_libraries(slopfab_core PRIVATE windowscodecs ole32 bcrypt)
+  target_link_libraries(slopfab_core PRIVATE windowscodecs ole32 bcrypt gdi32)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(PNG REQUIRED)
   find_package(JPEG REQUIRED)

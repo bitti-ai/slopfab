@@ -8,6 +8,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--library", required=True, type=Path)
 parser.add_argument("--weights", default="weights", type=Path)
 parser.add_argument("--text-only", action="store_true", help="Generate without source images or masks")
+parser.add_argument("--backend", choices=["cuda", "vulkan"], default="cuda")
 args = parser.parse_args()
 dll = C.CDLL(str(args.library.resolve()))
 handle = C.c_void_p
@@ -53,7 +54,9 @@ try:
     check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, (b"A blue ceramic vase on a wooden table" if args.text_only else b"Make the object blue")))
     check(bind("slopfab_request_set_resolution", [handle, C.c_int, C.c_int])(request, 64, 96))
     check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, 4))
-    check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, 0))
+    check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, int(args.backend == "vulkan")))
+    if args.backend == "vulkan":
+        check(bind("slopfab_request_set_vulkan_arithmetic", [handle, C.c_int])(request, 1))
     check(bind("slopfab_request_set_attention", [handle, C.c_char_p])(request, b"flash2"))
     if not args.text_only:
         source=bytes(v for y in range(96) for x in range(64) for v in (x*4,y*2,120))

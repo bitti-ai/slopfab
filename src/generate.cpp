@@ -78,6 +78,12 @@ RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 namespace moss {
 RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 }
+namespace moss_vulkan {
+RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+}
+namespace fibo_vulkan {
+RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+}
 using namespace generation;
 
 RunResult generation::run_generate_impl(const GenerateRequest& request, const GeneratePlan& plan,
@@ -112,13 +118,17 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   }
   if (plan.model.family == "moss" || plan.model.family == "fibo2") {
     reuse.clear();
-#if SLOPFAB_WITH_CUDA
-    return plan.model.family == "fibo2" ? fibo::run(request, plan, options) : moss::run(request, plan, options);
-#else
-    RunResult unsupported;
-    unsupported.message = "This image model requires a CUDA-enabled build";
-    return unsupported;
+#if SLOPFAB_WITH_VULKAN
+    if (options.inference_backend == DeviceBackend::kVulkan)
+      return plan.model.family == "fibo2" ? fibo_vulkan::run(request, plan, options) : moss_vulkan::run(request, plan, options);
 #endif
+#if SLOPFAB_WITH_CUDA
+    if (options.inference_backend == DeviceBackend::kCuda)
+      return plan.model.family == "fibo2" ? fibo::run(request, plan, options) : moss::run(request, plan, options);
+#endif
+    RunResult unsupported;
+    unsupported.message = "The selected image backend is not enabled in this build";
+    return unsupported;
   }
   struct ReuseReleaseGuard {
     ReusedGenerationModels& reuse;

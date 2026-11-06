@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 namespace slopfab::krea_vulkan {
-Runtime::Runtime(const std::string& path) : music_gpu::Runtime(path) {
+Runtime::Runtime(const std::string& path, int device_index) : music_gpu::Runtime(path, device_index) {
   engine->flush();
   engine->context.prepare_pipeline_sets(engine->device, vk::TensorPipelineSet::kKrea |
                                                             vk::TensorPipelineSet::kFlashAttention);

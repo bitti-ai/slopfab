@@ -60,7 +60,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     return;
   }
   if (p.model.family == "fibo2") {
-    require(o.inference_backend == DeviceBackend::kCuda, "Fibo requires the CUDA backend");
+    require(o.inference_backend == DeviceBackend::kCuda || o.inference_backend == DeviceBackend::kVulkan, "Fibo requires CUDA or Vulkan");
+    require(o.inference_backend != DeviceBackend::kVulkan || o.vulkan_portable_arithmetic,
+            "Fibo Vulkan requires portable arithmetic; use --vulkan-arithmetic portable");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Fibo requires editing from fresh noise");
     require(resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kEuler ||
                 resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kErSde,
@@ -72,7 +74,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   }
   if (p.model.family == "moss") {
     require(!o.sampling_effect && !o.lcs_data, "sampling effects and LCS currently require H3");
-    require(o.inference_backend == DeviceBackend::kCuda, "MOSS currently requires the CUDA backend");
+    require(o.inference_backend == DeviceBackend::kCuda || o.inference_backend == DeviceBackend::kVulkan, "MOSS requires CUDA or Vulkan");
+    require(o.inference_backend != DeviceBackend::kVulkan || o.vulkan_portable_arithmetic,
+            "MOSS Vulkan requires portable arithmetic; use --vulkan-arithmetic portable");
     require(resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kEuler ||
                 resolve_sampling_sampler(p, o.sampler) == sampler::SamplerKind::kErSde,
             "MOSS requires Euler or ER-SDE sampling");
@@ -127,9 +131,6 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   upscale_scale_factor(o.upscale_method); // reject unknown identifiers even when disabled
   if (!o.upscale_model_path.empty())
     upscale_output_elements(p.aligned_frames, p.canvas_height, p.canvas_width, o.upscale_method, o.upscale);
-  require(o.upscale_model_path.empty() || o.upscale_method != UpscaleMethod::kSeedVr2 ||
-              o.inference_backend == DeviceBackend::kCuda,
-          "SeedVR2 requires the CUDA backend");
   require(o.upscale_model_path.empty() || !r.image_edit.image,
           "upscaling cannot preserve the exact pixels outside an image edit box");
   const auto sampler_kind = resolve_sampling_sampler(p, o.sampler);
