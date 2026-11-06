@@ -1,7 +1,7 @@
 ---
 name: download
-description: List model, LoRA, upscaler and Whisper URLs and download selected files.
-version: "1.3"
+description: List model, LoRA, upscaler, HTDemucs and Whisper URLs and download selected files.
+version: "1.4"
 command: download
 script: main.js
 ---
@@ -10,7 +10,7 @@ script: main.js
 Run `slopfab download` to list model groups, then `slopfab download MODEL` to
 list their files without network access. The catalog includes Slopus's bundled
 download options from `src/lib/settings.ts`, `h3Components.ts`, `loras.ts` and
-`upscalers.ts`, plus Whisper:
+`upscalers.ts`, plus HTDemucs and Whisper:
 
 | Model group | Options |
 | --- | --- |
@@ -25,6 +25,7 @@ download options from `src/lib/settings.ts`, `h3Components.ts`, `loras.ts` and
 | `seedvr2` | 3B FP16 model and VAE |
 | `latent-upscale` | MiniMax H3 latent upscaler |
 | `taeh3` | Generation preview VAE |
+| `htdemucs` | Standard four-stem HTDemucs (955717e8), FP16 safetensors |
 | `whisper` | Large v3 Turbo safetensors |
 
 Select checkpoints appropriate to the model, backend, available memory
@@ -34,7 +35,7 @@ every file. Review the source repository's model license before use.
 Run `slopfab download MODEL FILE_ID` to download one selected file into `weights/`
 beside the running Slopfab executable, regardless of the working directory.
 The filename comes from the URL unless the catalog supplies `filename` (used for
-the MOSS tokenizer and Whisper checkpoint). Listings report `weightsDirectory`.
+the MOSS tokenizer, HTDemucs and Whisper checkpoints). Listings report `weightsDirectory`.
 An optional `DESTINATION` overrides this default; relative overrides use the
 working directory. The destination must not exist. Downloads use Slopfab's native HTTP downloader
 with four parallel connections, two retries per failed request, and a two-hour
@@ -59,6 +60,18 @@ no supplied tier. The mod does not detect GPUs or automatically select variants.
 LoRA `stepOverride` and `samplingPreset` fields describe Slopus defaults;
 configure generation and any required companion grids separately. Group notes
 identify required companion files, including Animate conditioning and LoRAs.
+
+For vocal or stem separation, download the standard
+[HTDemucs checkpoint](https://huggingface.co/adefossez/HTDemucs):
+
+```sh
+slopfab download htdemucs model
+# When running from the executable's folder:
+slopfab separate song.wav --model weights/htdemucs.safetensors --two-stems vocals --out output/stems
+```
+
+The catalog pins the safetensors release; no Python conversion or companion
+files are needed. Separation runs on the CPU.
 
 For speech transcription, download the standard Hugging Face Whisper checkpoint:
 

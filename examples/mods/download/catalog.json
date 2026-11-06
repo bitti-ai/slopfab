@@ -407,6 +407,19 @@
     "note": "Preview VAE pinned to the same upstream revision as Slopus.",
     "source": "https://github.com/madebyollin/taehv/tree/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c"
   },
+  "htdemucs": {
+    "name": "HTDemucs",
+    "source": "https://huggingface.co/adefossez/HTDemucs",
+    "note": "Standard four-stem HTDemucs (955717e8), FP16 safetensors. Native CPU separation into drums, bass, other and vocals; use separate --two-stems vocals for vocals and instrumental. No conversion or companion files required.",
+    "files": [
+      {
+        "id": "model",
+        "role": "source_separation",
+        "filename": "htdemucs.safetensors",
+        "url": "https://huggingface.co/adefossez/HTDemucs/resolve/cbc8a9b1a87023b7fd74e7b3412e6321c0eab003/955717e8.safetensors"
+      }
+    ]
+  },
   "whisper": {
     "name": "Whisper",
     "source": "https://huggingface.co/openai/whisper-large-v3-turbo",

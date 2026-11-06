@@ -44,10 +44,19 @@ and chunks. Separation is a CLI/C++ feature; it is not exposed through the C ABI
 Use the standard upstream `htdemucs` checkpoint (signature `955717e8`), with
 its original PyTorch `state_dict` tensor names, converted to safetensors. F32,
 F16 and BF16 storage are supported; calculations use F32. A directory passed
-to `--model` resolves to `model.safetensors`. There are no automatic downloads
-or pickle loads in the executable.
+to `--model` resolves to `model.safetensors`. Separation does not automatically
+download weights or load pickle files.
 
-For a reproducible conversion in a Python development environment:
+The bundled [download mod](../examples/mods/download/MOD.md) provides the
+[upstream FP16 safetensors checkpoint](https://huggingface.co/adefossez/HTDemucs),
+saved as `weights/htdemucs.safetensors` beside the executable:
+
+```sh
+slopfab download htdemucs model
+```
+
+No conversion or companion files are required. Alternatively, for a reproducible
+conversion in a Python development environment:
 
 ```sh
 python -m pip install torch torchaudio demucs==4.0.1 safetensors
