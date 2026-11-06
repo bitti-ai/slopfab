@@ -159,6 +159,7 @@
       {
         "id": "tokenizer",
         "role": "tokenizer",
+        "filename": "qwen3.5_tokenizer.json",
         "url": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/resolve/main/tokenizer/tokenizer.json",
         "minVramGb": 0
       }
@@ -414,6 +415,7 @@
       {
         "id": "large-v3-turbo",
         "role": "speech_recognition",
+        "filename": "whisper-large-v3-turbo.safetensors",
         "url": "https://huggingface.co/openai/whisper-large-v3-turbo/resolve/main/model.safetensors"
       }
     ]

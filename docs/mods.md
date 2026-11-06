@@ -128,10 +128,12 @@ checkout, this installation can itself use embedded JavaScript:
 slopfab run --eval 'slopfab.fs.mkdir("mods"); slopfab.fs.copy("examples/mods/download", "mods/download", {recursive:true});'
 slopfab download
 slopfab download minimaxh3
-slopfab download minimaxh3 audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors
+slopfab download minimaxh3 audio-vae
 ```
 
-The last command downloads a large model file. The catalog includes Slopus's
+The last command downloads a large model file into `weights/` beside the running
+Slopfab executable, independent of the working directory. An optional destination
+argument overrides that location. The catalog includes Slopus's
 bundled generator variants, shared components, LoRAs and upscalers, plus
 [Whisper Large v3 Turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
 for transcription. Run `slopfab download whisper` to see its file ID and URL.

@@ -230,6 +230,40 @@ try:
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert json.loads(result.stdout)['data']['connections'] == 4
         valid('mod.bin')
+
+        # Defaults follow the executable, not the working directory or installed mod.
+        portable = root / 'portable install'
+        portable.mkdir()
+        portable_exe = portable / Path(exe).name
+        shutil.copy2(exe, portable_exe)
+        (installed / 'catalog.json').write_text(json.dumps({'fixture': {'files': [
+            {'id': 'url-name', 'url': url + '/source%20model.safetensors?download=1'},
+            {'id': 'named', 'url': url + '/file', 'filename': 'named-model.safetensors'},
+            {'id': 'unsafe', 'url': url + '/file', 'filename': '../escape.bin'},
+        ]}}))
+
+        def portable_download(*args, code=0):
+            result = subprocess.run([str(portable_exe), '--config', str(config), '--agent',
+                                     'download', *args], cwd=root, capture_output=True,
+                                    text=True, encoding='utf-8', timeout=30)
+            assert result.returncode == code, (result.stdout, result.stderr)
+            return json.loads(result.stdout)
+
+        for args in ((), ('fixture',)):
+            listed = portable_download(*args)['data']
+            assert Path(listed['weightsDirectory']) == portable / 'weights'
+        assert not (portable / 'weights').exists()  # Listing has no filesystem side effects.
+        for file_id, filename in [('url-name', 'source model.safetensors'),
+                                  ('named', 'named-model.safetensors')]:
+            downloaded = portable_download('fixture', file_id)['data']
+            expected = portable / 'weights' / filename
+            assert Path(downloaded['path']) == expected
+            assert expected.read_bytes() == payload
+            portable_download('fixture', file_id, code=6)  # Never overwrite a complete file.
+            assert expected.read_bytes() == payload
+        portable_download('fixture', 'unsafe', code=6)
+        assert not (portable / 'escape.bin').exists()
+        assert not (root / 'weights').exists()
 finally:
     server.shutdown()
     server.server_close()

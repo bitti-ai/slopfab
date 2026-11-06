@@ -1,7 +1,7 @@
 ---
 name: download
 description: List model, LoRA, upscaler and Whisper URLs and download selected files.
-version: "1.2"
+version: "1.3"
 command: download
 script: main.js
 ---
@@ -31,8 +31,12 @@ Select checkpoints appropriate to the model, backend, available memory
 and intended task; this catalog is a set of options, not a requirement to fetch
 every file. Review the source repository's model license before use.
 
-Run `slopfab download MODEL FILE_ID DESTINATION` to download one selected file.
-The destination must not exist. Downloads use Slopfab's native HTTP downloader
+Run `slopfab download MODEL FILE_ID` to download one selected file into `weights/`
+beside the running Slopfab executable, regardless of the working directory.
+The filename comes from the URL unless the catalog supplies `filename` (used for
+the MOSS tokenizer and Whisper checkpoint). Listings report `weightsDirectory`.
+An optional `DESTINATION` overrides this default; relative overrides use the
+working directory. The destination must not exist. Downloads use Slopfab's native HTTP downloader
 with four parallel connections, two retries per failed request, and a two-hour
 total timeout. Interrupted transfers keep their completed and partial ranges in
 `DESTINATION.download/`. Run the same command with the same destination to resume.
@@ -46,9 +50,8 @@ use a single streamed download, which restarts after interruption. The final
 destination appears only after the complete transfer; assembly temporarily needs
 space for both the parts and the final file. No external download program is used.
 
-Register the containing weights root
-with `slopfab settings set weight_paths PATH` after placing files in the desired
-`transformer/`, `text_encoder/` and `vae/` folders.
+Register the absolute `weights/` path beside the executable with
+`slopfab settings set weight_paths PATH` so generation can discover the downloads.
 
 File IDs select variants explicitly. `minVramGb` records Slopus's per-file
 minimum VRAM guidance in GB; zero means unrestricted, and omitted values have
@@ -60,8 +63,9 @@ identify required companion files, including Animate conditioning and LoRAs.
 For speech transcription, download the standard Hugging Face Whisper checkpoint:
 
 ```sh
-slopfab download whisper large-v3-turbo weights/whisper/whisper-large-v3-turbo.safetensors
-slopfab transcribe speech.wav --model weights/whisper/whisper-large-v3-turbo.safetensors --out transcript.srt
+slopfab download whisper large-v3-turbo
+# When running from the executable's folder:
+slopfab transcribe speech.wav --model weights/whisper-large-v3-turbo.safetensors --out transcript.srt
 ```
 
 Whisper's tokenizer and mel assets are embedded in Slopfab; no companion downloads
