@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory() as directory:
         run(command + ['--upscale-method', 'unknown'], expected=1)
         run(command + ['--upscale-method', 'seedvr2', '--upscale-segment-frames', '6'], expected=1)
         run(command + ['--upscale-method', 'seedvr2', '--upscale-tile', '64'], expected=1)
-        run(command + ['--upscale-method', 'seedvr2', '--inference-backend', 'vulkan'], expected=1)
+        assert 'seedvr2' in run(command + ['--upscale-method', 'seedvr2', '--inference-backend', 'vulkan'])
     custom = ['--upscale-method', 'seedvr2', '--upscale-resolution', '320x192', '--upscale-tile', '0']
     assert '320x192' in run(generate + custom)
     assert '128x128' in run(generate + ['--upscale-method', 'realesrgan'])
