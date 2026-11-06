@@ -31,25 +31,37 @@ void multiply(Runtime& rt, vk::DeviceTensor& x, vk::DeviceTensor& weight, vk::De
 }
 
 std::string vae_name(Runtime& rt, std::string name) {
-  if (!rt.checkpoint.find("decoder.mid.block_1.norm1.weight")) return name;
+  if (!rt.checkpoint.find("decoder.mid.block_1.norm1.weight"))
+    return name;
   const auto replace = [&](const std::string& from, const std::string& to) {
-    auto at = name.find(from); if (at != std::string::npos) name.replace(at, from.size(), to);
+    auto at = name.find(from);
+    if (at != std::string::npos)
+      name.replace(at, from.size(), to);
   };
-  if (name == "post_quant_conv") return "decoder.post_quant_conv";
-  if (name == "quant_conv") return "encoder.quant_conv";
+  if (name == "post_quant_conv")
+    return "decoder.post_quant_conv";
+  if (name == "quant_conv")
+    return "encoder.quant_conv";
   replace(".mid_block.resnets.0", ".mid.block_1");
   replace(".mid_block.resnets.1", ".mid.block_2");
   replace(".mid_block.attentions.0", ".mid.attn_1");
   for (int i = 0; i < 4; ++i) {
-    replace("decoder.up_blocks." + std::to_string(i), "decoder.up." + std::to_string(3-i));
+    replace("decoder.up_blocks." + std::to_string(i), "decoder.up." + std::to_string(3 - i));
     replace("encoder.down_blocks." + std::to_string(i), "encoder.down." + std::to_string(i));
   }
-  replace(".resnets.", ".block."); replace(".upsamplers.0", ".upsample");
-  replace(".downsamplers.0", ".downsample"); replace(".conv_norm_out", ".norm_out");
-  replace(".conv_shortcut", ".nin_shortcut"); replace(".group_norm", ".norm");
-  replace(".to_q", ".q"); replace(".to_k", ".k"); replace(".to_v", ".v"); replace(".to_out.0", ".proj_out");
+  replace(".resnets.", ".block.");
+  replace(".upsamplers.0", ".upsample");
+  replace(".downsamplers.0", ".downsample");
+  replace(".conv_norm_out", ".norm_out");
+  replace(".conv_shortcut", ".nin_shortcut");
+  replace(".group_norm", ".norm");
+  replace(".to_q", ".q");
+  replace(".to_k", ".k");
+  replace(".to_v", ".v");
+  replace(".to_out.0", ".proj_out");
   return name;
 }
+
 Image conv(Runtime& rt, const Image& x, const std::string& name, int stride = 1) {
   const auto p = vae_name(rt, name);
   const auto& tensor = rt.checkpoint.at(p + ".weight");
@@ -72,12 +84,14 @@ Image conv(Runtime& rt, const Image& x, const std::string& name, int stride = 1)
       uint32_t n = count * columns;
       dispatch(*rt.engine, x.data, x.data, x.data, patches,
                {FluxPatches, n, uint32_t(columns), uint32_t(first), uint32_t(x.h), uint32_t(x.w),
-                uint32_t(kernel), uint32_t(x.c), uint32_t(stride), uint32_t(y.w)}, (n + 255) / 256);
+                uint32_t(kernel), uint32_t(x.c), uint32_t(stride), uint32_t(y.w)},
+               (n + 255) / 256);
       multiply(rt, patches, weight, y.data, count, co, columns, 0, first, &bias);
     }
   }
   return y;
 }
+
 Image groupnorm(Runtime& rt, const Image& x, const std::string& name, bool silu = true) {
   const auto p = vae_name(rt, name);
   if (x.c % 32 || rt.checkpoint.at(p + ".weight").numel() != x.c ||
@@ -90,22 +104,24 @@ Image groupnorm(Runtime& rt, const Image& x, const std::string& name, bool silu 
            {FluxGroupNorm, uint32_t(x.h * x.w), uint32_t(x.c), uint32_t(silu)}, 32);
   return y;
 }
+
 Image resnet(Runtime& rt, Image x, const std::string& p) {
   auto y = conv(rt, groupnorm(rt, x, p + ".norm1"), p + ".conv1");
   y = conv(rt, groupnorm(rt, y, p + ".norm2"), p + ".conv2");
   if (rt.checkpoint.find(vae_name(rt, p + ".conv_shortcut") + ".weight"))
     x = conv(rt, x, p + ".conv_shortcut");
   uint32_t n = x.h * x.w * x.c;
-  dispatch(*rt.engine, y.data, x.data, x.data, y.data,
-           {krea_vulkan::ImageResidual, n}, (n + 255) / 256);
+  dispatch(*rt.engine, y.data, x.data, x.data, y.data, {krea_vulkan::ImageResidual, n},
+           (n + 255) / 256);
   return y;
 }
+
 Image upsample(Runtime& rt, const Image& x, const std::string& p) {
   Image y(rt, x.h * 2, x.w * 2, x.c);
   uint32_t n = y.h * y.w * y.c;
   auto& input = x.data;
-  dispatch(*rt.engine, input, input, input, y.data, {krea_vulkan::Nearest, n, uint32_t(x.c), uint32_t(x.w)},
-           (n + 255) / 256);
+  dispatch(*rt.engine, input, input, input, y.data,
+           {krea_vulkan::Nearest, n, uint32_t(x.c), uint32_t(x.w)}, (n + 255) / 256);
   return conv(rt, y, p + ".conv");
 }
 
@@ -130,41 +146,57 @@ Image attention(Runtime& rt, Image x, const std::string& p) {
   }
   y = conv(rt, y, p + ".to_out.0");
   uint32_t n = pixels * x.c;
-  dispatch(*rt.engine, y.data, x.data, x.data, y.data, {krea_vulkan::ImageResidual, n}, (n + 255) / 256);
+  dispatch(*rt.engine, y.data, x.data, x.data, y.data, {krea_vulkan::ImageResidual, n},
+           (n + 255) / 256);
   return y;
 }
 }
 
 std::vector<float> encode_flux_image(const std::string& path, const std::vector<uint8_t>& pixels,
-                                    int height, int width) {
-  if (height < 16 || width < 16 || height % 16 || width % 16 || pixels.size() != size_t(height)*width*3)
+                                     int height, int width) {
+  if (height < 16 || width < 16 || height % 16 || width % 16 ||
+      pixels.size() != size_t(height) * width * 3)
     throw std::invalid_argument("FLUX.2 VAE encoding needs an RGB image on the 16-pixel lattice");
   Runtime rt(path);
   std::vector<float> input(pixels.size());
-  for (size_t i=0;i<input.size();++i) input[i] = pixels[i] / 127.5f - 1;
-  Image x(rt,height,width,3);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = pixels[i] / 127.5f - 1;
+  Image x(rt, height, width, 3);
   x.data = rt.engine->upload(input, height * width, 3, true);
-  x=conv(rt,x,"encoder.conv_in");
-  for(int i=0;i<4;++i){const std::string p="encoder.down_blocks."+std::to_string(i);
-    for(int j=0;j<2;++j)x=resnet(rt,std::move(x),p+".resnets."+std::to_string(j));
-    if(i<3)x=conv(rt,x,p+".downsamplers.0.conv",2);
+  x = conv(rt, x, "encoder.conv_in");
+  for (int i = 0; i < 4; ++i) {
+    const std::string p = "encoder.down_blocks." + std::to_string(i);
+    for (int j = 0; j < 2; ++j)
+      x = resnet(rt, std::move(x), p + ".resnets." + std::to_string(j));
+    if (i < 3)
+      x = conv(rt, x, p + ".downsamplers.0.conv", 2);
   }
-  x=resnet(rt,std::move(x),"encoder.mid_block.resnets.0");
-  x=attention(rt,std::move(x),"encoder.mid_block.attentions.0");
-  x=resnet(rt,std::move(x),"encoder.mid_block.resnets.1");
-  x=conv(rt,groupnorm(rt,x,"encoder.conv_norm_out"),"encoder.conv_out");
-  x=conv(rt,x,"quant_conv");
-  if(x.c!=64)throw std::invalid_argument("FLUX.2 encoder must output 32 Gaussian means and log variances");
+  x = resnet(rt, std::move(x), "encoder.mid_block.resnets.0");
+  x = attention(rt, std::move(x), "encoder.mid_block.attentions.0");
+  x = resnet(rt, std::move(x), "encoder.mid_block.resnets.1");
+  x = conv(rt, groupnorm(rt, x, "encoder.conv_norm_out"), "encoder.conv_out");
+  x = conv(rt, x, "quant_conv");
+  if (x.c != 64)
+    throw std::invalid_argument("FLUX.2 encoder must output 32 Gaussian means and log variances");
   std::vector<float> moments(size_t(x.h) * x.w * x.c);
   rt.engine->flush();
   rt.engine->context.download(x.data, moments.data(), moments.size());
-  auto mean=to_f32(rt.checkpoint.at("bn.running_mean")),var=to_f32(rt.checkpoint.at("bn.running_var"));
-  if(mean.size()!=128||var.size()!=128)throw std::invalid_argument("FLUX.2 latent statistics shape");
-  const int h=height/16,w=width/16;std::vector<float> packed(size_t(h)*w*128);
-  for(int y=0;y<h;++y)for(int xx=0;xx<w;++xx)for(int c=0;c<32;++c)for(int dy=0;dy<2;++dy)for(int dx=0;dx<2;++dx){
-    int channel=c*4+dy*2+dx;float v=moments[(size_t(y*2+dy)*w*2+xx*2+dx)*64+c];
-    packed[(size_t(y)*w+xx)*128+channel]=(v-mean[channel])/std::sqrt(var[channel]+1e-4f);
-  }
+  auto mean = to_f32(rt.checkpoint.at("bn.running_mean")),
+       var = to_f32(rt.checkpoint.at("bn.running_var"));
+  if (mean.size() != 128 || var.size() != 128)
+    throw std::invalid_argument("FLUX.2 latent statistics shape");
+  const int h = height / 16, w = width / 16;
+  std::vector<float> packed(size_t(h) * w * 128);
+  for (int y = 0; y < h; ++y)
+    for (int xx = 0; xx < w; ++xx)
+      for (int c = 0; c < 32; ++c)
+        for (int dy = 0; dy < 2; ++dy)
+          for (int dx = 0; dx < 2; ++dx) {
+            int channel = c * 4 + dy * 2 + dx;
+            float v = moments[(size_t(y * 2 + dy) * w * 2 + xx * 2 + dx) * 64 + c];
+            packed[(size_t(y) * w + xx) * 128 + channel] =
+                (v - mean[channel]) / std::sqrt(var[channel] + 1e-4f);
+          }
   return packed;
 }
 
@@ -187,7 +219,7 @@ std::vector<float> decode_image(const std::string& path, const std::vector<float
                                 mean[channel];
             unpacked[(size_t(y * 2 + dy) * width * 2 + x * 2 + dx) * 32 + c] = value;
           }
-  Image x(rt,height * 2, width * 2, 32);
+  Image x(rt, height * 2, width * 2, 32);
   x.data = rt.engine->upload(unpacked, x.h * x.w, x.c, true);
   x = conv(rt, x, "post_quant_conv");
   x = conv(rt, x, "decoder.conv_in");

@@ -7,6 +7,7 @@
 namespace slopfab::fibo {
 RGBImage render_text(const std::string&);
 }
+
 namespace slopfab::fibo_vulkan {
 using moss_vulkan::Runtime;
 using moss_vulkan::Tensor;
@@ -22,6 +23,7 @@ struct ImageLatent {
   int height = 0, width = 0;
   std::vector<float> values;
 };
+
 Tensor rows(const Tensor&, int start, int count);
 Tensor join(const Tensor&, const Tensor&);
 Tensor reshape(const Tensor&, int rows, int cols);

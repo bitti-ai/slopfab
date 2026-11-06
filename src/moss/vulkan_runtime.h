@@ -13,10 +13,23 @@ using krea_vulkan::dispatch;
 
 // Shared image-model operations in tensor_krea.comp (0..14 belong to Krea).
 enum Operation {
-  Rms = 16, Modulate, Activation, CausalConv, DeltaParameters, RecurrentDelta,
-  LayerNorm, Gelu, CopyColumns, Scatter, FiboModulate, Scale, GatedResidual,
-  FluxPatches, FluxGroupNorm
+  Rms = 16,
+  Modulate,
+  Activation,
+  CausalConv,
+  DeltaParameters,
+  RecurrentDelta,
+  LayerNorm,
+  Gelu,
+  CopyColumns,
+  Scatter,
+  FiboModulate,
+  Scale,
+  GatedResidual,
+  FluxPatches,
+  FluxGroupNorm
 };
+
 uint32_t float_bits(float value);
 
 class Runtime : public krea_vulkan::Runtime {
@@ -28,6 +41,7 @@ public:
   Tensor attend(const Tensor&, const Tensor&, const Tensor&, int heads, int kv_heads,
                 bool causal = false, bool float_probabilities = false);
 };
+
 void residual(Tensor&, const Tensor&, const Tensor* modulation = nullptr, int gate = 0);
 Tensor activate(const Tensor&, const Tensor* gate = nullptr, bool situ = false,
                 bool sigmoid_gate = false);

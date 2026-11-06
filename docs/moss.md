@@ -1,8 +1,8 @@
 # MOSS Image
 
 slopfab supports native text-to-image generation with
-[MOSS-Image-SFT](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) on CUDA.
-The runtime uses C++/CUDA throughout: Qwen3.5-9B conditioning, the 42-layer MOSS
+[MOSS-Image-SFT](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) on CUDA and Vulkan.
+The native runtime implements Qwen3.5-9B conditioning, the 42-layer MOSS
 transformer, and the FP32 FLUX.2 small VAE decoder. No Python runtime is needed.
 
 ## Local assets
@@ -60,9 +60,9 @@ Optional `--sampler er_sde` and `--schedule beta` are supported independently or
 together. Beta uses the 1,000-point shifted training grid and defaults to
 alpha=beta=0.6. See [sampling settings](sampling_settings.md#er-sde-and-beta).
 
-The current MOSS implementation supports CUDA with `flash2` attention, which the
-CLI selects by default for MOSS. It does not implement Vulkan, references/image
-editing, LoRA, H3 caching/continuation/latent archives, or upscaling. These options
+MOSS supports CUDA and Vulkan with `flash2` attention. For Vulkan, select
+`--inference-backend vulkan --vulkan-arithmetic portable`. It does not implement
+references/image editing, LoRA, H3 caching/continuation/latent archives, or upscaling. These options
 fail explicitly. The tokenizer must match Qwen3.5. Model reuse currently releases
 MOSS stage weights after each stage. JSON layout prompts are passed verbatim as
 text; slopfab does not interpret layout objects.
@@ -83,7 +83,8 @@ Qwen3.5 tokenizer, and FLUX.2 VAE with the existing model-path setter; the VAE
 uses `SLOPFAB_MODEL_VIDEO_VAE`. There is no audio VAE. Model paths are explicit
 in the C API; it does not perform CLI file discovery.
 
-Select CUDA and `flash2`, set resolution/prompt/seed, then use the ordinary
+Select CUDA or Vulkan and `flash2` (Vulkan also needs
+`slopfab_request_set_vulkan_arithmetic(request, SLOPFAB_VULKAN_ARITHMETIC_PORTABLE)`), set resolution/prompt/seed, then use the ordinary
 planning and asynchronous generation APIs. MOSS returns one RGB frame and no
 audio, with the existing progress/cancellation and sample ownership contracts.
 The model family determines still-image behavior without requiring the H3
@@ -92,13 +93,19 @@ still-image flag. For a one-step smoke run, select the family before calling
 
 ## Validation and extension points
 
+`tools/moss_generation_smoke.py --library DLL --backend vulkan` checks native
+conditioning, generation, pixel ownership and cancellation. The Vulkan-only
+`slopfab_mossprobe_vulkan` accepts the same component fixtures as `slopfab_mossprobe`.
+RTX 5090 reference comparisons measured 1.85%/2.41% relative L2 for text/transformer
+and 0.013% for the FP32 VAE, within the existing 3%/0.1% tolerances.
+
 `ModelProfile` centralizes family identity, compatible asset discovery and
 family policy. The shared planner dispatches to a family planner before applying
 H3 geometry or sampling rules. The shared runner dispatches before H3-specific
 conditioner, denoising or codec logic. H3's existing kernels remain H3-specific;
 merely changing their dimensions is not treated as another model implementation.
 
-The MOSS CUDA runtime composes checkpoint-backed projection, normalization,
+The MOSS runtimes share the host pipeline and compose checkpoint-backed projection, normalization,
 activation and attention operations. It reuses the existing ConvRot readers,
 quantized linear operations, attention primitives, noise generator and output
 callbacks. Its bias-before-rounding behavior is separate from H3 arithmetic.

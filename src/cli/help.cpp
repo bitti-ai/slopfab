@@ -224,7 +224,7 @@ const CommandHelp kCommands[] = {
      "Output is a new H3 latent archive with resized video and unchanged audio.\n"},
     {"upscale", "slopfab upscale --input FILE --out FILE --upscale-method NAME [options]",
      "restore native images or Y4M video with Real-ESRGAN or SeedVR2",
-     "  --upscale-method NAME       realesrgan (default), seedvr2 (CUDA)\n"
+     "  --upscale-method NAME       realesrgan (default), seedvr2 (CUDA/Vulkan)\n"
      "  --upscale-model FILE        checkpoint; default path depends on method\n"
      "  --inference-backend NAME    cuda or vulkan (Real-ESRGAN only)\n"
      "  --upscale-tile N            128 input pixels for ESRGAN; 256 VAE output pixels for SeedVR2\n"
@@ -235,7 +235,7 @@ const CommandHelp kCommands[] = {
      "  --upscale-resolution WxH    SeedVR2 output size; default 4x input\n"
      "  --upscale-segment-frames N  SeedVR2 joint frames: 1 or 4n+1, default 5\n"
      "  --upscale-seed N            SeedVR2 seed, default 666\n"
-     "  --upscale-device N          SeedVR2 CUDA device, default 0\n"
+     "  --upscale-device N          SeedVR2 backend device, default 0\n"
      "  --upscale-no-color-match    disable SeedVR2 color correction\n"
      "  --dump FILE                save float pixels for .ppm output\n"
      "  --dry-run                  validate arguments without loading weights\n\n"
@@ -322,7 +322,7 @@ const CommandHelp kCommands[] = {
      "  --latent-upscale-model FILE  enable with a custom 3D conv v1 checkpoint\n"
      "  --latent-upscale-scale N     enable with scale 1..4 (default 2)\n"
      "  --latent-upscale-no-chunking process the full latent clip together\n"
-     "  --upscale-method <name>      enable realesrgan or seedvr2 (CUDA)\n"
+     "  --upscale-method <name>      enable realesrgan or seedvr2 (CUDA/Vulkan)\n"
      "  --upscale-tile <n>           ESRGAN input tile 128 / SeedVR2 VAE tile 256; 0 untiled\n"
      "  --upscale-tile-pad <n>       tile overlap, 10 input pixels\n"
      "  --upscale-pre-pad <n>        right/bottom reflection padding, 10\n"
@@ -330,7 +330,7 @@ const CommandHelp kCommands[] = {
      "  --upscale-vae FILE           SeedVR2 VAE checkpoint\n"
      "  --upscale-segment-frames N   SeedVR2 joint frames, default 5\n"
      "  --upscale-seed N             SeedVR2 seed, default 666\n"
-     "  --upscale-device N           SeedVR2 CUDA device, default 0\n"
+     "  --upscale-device N           SeedVR2 backend device, default 0\n"
      "  --upscale-no-color-match     disable SeedVR2 color correction\n"
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"

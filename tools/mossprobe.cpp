@@ -18,15 +18,15 @@ int main(int argc, char** argv) {
     if (mode == "text") {
       const auto ids = slopfab::to_f32(input.at("tokens"));
       std::vector<int32_t> tokens(ids.begin(), ids.end());
-      slopfab::moss::Runtime runtime(argv[2]);
-      result = slopfab::moss::to_host(slopfab::moss::encode_text(runtime, tokens));
+      slopfab::SLOPFAB_MOSS_NS::Runtime runtime(argv[2]);
+      result = slopfab::SLOPFAB_MOSS_NS::to_host(slopfab::SLOPFAB_MOSS_NS::encode_text(runtime, tokens));
       shape = {int64_t(tokens.size()), 4096};
     } else {
       const auto& tensor = input.at("image_latents");
       const auto latent = slopfab::to_f32(tensor);
       const int h = int(tensor.shape.at(0)), w = int(tensor.shape.at(1));
       if (mode == "vae") {
-        result = slopfab::moss::decode_image(argv[2], latent, h, w);
+        result = slopfab::SLOPFAB_MOSS_NS::decode_image(argv[2], latent, h, w);
         shape = {3, h * 16, w * 16};
       } else if (mode == "transformer") {
         const auto& text = input.at("prompt_embedding");
@@ -35,12 +35,12 @@ int main(int argc, char** argv) {
           const auto values = slopfab::to_f32(input.at("skip_layers"));
           skip.assign(values.begin(), values.end());
         }
-        slopfab::moss::Runtime runtime(argv[2]);
-        auto prediction = slopfab::moss::image_prediction(
-            runtime, slopfab::moss::from_host(latent, h * w, 128),
-            slopfab::moss::from_host(slopfab::to_f32(text), int(text.shape[0]), 4096), h, w,
+        slopfab::SLOPFAB_MOSS_NS::Runtime runtime(argv[2]);
+        auto prediction = slopfab::SLOPFAB_MOSS_NS::image_prediction(
+            runtime, slopfab::SLOPFAB_MOSS_NS::from_host(latent, h * w, 128),
+            slopfab::SLOPFAB_MOSS_NS::from_host(slopfab::to_f32(text), int(text.shape[0]), 4096), h, w,
             slopfab::to_f32(input.at("timestep")).at(0), skip);
-        result = slopfab::moss::to_host(prediction);
+        result = slopfab::SLOPFAB_MOSS_NS::to_host(prediction);
         shape = {h, w, 128};
       } else
         throw std::invalid_argument("unknown probe mode");

@@ -7,7 +7,7 @@ exe = str(Path(sys.argv[1]).resolve())
 
 
 def run(*args, success=True):
-    result = subprocess.run([exe, "generate", "--dry-run", *args], capture_output=True, text=True)
+    result = subprocess.run([exe, "generate", "--dry-run", "--vulkan-arithmetic", "portable", *args], capture_output=True, text=True)
     assert (result.returncode == 0) == success, (args, result.stdout, result.stderr)
     return result.stdout + result.stderr
 
@@ -21,9 +21,11 @@ for args in [
     ("--resolution", "513x512"), ("--guidance", "nan"),
     ("--uncond-skip-layers", "42"), ("--uncond-skip-layers", "22,"),
     ("--audio-steps", "8"), ("--frames", "22"), ("--attention", "sage2"),
-    ("--inference-backend", "vulkan"), ("--sampler", "ab2"), ("--out", "image.jpg"),
+    ("--inference-backend", "vulkan", "--vulkan-arithmetic", "exact"), ("--sampler", "ab2"), ("--out", "image.jpg"),
 ]:
     run("--model", "moss", *args, success=False)
 run("--model", "unknown", success=False)
 run("--model", "h3", "--negative-prompt", "bad", success=False)
+run("--model", "moss", "--inference-backend", "vulkan")
+run("--model", "fibo2", "--inference-backend", "vulkan")
 print("MOSS CLI checks passed")

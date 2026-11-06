@@ -61,6 +61,7 @@ SLOPFAB_TEST(fibo_mask_plan_and_guards) {
   CHECK(fails(r));
   r.sampling.video_sigma_shift.reset();
   slopfab::RunOptions o;
+  o.attention_mode = slopfab::AttentionMode::kFlash2;
   o.inference_backend = slopfab::DeviceBackend::kVulkan;
   bool rejected = false;
   try {
@@ -69,6 +70,8 @@ SLOPFAB_TEST(fibo_mask_plan_and_guards) {
     rejected = true;
   }
   CHECK(rejected);
+  o.vulkan_portable_arithmetic = true;
+  slopfab::validate_generation_options(r, p, o);
 }
 
 SLOPFAB_TEST(fibo_prompt_images_and_glyphs) {

@@ -17,7 +17,17 @@ std::unique_ptr<Upscaler> make_upscaler(UpscaleMethod method, const std::string&
   case UpscaleMethod::kRealEsrgan:
     return std::make_unique<RealEsrgan>(checkpoint, backend);
   case UpscaleMethod::kSeedVr2:
-    return make_seedvr2_upscaler(checkpoint, backend);
+    switch (backend) {
+#if SLOPFAB_WITH_CUDA
+    case DeviceBackend::kCuda:
+#endif
+#if SLOPFAB_WITH_VULKAN
+    case DeviceBackend::kVulkan:
+#endif
+      return make_seedvr2_upscaler(checkpoint, backend);
+    default:
+      throw std::invalid_argument("SeedVR2: requested backend was not compiled in");
+    }
   }
   throw std::invalid_argument("unknown upscale method");
 }

@@ -21,6 +21,11 @@ SLOPFAB_TEST(moss_plan_and_schedule) {
   for (size_t i = 1; i < p.video_sigmas.size(); ++i)
     CHECK(p.video_sigmas[i] < p.video_sigmas[i - 1]);
   CHECK(slopfab::moss_sigma_schedule(1, 5) == std::vector<float>({1, 0}));
+  slopfab::RunOptions options;
+  options.attention_mode = slopfab::AttentionMode::kFlash2;
+  options.inference_backend = slopfab::DeviceBackend::kVulkan;
+  options.vulkan_portable_arithmetic = true;
+  slopfab::validate_generation_options(r, p, options);
 }
 
 SLOPFAB_TEST(moss_rejects_incompatible_requests) {

@@ -147,7 +147,16 @@ Runtime::~Runtime() {
     engine->flush();
   } catch (...) {
   }
-  current = previous_;
+  if (current == this)
+    current = previous_;
+}
+
+Runtime::Scope::Scope(Runtime& rt) : previous_(current) { current = &rt; }
+Runtime::Scope::~Scope() { current = previous_; }
+void Runtime::leave_scope() {
+  if (current == this)
+    current = previous_;
+  previous_ = nullptr;
 }
 
 vk::DeviceTensor& Runtime::weight(const std::string& name) {

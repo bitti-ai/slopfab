@@ -35,6 +35,20 @@ struct Tensor {
 
 class Runtime {
 public:
+  // Persistent models activate their tensor allocator for each inference call,
+  // allowing multiple model instances to coexist on the same calling thread.
+  class Scope {
+  public:
+    explicit Scope(Runtime&);
+    ~Scope();
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+  private:
+    Runtime* previous_;
+  };
+
+  void leave_scope();
   explicit Runtime(const std::string& path, int device_index = -1);
   ~Runtime();
   Runtime(const Runtime&) = delete;

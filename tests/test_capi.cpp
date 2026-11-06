@@ -167,6 +167,8 @@ SLOPFAB_TEST(capi_seedvr2_validation) {
   CHECK(slopfab_seedvr2_upscale(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &count) ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(count == 0);
+  CHECK(slopfab_seedvr2_upscale_backend(nullptr, 1, nullptr, nullptr, nullptr, nullptr, nullptr, &count) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   slopfab_seedvr2_options o{};
   o.struct_size = sizeof(o);
   o.transformer_path = "missing.safetensors";
@@ -180,6 +182,9 @@ SLOPFAB_TEST(capi_seedvr2_validation) {
   CHECK(slopfab_seedvr2_upscale(&o, read, write, nullptr, nullptr, nullptr, &count) ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
   o.struct_size = sizeof(o); o.segment_frames = 5;
+  CHECK(slopfab_seedvr2_upscale_backend(&o, 2, read, write, nullptr, nullptr, nullptr, &count) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(count == 0);
   CHECK(slopfab_request_set_seedvr2_options(request, &o) == SLOPFAB_OK);
   slopfab_request_destroy(request);
 }

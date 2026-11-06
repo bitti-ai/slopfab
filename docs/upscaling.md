@@ -20,7 +20,7 @@ Weights are not included in the repository or downloaded by slopfab.
 The original project is [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN).
 
 [SeedVR2 3B](seedvr2.md) is also available through the same interface with
-`--upscale-method seedvr2`. It runs on CUDA and restores temporal segments with
+`--upscale-method seedvr2`. It runs on CUDA or Vulkan and restores temporal segments with
 a tiled VAE. The selector works for standalone media and generated output.
 
 ## Standalone image

@@ -1,7 +1,7 @@
 # SeedVR2 video restoration
 
-`slopfab upscale --upscale-method seedvr2` restores decoded video using SeedVR2 3B on CUDA. The native
-C++/CUDA implementation needs no Python, ComfyUI, text encoder, or H3 weights.
+`slopfab upscale --upscale-method seedvr2` restores decoded video using SeedVR2 3B on CUDA or Vulkan. The native
+C++ implementation needs no Python, ComfyUI, text encoder, or H3 weights.
 It reads the Comfy-Org safetensors directly, including their fixed positive
 text conditioning. Model downloads remain separate from the application.
 
@@ -24,6 +24,19 @@ Convert compressed inputs and encode final outputs with a separate FFmpeg
 installation. Audio remains a separate WAV. Existing outputs are refused and
 completed media is published from a temporary sibling file.
 
+Select Vulkan with `--inference-backend vulkan`; its restoration arithmetic is
+portable BF16 with FP32 accumulation. The temporal VAE, windowed transformer,
+FP16/FP8 checkpoints, color matching and cancellation are supported on both
+backends. Vulkan streams weights by VAE operation/DiT block, limits convolution
+patches to 2048 rows, and assembles spatial tiles on the CPU. CUDA-specific
+cache/pool controls below do not change the Vulkan path.
+
+The C++ `seedvr2::Options::backend` selects the backend. ABI 1.50 adds
+`slopfab_seedvr2_upscale_backend(options, backend, ...)` (0 CUDA, 1 Vulkan),
+without changing the options struct. The original streaming entry point uses
+CUDA when compiled in, otherwise Vulkan. Generation upscaling follows the
+request?s inference backend.
+
 ## Clip length and memory
 
 The CLI native reader currently buffers decoded input with a 2 GiB limit, so
@@ -35,7 +48,7 @@ its existing bounded-memory behavior and is unchanged.
 | `--upscale-segment-frames N` | 5 | Restore `4n+1` frames jointly; 1 permits independent image processing |
 | `--upscale-tile N` | 256 | Bound VAE spatial activations; multiples of 16 from 128 to 2048, or 0 for untiled |
 | `--upscale-seed N` | 666 | Separate restoration seed |
-| `--upscale-device N` | 0 | CUDA device index |
+| `--upscale-device N` | 0 | Device index within the selected backend |
 | `--upscale-no-color-match` | off | Disable per-frame RGB mean/std color correction |
 
 For a 32 GB RTX 5090 at 720p, an untiled VAE avoids spatial tile boundaries:
@@ -52,7 +65,7 @@ window; 17 is the first supported length with multiple positions per window.
 The VAE also provides temporal context at shorter lengths. Explicit settings are honored;
 allocation failure reports an error instead of silently changing quality settings.
 
-Weights are memory mapped. A restorer caches converted weights across blocks
+Weights are memory mapped. The CUDA restorer caches converted weights across blocks
 and segments within a budget: one third of initially free CUDA memory, capped
 at 8 GiB, and disabled when less than 8 GiB is initially free. Uncached weights
 retain their bounded stage/block lifetimes. Set `SLOPFAB_SEEDVR2_CACHE_MIB=0`
@@ -60,7 +73,7 @@ to disable residency, or a nonnegative MiB value to select a budget (clamped
 to half the initially free memory). This changes memory use, not model settings.
 The OS may also cache the checkpoint in host memory.
 
-Activations and temporary buffers reuse separate pools. MLPs process at most
+On CUDA, activations and temporary buffers reuse separate pools. MLPs process at most
 4096 token rows at a time. Convolution uses a reusable arena of at most 32 MiB,
 with a direct GEMM path for pointwise kernels. Attention processes windows
 without allocating a full-video attention matrix. VAE width-512 attention
@@ -316,6 +329,12 @@ They keep model geometry/RNG settings fixed. Smaller pool/scratch consumption
 does not imply lower total VRAM when weight residency is enabled.
 
 ### Correctness checks
+
+`ctest -R image_vulkan` covers temporal convolution/padding, per-frame normalization,
+temporal pixel shuffle, window packing and text pooling. Run
+`tools/seedvr2_vulkan_smoke.py --library DLL --dit DIT --vae VAE --compare-cuda`
+for a real-checkpoint streaming comparison. On an RTX 5090, five 32x48 frames
+matched CUDA within 0.66% relative L2; cancellation and a Vulkan-only build also passed.
 
 Host tests cover regular/shifted window partitions, overlap blending, settings,
 partial final segments, and exact output counts for clips through 1001 frames.

@@ -106,6 +106,7 @@ struct Model final : ModelBackend {
     expect(vae, "decoder.conv_in.weight", {512, 16, 3, 3, 3});
 #ifdef SLOPFAB_SEED_VULKAN
     rt = std::make_unique<Runtime>(o.transformer, o.device);
+    rt->leave_scope();
 #else
     cuda::set_device(o.device);
     rt = std::make_unique<Runtime>();
@@ -484,6 +485,9 @@ struct Model final : ModelBackend {
 
 std::vector<Frame> Model::restore(const std::vector<Frame>& frames, uint64_t /*first*/) {
   auto& p = *this;
+#ifdef SLOPFAB_SEED_VULKAN
+  music_gpu::Runtime::Scope tensor_scope(*p.rt);
+#endif
   const auto& o = p.o;
   if (frames.empty() || frames.size() > size_t(o.segment_frames) || (frames.size() - 1) % 4)
     throw std::invalid_argument("SeedVR2: restoration needs 4n+1 frames within segment_frames");

@@ -79,7 +79,12 @@ extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
     const slopfab_seedvr2_options* options, slopfab_seedvr2_read_fn read_frame,
     slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
     slopfab_seedvr2_progress_fn progress, void* user, uint64_t* frames_written) {
-  return slopfab_seedvr2_upscale_backend(options, SLOPFAB_WITH_CUDA ? 0 : 1, read_frame,
+#if SLOPFAB_WITH_CUDA
+  constexpr int backend = 0;
+#else
+  constexpr int backend = 1;
+#endif
+  return slopfab_seedvr2_upscale_backend(options, backend, read_frame,
                                         write_frame, cancelled, progress, user, frames_written);
 }
 

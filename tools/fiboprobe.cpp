@@ -10,7 +10,10 @@ int main(int argc, char** argv) {
       throw std::invalid_argument(
           "fiboprobe perceiver|transformer|encode|vae|text MODEL INPUT OUTPUT");
     using namespace slopfab;
-    using namespace fibo;
+    using namespace SLOPFAB_FIBO_NS;
+#ifdef SLOPFAB_IMAGE_VULKAN
+    Runtime scope(argv[2]);
+#endif
     std::string mode = argv[1];
     std::vector<float> output;
     std::vector<int64_t> shape;
@@ -21,11 +24,16 @@ int main(int argc, char** argv) {
       auto x = vision(
           rt, text::qwen3vl_patchify_resized_rgb(image.pixels, image.width, image.height), deep);
       Tensor packed(x.rows, 10240);
+#ifdef SLOPFAB_IMAGE_VULKAN
+      copy_columns(x, packed, 0);
+      for(int i=0;i<3;++i)copy_columns(deep[i],packed,(i+1)*2560);
+#else
       SLOPFAB_CUDA_CHECK(cudaMemcpy2D(packed.ptr(), 10240 * 2, x.ptr(), 2560 * 2, 2560 * 2, x.rows,
                                       cudaMemcpyDeviceToDevice));
       for (int i = 0; i < 3; ++i)
         SLOPFAB_CUDA_CHECK(cudaMemcpy2D(packed.ptr() + (i + 1) * 2560, 10240 * 2, deep[i].ptr(),
                                         2560 * 2, 2560 * 2, x.rows, cudaMemcpyDeviceToDevice));
+#endif
       output = to_host(packed);
       shape = {x.rows, 10240};
     } else if (mode == "text") {
@@ -33,14 +41,18 @@ int main(int argc, char** argv) {
           encode_prompt(argv[2], "", "Make the object blue", {load_reference_image(argv[3])}, [] {
           });
       Tensor packed(context[0].rows, 46080);
+#ifdef SLOPFAB_IMAGE_VULKAN
+      for(int i=0;i<6;++i)copy_columns(context[i],packed,i*7680);
+#else
       for (int i = 0; i < 6; ++i)
         SLOPFAB_CUDA_CHECK(cudaMemcpy2D(packed.ptr() + i * 7680, 46080 * 2, context[i].ptr(),
                                         7680 * 2, 7680 * 2, packed.rows, cudaMemcpyDeviceToDevice));
+#endif
       output = to_host(packed);
       shape = {packed.rows, packed.cols};
     } else if (mode == "encode") {
       auto image = load_reference_image(argv[3]);
-      output = moss::encode_flux_image(argv[2], image.pixels, image.height, image.width);
+      output = SLOPFAB_MOSS_NS::encode_flux_image(argv[2], image.pixels, image.height, image.width);
       shape = {image.height / 16, image.width / 16, 128};
     } else {
       SafeTensors input;
@@ -48,20 +60,20 @@ int main(int argc, char** argv) {
       if (mode == "vae") {
         const auto& t = input.at("image_latents");
         int h = int(t.shape[0]), w = int(t.shape[1]);
-        output = moss::decode_image(argv[2], to_f32(t), h, w);
+        output = SLOPFAB_MOSS_NS::decode_image(argv[2], to_f32(t), h, w);
         shape = {3, h * 16, w * 16};
       } else {
         Runtime rt(argv[2]);
         const auto& t = input.at("prompt_embedding");
         auto packed = from_host(to_f32(t), int(t.shape[0]), int(t.shape[1]));
-        auto gist = perceiver(rt, moss::slice(packed, 0, 7680), true);
+        auto gist = perceiver(rt, SLOPFAB_MOSS_NS::slice(packed, 0, 7680), true);
         if (mode == "perceiver") {
           output = to_host(gist);
           shape = {gist.rows, gist.cols};
         } else if (mode == "transformer") {
           std::vector<Tensor> context;
           for (int i = 0; i < 6; ++i)
-            context.push_back(moss::slice(packed, i * 7680, 7680));
+            context.push_back(SLOPFAB_MOSS_NS::slice(packed, i * 7680, 7680));
           const auto& x = input.at("image_latents");
           int h = int(x.shape[0]), w = int(x.shape[1]);
           const auto& ref = input.at("reference_latents");
