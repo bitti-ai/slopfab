@@ -1,7 +1,7 @@
 ---
 name: download
 description: List available model files and download selected weights.
-version: "1.5"
+version: "1.6"
 command: download
 script: main.js
 ---
@@ -15,6 +15,13 @@ slopfab download MODEL FILE_ID DESTINATION    # Override the destination
 ```
 
 Listings are offline. Add `--agent` for structured responses.
+
+Before selecting downloads, run `slopfab devices` and check the current GPU's
+available VRAM. Choose compatible model variants and companion files that fit,
+leaving headroom for inference. Use catalog `minVramGb` values as per-file guidance,
+not a guarantee that the full pipeline fits; missing values mean unknown.
+Prefer supported lower-memory quantizations and smaller text encoders with their
+matching ClipProj projections when needed. Do not download every variant.
 
 Downloads default to `weights/` beside the running Slopfab executable, regardless
 of the working directory. The filename comes from the URL or the catalog's
