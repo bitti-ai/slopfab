@@ -1,4 +1,9 @@
 #pragma once
+#ifdef SLOPFAB_IMAGE_VULKAN
+#include "vulkan_runtime.h"
+#define SLOPFAB_MOSS_NS moss_vulkan
+#else
+#define SLOPFAB_MOSS_NS moss
 #include "slopfab/cuda/attention.cuh"
 #include "slopfab/cuda/linear.cuh"
 #include "slopfab/safetensors.h"
@@ -80,3 +85,5 @@ std::vector<float> decode_image(const std::string& path, const std::vector<float
 std::vector<float> encode_flux_image(const std::string& path, const std::vector<uint8_t>& pixels,
                                      int height, int width);
 } // namespace slopfab::moss
+
+#endif

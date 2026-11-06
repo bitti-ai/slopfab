@@ -36,6 +36,13 @@ if(SLOPFAB_ENABLE_VULKAN)
     src/text/clip_student_vulkan.cpp
     src/krea/transformer_vulkan.cpp
     src/krea/vae_vulkan.cpp
+    src/moss/vulkan_runtime.cpp
+    src/moss/text_vulkan.cpp
+    src/moss/transformer_vulkan.cpp
+    src/moss/vae_vulkan.cpp
+    src/fibo/ops_vulkan.cpp
+    src/fibo/text_vulkan.cpp
+    src/fibo/transformer_vulkan.cpp
     src/vulkan/tensor_music.cpp
     src/music/vulkan_runtime.cpp
     src/music/yue_vulkan.cpp

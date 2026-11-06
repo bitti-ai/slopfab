@@ -1,4 +1,9 @@
 #pragma once
+#ifdef SLOPFAB_IMAGE_VULKAN
+#include "vulkan_runtime.h"
+#define SLOPFAB_FIBO_NS fibo_vulkan
+#else
+#define SLOPFAB_FIBO_NS fibo
 #include "../moss/runtime.cuh"
 #include "slopfab/fibo.h"
 #include "slopfab/text/qwen_vision.h"
@@ -38,3 +43,5 @@ Tensor predict(Runtime& rt, const Tensor& latent, int height, int width,
 ImageLatent encode_image(const std::string& path, const RGBImage& image);
 RGBImage render_text(const std::string& text);
 }
+
+#endif
