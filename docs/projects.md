@@ -1,10 +1,12 @@
 # Agent-driven projects
 
 Use a project when a user asks for generated media. A project is a folder under
-the output directory, containing `project.json`, `PROJECT.md`, `index.html` and
-its media. The CLI embeds the [HTML template](../templates/project.html), so the
-page also works when the executable is installed by itself. No server, CDN,
-account or browser-to-agent connection is required.
+the output directory, containing `project.json`, `PROJECT.md` and its media.
+Its review page sits alongside that folder as `output/NAME.html`, with an embedded
+favicon and links into the project folder. The CLI embeds the
+[HTML template](../templates/project.html), so the page also works when the
+executable is installed by itself. No server, CDN, account or browser-to-agent
+connection is required.
 
 ```sh
 slopfab projects create launch-film --title "Launch film"
@@ -15,7 +17,7 @@ slopfab projects show launch-film
 slopfab projects open launch-film
 ```
 
-Use `slopfab projects open NAME` to open `index.html` in the default browser,
+Use `slopfab projects open NAME` to open `NAME.html` in the default browser,
 or open the returned `index_path` yourself. The command supports `--output-dir`
 and the configured output directory. If the page is missing, rebuild it with
 `slopfab projects render NAME`. The page shows images, video and
@@ -88,7 +90,7 @@ on every platform.
   `projects update`. Their `--file` and `--preview` arguments are relative to
   the command's working directory. The CLI copies them into the naming layout;
   files already at the exact canonical destination are registered in place.
-- Registration refreshes `index.html` and `PROJECT.md`. Use `projects render`
+- Registration refreshes `NAME.html` and `PROJECT.md`. Use `projects render`
   to recover/rebuild the page without modifying the manifest.
 
 Every new item has a stable ID. To replace an image while preserving that ID:

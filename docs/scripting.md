@@ -80,7 +80,7 @@ perform filesystem operations. Writes do not automatically create parent folders
 `path.join(...parts)`, `path.resolve(...parts)`, `path.dirname(file)`,
 `path.basename(file)` and `path.extname(file)` use native filesystem paths.
 `path.fileUrl(file)` produces an absolute, percent-encoded `file://` URL suitable
-for sharing the project's `index.html` in a terminal.
+for sharing the project's `NAME.html` in a terminal.
 
 ### Processes and all CLI commands
 

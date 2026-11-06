@@ -30,14 +30,21 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     created = run("projects", "create", "demo", "--title", title)["project"]
     directory = output / "demo"
     assert Path(created["directory"]) == directory
+    assert Path(created["index_path"]) == output / "demo.html"
+    assert not (directory / "index.html").exists()
     assert (directory / "PROJECT.md").is_file()
     assert "exact" in created["naming_rules"]["manifest"]
-    html = (directory / "index.html").read_text(encoding="utf-8")
+    html = (output / "demo.html").read_text(encoding="utf-8")
     assert title not in html
+    assert 'rel="icon" type="image/svg+xml" href="data:image/svg+xml,' in html
     data = json.loads(re.search(r'<script id="project-data" type="application/json">(.*?)</script>', html, re.S)[1])
     assert data["title"] == title
+    assert data["relative_directory"] == "demo"
+    assert Path(data["index_path"]) == output / "demo.html"
     assert "fetch(" not in html and "XMLHttpRequest" not in html
-    assert run("projects", "list")["projects"][0]["name"] == "demo"
+    listed = run("projects", "list")["projects"][0]
+    assert listed["name"] == "demo"
+    assert Path(listed["index_path"]) == output / "demo.html"
     run("projects", "create", "demo", code=6)
     run("projects", "create", "../escape", code=2)
     run("projects", "create", "con", code=2)
@@ -129,12 +136,12 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert Path(plan["output"]) == directory / "assets/cover/v3/source.png"
     run("generate", "image", "--project", "demo", "--count", "2", "--prompt", "new", "--dry-run")
     assert (directory / "project.json").read_bytes() == before
-    (directory / "index.html").unlink()
+    (output / "demo.html").unlink()
     missing_index = run("projects", "open", "demo", code=3)
     assert "projects render demo" in json.dumps(missing_index)
-    assert not (directory / "index.html").exists()
+    assert not (output / "demo.html").exists()
     run("projects", "render", "demo")
-    assert (directory / "index.html").is_file()
+    assert (output / "demo.html").is_file()
     assert (directory / "project.json").read_bytes() == before
 
     # Exercise the desktop launcher without opening a real browser.
@@ -149,8 +156,8 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
         for options in ((), ("--output-dir", str(output))):
             opened = run("projects", "open", "demo", *options, env=env)
             assert opened["opened"] is True
-            assert Path(opened["project"]["index_path"]) == directory / "index.html"
-            assert captured.read_text().splitlines() == ["1", str(directory / "index.html")]
+            assert Path(opened["project"]["index_path"]) == output / "demo.html"
+            assert captured.read_text().splitlines() == ["1", str(output / "demo.html")]
         assert (directory / "project.json").read_bytes() == before
         opener.write_text("#!/bin/sh\nexit 1\n")
         assert "OPEN_FAILED" in json.dumps(run("projects", "open", "demo", code=6, env=env))
@@ -170,9 +177,11 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
         run("generate", "image", "--project", "demo", "--out", "escape/out.png", "--prompt", "new", "--dry-run", code=2)
         assert not list(outside.iterdir())
         (outside / "index.html").write_text("outside project")
-        (directory / "index.html").unlink()
-        (directory / "index.html").symlink_to(outside / "index.html")
+        (output / "demo.html").unlink()
+        (output / "demo.html").symlink_to(outside / "index.html")
         run("projects", "open", "demo", code=2)
+        run("projects", "render", "demo", code=2)
+        assert (outside / "index.html").read_text() == "outside project"
 
     help_text = run("help", "projects")["options"]
     assert "naming" in help_text and "--preview" in help_text

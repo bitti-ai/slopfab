@@ -1,5 +1,5 @@
 // Optional real-browser check. Supply a local Playwright package directory,
-// generated project index.html, and an installed Chromium/Chrome executable.
+// generated project NAME.html, and an installed Chromium/Chrome executable.
 // node tests/test_projects_page.cjs PLAYWRIGHT_DIR INDEX_HTML CHROME_EXE
 const { chromium } = require(require("path").resolve(process.argv[2]));
 const { pathToFileURL } = require("url");
@@ -36,6 +36,25 @@ const assert = require("assert/strict");
       assert(Math.abs(section.x - workspace.x) < 1);
     }
     const projectName = await page.evaluate(() => project.name);
+    for (const [selector, filename] of [
+      ["#project-guide", "PROJECT.md"],
+      ["#project-manifest", "project.json"],
+    ]) {
+      assert.equal(
+        await page.locator(selector).getAttribute("href"),
+        `${projectName}/${filename}`,
+      );
+    }
+    assert.equal(
+      await page.evaluate(() => safeURL("assets/a # b/source.png")),
+      `${projectName}/assets/a%20%23%20b/source.png`,
+    );
+    assert(await page.locator('link[rel="icon"]').evaluate(async (link) => {
+      const icon = new Image();
+      icon.src = link.href;
+      await icon.decode();
+      return icon.naturalWidth > 0;
+    }));
     await page.locator("#action").selectOption("regenerate");
     assert.equal(
       await page.locator("#notes").inputValue(),

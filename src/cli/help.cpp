@@ -191,15 +191,15 @@ const CommandHelp kCommands[] = {
      "Guides include local capability limits, source links and original examples; fill placeholders for the actual brief.\n"},
     {"projects", "slopfab projects ACTION [NAME] [ITEM_ID] [options]",
      "Organize generation results in an output folder with an offline review page and copyable agent edit prompts.",
-     "  projects create NAME [--title TEXT]   create project.json, PROJECT.md and index.html\n"
+     "  projects create NAME [--title TEXT]   create project.json, PROJECT.md and output/NAME.html\n"
      "  projects list                        list projects in the output directory\n"
      "  projects show NAME                   read items, exact filenames, recipes and naming rules\n"
-     "  projects open NAME                   open index.html in the default browser\n"
+     "  projects open NAME                   open NAME.html in the default browser\n"
      "  projects add NAME --file PATH        import and register media; --id ID sets a stable ID\n"
      "  projects update NAME ID [options]    replace media, preview or metadata; retain older files\n"
      "  projects remove NAME ID              remove from the active project; retain files/history\n"
      "  projects restore NAME ID             restore a removed item\n"
-     "  projects render NAME                 rebuild index.html and PROJECT.md from the manifest\n"
+     "  projects render NAME                 rebuild NAME.html and PROJECT.md from the manifest\n"
      "  --output-dir DIR                     root directory; default: settings.output_directory or ./output\n"
      "  --title TEXT --prompt TEXT           item label and generation prompt (add/update)\n"
      "  --file PATH --preview PATH           source or browser preview; paths relative to working directory\n"
@@ -209,12 +209,12 @@ const CommandHelp kCommands[] = {
      "  --position N --start SECONDS --end SECONDS   clip order and optional source trim (add/update)\n"
      "  --if-revision N                      reject stale add/update/remove/restore operations\n"
      "Use projects for user generation requests. Create a project, then generate with --project NAME.\n"
-     "Read PROJECT.md or projects show before writing files: index.html uses exact manifest paths, not a folder scan.\n"
+     "Read PROJECT.md or projects show before writing files: NAME.html uses exact manifest paths, not a folder scan.\n"
      "Imports use assets/ID/vVERSION/source.EXT and preview.EXT; registration regenerates the page.\n"
      "Use --project-item ID to regenerate an item under its stable ID. Preserve unrelated items.\n"
      "After clip edits, rebuild the parent video externally and register it with projects update --file.\n"
      "For Y4M/PPM, create a browser preview with external FFmpeg and register --preview.\n"
-     "Open index.html locally: actions generate prompts to paste into an agent; the page executes no commands.\n"},
+     "Open NAME.html locally: actions generate prompts to paste into an agent; the page executes no commands.\n"},
     {"upscale-latents", "slopfab upscale-latents --input FILE --out FILE [options]",
      "upscale an existing H3 latent archive without diffusion or decoding",
      "  --model FILE               H3 3D conv v1 checkpoint (default under weights/)\n"

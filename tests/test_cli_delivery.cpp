@@ -189,7 +189,7 @@ int main() {
       require(previous.find("prompt")->as_string() == "Project image" &&
                   previous.find("lyrics")->as_string() == "Original lyrics\nSecond line",
               "project history lost previous prompt inputs");
-      require(std::filesystem::exists(directory / "index.html"), "project page was not generated");
+      require(std::filesystem::exists(directory.parent_path() / "review.html"), "project page was not generated");
       // An edit after planning must not be replaced by a late generation.
       prepare_project_generation(request, false, 1);
       std::filesystem::create_directories(std::filesystem::u8path(request.out_path).parent_path());

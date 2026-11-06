@@ -92,13 +92,13 @@ std::string media_kind(const fs::path& path) {
 Value naming_rules() {
   return Value(Object{
       {"manifest",
-       str("project.json is the source of truth. index.html uses items[].file and items[].preview as exact project-relative paths; it does not scan folders.")},
+       str("project.json is the source of truth. The project HTML page uses items[].file and items[].preview as exact project-relative paths; it does not scan folders.")},
       {"imports",
        str("Imported files: assets/ITEM_ID/vVERSION/source.EXT and preview.EXT. IDs use lowercase letters, digits, - or _. Versions are positive integers; old files are retained.")},
       {"generation",
        str("generate --project NAME chooses and registers assets/ITEM_ID/vVERSION/source.EXT. Batches append -001, -002, etc. Custom --out paths are relative to the project and must stay inside it; never overwrite a registered file.")},
       {"registration",
-       str("Use projects add NAME --file PATH for a new item; projects update NAME ID --file PATH or --preview PATH for a replacement. Registration writes project.json and regenerates index.html. Simply placing files in a folder does not register them.")},
+       str("Use projects add NAME --file PATH for a new item; projects update NAME ID --file PATH or --preview PATH for a replacement. Registration writes project.json and regenerates NAME.html in the output directory. Simply placing files in a folder does not register them.")},
       {"previews",
        str("PNG/JPEG/WebP/GIF, MP4/WebM and WAV/MP3/Ogg are browser-friendly. For Y4M/PPM, use external ffmpeg to create a preview, then projects update NAME ID --preview FILE. Slopfab does not invoke FFmpeg.")}});
 }
@@ -191,8 +191,9 @@ void atomic_text(const fs::path& path, const std::string& text) {
 Value context(const fs::path& directory, const Value& manifest) {
   auto object = manifest.as_object();
   object["directory"] = str(directory.u8string());
+  object["relative_directory"] = str(directory.filename().u8string());
   object["manifest_path"] = str((directory / "project.json").u8string());
-  object["index_path"] = str((directory / "index.html").u8string());
+  object["index_path"] = str(project_index_path(directory).u8string());
   object["naming_rules"] = naming_rules();
   return Value(object);
 }
@@ -206,10 +207,10 @@ void render(const fs::path& directory, const Value& manifest) {
   std::string html = kProjectTemplate;
   const std::string marker = "__SLOPFAB_PROJECT_DATA__";
   html.replace(html.find(marker), marker.size(), escaped);
-  atomic_text(inside(directory, "index.html"), html);
+  atomic_text(project_index_path(directory), html);
   std::string guide =
       "# " + field(manifest, "name") +
-      "\n\nOpen index.html to review media and copy edit prompts into your agent.\n\n## File naming and registration\n\n";
+      "\n\nOpen ../" + directory.filename().u8string() + ".html to review media and copy edit prompts into your agent.\n\n## File naming and registration\n\n";
   const auto rules = naming_rules();
   for (const auto& rule : rules.as_object())
     guide += "- " + rule.second.as_string() + "\n";
@@ -219,10 +220,10 @@ void render(const fs::path& directory, const Value& manifest) {
 }
 
 void open_index(const fs::path& directory) {
-  const auto path = inside(directory, "index.html");
+  const auto path = project_index_path(directory);
   if (!fs::is_regular_file(path))
     throw CliError("INPUT_NOT_FOUND",
-                   "project index.html not found; run projects render " + directory.filename().u8string(), 3);
+                   "project HTML page not found; run projects render " + directory.filename().u8string(), 3);
 #ifdef _WIN32
   const auto result = reinterpret_cast<INT_PTR>(
       ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
@@ -443,6 +444,10 @@ std::filesystem::path project_directory(const std::string& name, const std::stri
   return inside(root, fs::u8path(name));
 }
 
+std::filesystem::path project_index_path(const fs::path& directory) {
+  return inside(directory.parent_path(), directory.filename().u8string() + ".html");
+}
+
 int projects_command(const std::vector<std::string>& args) {
   std::vector<std::string> positional;
   Options options;
@@ -498,7 +503,7 @@ int projects_command(const std::vector<std::string>& args) {
         projects.emplace_back(Object{{"name", *manifest.find("name")},
                                      {"title", *manifest.find("title")},
                                      {"directory", str(directory.u8string())},
-                                     {"index_path", str((directory / "index.html").u8string())}});
+                                     {"index_path", str(project_index_path(directory).u8string())}});
       }
     response["projects"] = Value(projects);
     response["output_directory"] = str(root.u8string());
@@ -604,7 +609,7 @@ Value record_project_generation(const GenerateRequest& request, const Value& res
                ? "Create a browser preview with external FFmpeg (MP4/WebM for Y4M, PNG for PPM); include the generated WAV soundtrack when present. Register it with projects update NAME ID --preview FILE, then open index_path."
                : "Open index_path to review the result and copy edit prompts into your agent.")},
       {"manifest_path", str((directory / "project.json").u8string())},
-      {"index_path", str((directory / "index.html").u8string())}});
+      {"index_path", str(project_index_path(directory).u8string())}});
 }
 
 Value register_remote_generation(const fs::path& directory, const std::string& id,

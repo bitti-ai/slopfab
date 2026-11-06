@@ -394,7 +394,7 @@ Value collect(const Value& receipt, const fs::path& directory, bool provisioned 
       }
     }
     manifest["project_items"] = Value(items);
-    manifest["index_path"] = str((project / "index.html").u8string());
+    manifest["index_path"] = str(project_index_path(project).u8string());
   }
   std::map<std::string, std::string> paths;
   auto remote_root = field(Value(manifest), "remote_directory");

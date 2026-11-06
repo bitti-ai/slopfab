@@ -556,7 +556,7 @@ Value capabilities() {
            {"open", str("slopfab projects open NAME")},
            {"generate", str("generate --project NAME; --project-item ID replaces an item")},
            {"manifest", str("project.json")},
-           {"preview", str("index.html: offline media review and copyable agent prompts")},
+           {"preview", str("NAME.html: offline media review and copyable agent prompts")},
            {"naming",
             str("PROJECT.md and projects show describe exact manifest paths and naming rules")}})},
       {"schema_command", str("slopfab schema")}});

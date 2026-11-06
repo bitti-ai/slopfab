@@ -8,6 +8,7 @@
       content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' file: data:; media-src 'self' file: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>Slopfab project</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23121415'/%3E%3Cpath d='M23 9H12a4 4 0 0 0 0 8h8a3 3 0 0 1 0 6H9' fill='none' stroke='%23d4ef85' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
     <style>
       :root {
         color-scheme: dark;
@@ -948,8 +949,8 @@
         <summary>Project files &amp; naming rules</summary>
         <ul id="rules"></ul>
         <p>
-          Read <a href="PROJECT.md">PROJECT.md</a> for the workflow or
-          <a href="project.json">project.json</a> for exact filenames and
+          Read <a id="project-guide">PROJECT.md</a> for the workflow or
+          <a id="project-manifest">project.json</a> for exact filenames and
           generation recipes.
         </p>
         <pre id="location" class="rules"></pre>
@@ -1146,8 +1147,11 @@
           /^[a-z]+:/i.test(path)
         )
           return "";
-        return path.split("/").map(encodeURIComponent).join("/");
+        return [project.relative_directory, ...path.split("/")]
+          .map(encodeURIComponent).join("/");
       };
+      $("project-guide").href = safeURL("PROJECT.md");
+      $("project-manifest").href = safeURL("project.json");
       const previewable = (path) =>
         /\.(png|jpe?g|webp|gif|mp4|webm|wav|mp3|ogg|flac|m4a)$/i.test(
           path || "",

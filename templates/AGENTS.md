@@ -1,4 +1,4 @@
-6
+7
 
 # Slopfab media generation
 
@@ -73,16 +73,17 @@ If the user delegates choices, state reasonable defaults and proceed.
 Use a project under the configured output root (default `./output`):
 
 ```text
-OUTPUT/PROJECT/
-  PROJECT.md                 workflow and filename rules
-  project.json               exact paths, IDs, recipes and history
-  index.html                 previews and copyable edit prompts
-  assets/ITEM_ID/vVERSION/
-    source.EXT
-    preview.EXT               optional browser preview
+OUTPUT/
+  PROJECT.html               previews and copyable edit prompts (embedded favicon)
+  PROJECT/
+    PROJECT.md               workflow and filename rules
+    project.json             exact paths, IDs, recipes and history
+    assets/ITEM_ID/vVERSION/
+      source.EXT
+      preview.EXT             optional browser preview
 ```
 
-Call `slopfab projects open NAME` for the project once, to open the index.html in browser.
+Call `slopfab projects open NAME` for the project once, to open OUTPUT/NAME.html in the browser.
 Read the project instructions and current manifest before edits. Only write files inside the project folder. 
 Let project generation name/register files; register externally created media and previews
 too. The page uses exact manifest paths, not a folder scan. Preserve stable IDs,
