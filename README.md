@@ -10,13 +10,37 @@ Ask your agent to create [mods](docs/mods.md): reusable workflows you can share 
 
 [Documentation](docs/agent-cli.md)
 
-To package existing Windows and Linux builds, run `package.cmd`. It creates ZIP
-and tar.gz archives in `dist/`, containing only `slopfab.exe`, `slopfab` and
-`mods/` at the top level. The mods provide `slopfab download` and
-`slopfab licenses` (prints all bundled license and notice texts). The
-package version is defined in `VERSION` (currently `0.1.0`). See
-[packaging instructions](docs/remote.md#packaging-and-checks) for build locations
-and options.
+## Models and capabilities
+
+| Model | What it does |
+| --- | --- |
+| MiniMax H3 (FL2VA, Ref2VA, Singularity / v2) | Generates video with audio, or still images. Ref2VA supports image, video and audio references; Singularity variants use the Turbo LoRA. |
+| [FastH3 V2](docs/fasth3_v2.md) / [FastH3 OmniRef](docs/omniref.md) | Eight-step H3 generation: V2 generates video/audio from text; OmniRef also accepts multimedia references. |
+| [Viggle-Animate](docs/viggle_animate.md) | Animates a repainted scene using motion from a driving video. |
+| [Krea 2](docs/krea2.md) (Turbo / Raw) | Text-to-image generation; Turbo is the default image model. |
+| [MOSS Image](docs/moss.md) | Text-to-image generation with Qwen3.5 conditioning. |
+| [Fibo 2.0](docs/fibo2.md) | Text-to-image generation and instruction-based image editing; Edit Turbo accepts up to four reference images. |
+| [YuE2 / MiniMax Music3](docs/music-models.md) | Generates stereo songs from style descriptions and lyrics, or instrumental music. |
+| [RealESRGAN x4plus](docs/upscaling.md) / [SeedVR2 3B](docs/seedvr2.md) | Image/video upscaling; SeedVR2 restores video in temporal segments. |
+| [H3 latent upscaler](docs/latent_upscaling.md) | Enlarges H3 video before decoding, preserving frame count and audio. |
+| [Sol-H3-VAE](docs/sol_h3_vae.md) / [TAEH3](docs/generation_previews.md) | Alternative H3 video decoding / lightweight generation previews. |
+| Whisper (tiny through large, including large-v3-turbo) | Transcribes speech or song vocals, with subtitle export and optional word timestamps. |
+| [HTDemucs](docs/separation.md) | Separates drums, bass, other instruments and vocals, or vocals and an instrumental track. |
+
+**Video:** Compatible H3 models support [multimedia references](docs/reference_media.md),
+ending-image anchors, [long-form continuation and latent bridging](docs/continuation.md),
+and [extending or bridging imported clips](docs/video-transitions.md). Optional
+[LoRAs](docs/loras.md) include Turbo, TaoMate, LightX2V, DMAD, Pika and Hyperflow.
+[Motions](docs/motions.md) adds scripted vector titles, graphics and overlays.
+
+**Image editing:** [H3 inpainting and outpainting](docs/inpainting.md) replace selected
+content or expand the canvas, with edit strength and edge blending. Fibo supports
+prompted edits and combining references. The CLI provides rectangular H3 edits;
+the C API also supports brush, lasso and soft masks for H3/Fibo, preserving pixels
+outside the selection.
+
+Backend and feature support varies by model: MOSS, Fibo and SeedVR2 require CUDA;
+HTDemucs runs on CPU. See the linked guides for checkpoint and workflow requirements.
 
 ## Model licensing
 
