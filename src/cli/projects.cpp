@@ -97,6 +97,8 @@ Value naming_rules() {
        str("Imported files: assets/ITEM_ID/vVERSION/source.EXT and preview.EXT. IDs use lowercase letters, digits, - or _. Versions are positive integers; old files are retained.")},
       {"generation",
        str("generate --project NAME chooses and registers assets/ITEM_ID/vVERSION/source.EXT. Batches append -001, -002, etc. Custom --out paths are relative to the project and must stay inside it; never overwrite a registered file.")},
+      {"final_delivery",
+       str("Always copy the final generation result directly into the configured output folder as NAME.EXT, using the project name and appropriate media extension (for example, output/NAME.mp4, output/NAME.png or output/NAME.wav). Refresh this delivery copy when the final result changes; retain the registered version inside the project folder.")},
       {"registration",
        str("Use projects add NAME --file PATH for a new item; projects update NAME ID --file PATH or --preview PATH for a replacement. Registration writes project.json and regenerates NAME.html in the output directory. Simply placing files in a folder does not register them.")},
       {"previews",

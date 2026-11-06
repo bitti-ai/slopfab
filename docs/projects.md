@@ -92,6 +92,10 @@ on every platform.
   files already at the exact canonical destination are registered in place.
 - Registration refreshes `NAME.html` and `PROJECT.md`. Use `projects render`
   to recover/rebuild the page without modifying the manifest.
+- Always copy the final generation result directly into the configured output
+  folder as `NAME.EXT`, using the project name and appropriate media extension
+  (for example, `output/launch-film.mp4`). Refresh this delivery copy when the
+  final result changes; retain the registered version inside the project folder.
 
 Every new item has a stable ID. To replace an image while preserving that ID:
 

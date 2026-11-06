@@ -1,4 +1,4 @@
-7
+8
 
 # Slopfab media generation
 
@@ -75,6 +75,7 @@ Use a project under the configured output root (default `./output`):
 ```text
 OUTPUT/
   PROJECT.html               previews and copyable edit prompts (embedded favicon)
+  PROJECT.EXT                final generation result (e.g. PROJECT.mp4)
   PROJECT/
     PROJECT.md               workflow and filename rules
     project.json             exact paths, IDs, recipes and history
@@ -84,7 +85,12 @@ OUTPUT/
 ```
 
 Call `slopfab projects open NAME` for the project once, to open OUTPUT/NAME.html in the browser.
-Read the project instructions and current manifest before edits. Only write files inside the project folder. 
+Read the project instructions and current manifest before edits. Keep working files
+and versioned assets inside the project folder.
+Always copy the final generation result directly into the configured output folder,
+using the project name and the appropriate media extension: OUTPUT/NAME.mp4,
+OUTPUT/NAME.png or OUTPUT/NAME.wav, for example. Refresh this delivery copy when
+the final result changes; retain the registered version inside the project folder.
 Let project generation name/register files; register externally created media and previews
 too. The page uses exact manifest paths, not a folder scan. Preserve stable IDs,
 previous versions, unrelated items and saved latents needed for continuation.
