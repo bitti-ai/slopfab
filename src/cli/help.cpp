@@ -74,7 +74,7 @@ const CommandHelp kCommands[] = {
     {"video", "slopfab video COMMAND [options]", "Generate, inspect, restore and analyze video.",
      "  generate         generate video with audio\n  frames           extract frames or contact sheets\n"
      "  syncnet          measure lip synchronization with face detection/tracking\n"
-     "  motions          render vector animations and overlays\n  upscale          restore Y4M video\n"
+     "  upscale          restore Y4M video\n"
      "  upscale-latents  enlarge H3 latent video\n  decode           decode video VAE latents\n"
      "  compare          compare two Y4M videos\nUse slopfab help video COMMAND for options.\n"},
     {"audio", "slopfab audio COMMAND [options]", "Generate music, transcribe audio and separate stems.",
@@ -82,7 +82,7 @@ const CommandHelp kCommands[] = {
      "  separate    extract vocals or four stems\nUse slopfab help audio COMMAND for options.\n"},
     {"image", "slopfab image COMMAND [options]", "Generate, edit and restore still images.",
      "  generate  generate or edit an image\n  upscale   restore an image\n"
-     "  motions   render a vector still with motions frame\nUse slopfab help image COMMAND for options.\n"},
+     "Use slopfab help image COMMAND for options.\n"},
     {"syncnet", "slopfab syncnet VIDEO --model syncnet_v2.model --face-model sfd_face.pth [options]",
      "Measure lip synchronization per face track using native SyncNet and S3FD.",
      "  --model FILE          only SHA256 961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442\n"

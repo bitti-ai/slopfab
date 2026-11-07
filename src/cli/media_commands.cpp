@@ -13,8 +13,7 @@ struct Route {
 const Route routes[] = {
     {"video generate", "generate", "video"}, {"audio generate", "generate", "music"},
     {"image generate", "generate", "image"}, {"video frames", "frames", ""},
-    {"video syncnet", "syncnet", ""},        {"video motions", "motions", ""},
-    {"image motions", "motions", ""},        {"video upscale", "upscale", ""},
+    {"video syncnet", "syncnet", ""},        {"video upscale", "upscale", ""},
     {"image upscale", "upscale", ""},        {"video upscale-latents", "upscale-latents", ""},
     {"video decode", "decode", ""},          {"video compare", "compare-y4m", ""},
     {"audio transcribe", "transcribe", ""},  {"audio separate", "separate", ""},
@@ -69,10 +68,6 @@ const CommandHelp* media_command_help(std::string_view name) {
     detail = "This command selects task '" + std::string(r->task) +
              "'. JSON requests must use that task. Shared generation options follow.\n" + detail;
   }
-  if (name == "image motions") {
-    usage = "slopfab image motions frame FILE.js --out IMAGE.png|.svg [options]";
-    detail = "Use frame for a still image. Use video motions render for animation.\n" + detail;
-  }
   result = {title.c_str(), usage.c_str(), base->summary, detail.c_str()};
   return &result;
 }
@@ -110,9 +105,6 @@ std::string route_media_command(std::vector<std::string>& args) {
     args = {"help", name};
     return {};
   }
-  if (kind == "image" && args[1] == "motions" && (args.size() < 3 || args[2] != "frame"))
-    throw CliError("INVALID_REQUEST",
-                   "image motions requires frame; use video motions render for animation");
   args.erase(args.begin(), args.begin() + 2);
   args.insert(args.begin(), r->target);
   return r->task;

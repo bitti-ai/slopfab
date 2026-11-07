@@ -12,12 +12,12 @@ and built offline with its CPU, SVG, PNG and TTF/OTF support. Lottie, GPU render
 and browser/DOM APIs are not enabled in this integration.
 
 ```sh
-slopfab image motions frame examples/motions/orbit.js --out still.png --time 1
-slopfab image motions frame examples/motions/orbit.js --out artwork.svg --time 1
-slopfab video motions render examples/motions/orbit.js --out motion.mp4
-slopfab video motions render examples/motions/orbit.js --out transparent.mov
-slopfab video motions render examples/motions/orbit.js --out composed.mp4 --over generated.mp4
-slopfab video motions render examples/motions/orbit.js --out composed.mp4 --over generated.y4m --audio generated.wav
+slopfab motions frame examples/motions/orbit.js --out still.png --time 1
+slopfab motions frame examples/motions/orbit.js --out artwork.svg --time 1
+slopfab motions render examples/motions/orbit.js --out motion.mp4
+slopfab motions render examples/motions/orbit.js --out transparent.mov
+slopfab motions render examples/motions/orbit.js --out composed.mp4 --over generated.mp4
+slopfab motions render examples/motions/orbit.js --out composed.mp4 --over generated.y4m --audio generated.wav
 ```
 
 Add `--agent` for the normal structured response. Paths are relative to the

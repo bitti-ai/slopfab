@@ -5,9 +5,10 @@ or `slopfab help image`, then `slopfab help video syncnet`, for example.
 
 | Group | Commands |
 | --- | --- |
-| `video` | `generate`, `frames`, `syncnet`, `motions`, `upscale`, `upscale-latents`, `decode`, `compare` |
+| `video` | `generate`, `frames`, `syncnet`, `upscale`, `upscale-latents`, `decode`, `compare` |
 | `audio` | `generate` (music), `transcribe`, `separate` |
-| `image` | `generate` (including edits), `upscale`, `motions frame` |
+| `image` | `generate` (including edits), `upscale` |
+| `motions` | `render` (animation/overlays), `frame` (PNG/SVG stills) |
 
 Shared generation requests, validation, jobs, projects, prompts, settings, model
 inspection, tensor comparison, text/reference encoding, mods and remote tools
@@ -17,8 +18,8 @@ still accepts all tasks; grouped generation checks that the request's task agree
 with the group (`audio` uses the existing JSON task `music`).
 
 `video compare` replaces the public spelling `compare-y4m`. Image and video
-upscaling share the same implementation. `video motions` renders animations or
-frames; `image motions` accepts `frame` only. See [SyncNet](syncnet.md) for automatic
+upscaling share the same implementation. The root `motions` command renders both
+animations (`render`) and stills (`frame`). See [SyncNet](syncnet.md) for automatic
 face tracking and lip synchronization analysis.
 
 Run `slopfab` with no arguments for a short introduction. Startup first suggests
@@ -100,7 +101,7 @@ Scripts can return structured results directly without external Python or batch
 scripts. QuickJS is statically linked only into the executable; DLL dependencies
 and the C ABI are unchanged.
 
-`slopfab video motions render|frame SCRIPT.js --out FILE` runs JavaScript vector
+`slopfab motions render|frame SCRIPT.js --out FILE` runs JavaScript vector
 animations called [Motions](motions.md), using embedded ThorVG. Export PNG/SVG
 stills, MP4/MOV/WebM video, or use `--over VIDEO` and optional `--audio WAV` to
 layer graphics over generated footage. `capabilities.data.motions` describes

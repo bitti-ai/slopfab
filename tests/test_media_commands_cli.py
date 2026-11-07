@@ -13,11 +13,12 @@ with tempfile.TemporaryDirectory(prefix='slopfab-media-commands-') as tmp:
                            cwd=root, capture_output=True, text=True, input=input, timeout=30)
         assert p.returncode == code, (args, p.returncode, p.stdout, p.stderr)
         return json.loads(p.stdout.splitlines()[-1])
-    groups = {'video': ['generate', 'frames', 'syncnet', 'motions', 'upscale', 'upscale-latents', 'decode', 'compare'],
-              'audio': ['generate', 'transcribe', 'separate'], 'image': ['generate', 'upscale', 'motions']}
+    groups = {'video': ['generate', 'frames', 'syncnet', 'upscale', 'upscale-latents', 'decode', 'compare'],
+              'audio': ['generate', 'transcribe', 'separate'], 'image': ['generate', 'upscale']}
     listed = {c['command'] for c in run('help')['commands']}
     assert set(groups) <= listed
-    assert not {'transcribe', 'separate', 'motions', 'decode', 'upscale', 'compare-y4m'} & listed
+    assert 'motions' in listed
+    assert not {'transcribe', 'separate', 'decode', 'upscale', 'compare-y4m'} & listed
     assert {'generate', 'validate', 'inspect', 'compare', 'encode-refmod', 'bundle-refmods'} <= listed
     for group, commands in groups.items():
         assert run(group)['command'] == group
@@ -27,7 +28,13 @@ with tempfile.TemporaryDirectory(prefix='slopfab-media-commands-') as tmp:
                 assert h['command'] == group + ' ' + command, h
                 assert h['usage'].startswith('slopfab ' + group + ' ' + command), h
         assert run(group, 'does-not-exist', code=2)['error']['code'] == 'INVALID_REQUEST'
-    assert run('image', 'motions', 'render', code=2)['error']['code'] == 'INVALID_REQUEST'
+    for group, subcommand in [('image', 'frame'), ('video', 'render')]:
+        assert run(group, 'motions', subcommand, code=2)['error']['code'] == 'INVALID_REQUEST'
+    for subcommand in ['render', 'frame']:
+        assert run('motions', subcommand, '--help')['command'] == 'motions'
+    caps = run('capabilities')['data']
+    assert caps['motions']['command'].startswith('slopfab motions ')
+    assert all('motions' not in commands for commands in caps['media_commands'].values())
     request = {'schema_version': 1, 'task': 'image', 'model': 'krea2', 'prompt': 'apple', 'seed': '42',
                'resolution': {'width': 512, 'height': 512}, 'output': {'path': 'apple.png'},
                'options': {'vulkan-arithmetic': 'portable'}}

@@ -1,4 +1,4 @@
-9
+10
 
 # Slopfab media generation
 
@@ -16,7 +16,7 @@ through `slopfab help prompts`.
 scripting API for files, JSON, HTTP downloads and process execution over external
 Python or batch scripts. Consult run help for scripting capabilities.
 
-`slopfab help video motions`: Use **Motions** for vector graphics, titles and animation overlays. JavaScript
+`slopfab help motions`: Use **Motions** for vector graphics, titles and animation overlays. JavaScript
 
 `slopfab video frames --help`: Review a specific video frame or a downscaled grid.
 The scripting `frames` API also captures decoded generation frames directly from RAM.
