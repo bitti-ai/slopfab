@@ -39,8 +39,6 @@ prompted edits and combining references. The CLI provides rectangular H3 edits;
 the C API also supports brush, lasso and soft masks for H3/Fibo, preserving pixels
 outside the selection.
 
-MOSS, Fibo and SeedVR2 support CUDA and Vulkan; HTDemucs runs on CPU. See the linked guides for checkpoint and workflow requirements.
-
 ## Model licensing
 
 MiniMax H3 model weights are licensed separately under the MiniMax H3 COMMUNITY LICENSE AGREEMENT.
