@@ -697,7 +697,7 @@
   },
   "h3-character-swap": {
     "source": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA",
-    "note": "V1.5 character adapter for H3 Ref2VA. Base, text encoder, VAEs and optional Turbo adapter are separate downloads.",
+    "note": "V1.5 character adapter for H3 Ref2VA. Base, text encoder and VAEs are separate downloads.",
     "files": [
       {
         "id": "v1.5",
@@ -705,31 +705,14 @@
         "url": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/resolve/main/h3_character_swap_v1.5.safetensors",
         "minVramGb": 0,
         "recommendedSampling": {
-          "steps": 8,
           "baseModel": "H3 Ref2VA",
           "loraStrength": 1,
           "cfg": 1,
-          "settings": {
-            "version": 1,
-            "sampler": "er_sde",
-            "video_sigma_shift": 12,
-            "audio_sigma_shift": 3,
-            "default_steps": 8,
-            "scheduler": "default"
-          },
           "basis": "upstream",
           "sources": [
-            "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA",
-            "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/blob/main/examples/H3-Character-Swap-Relay-V2.api.json"
+            "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA"
           ],
-          "note": "Eight-step recipe requires the separate Turbo adapter below at strength 1. Without Turbo, inherit the base model schedule; Character Swap itself is not distilled. This workflow uses video shift 12 even though the Turbo file standalone was trained at shift 6.",
-          "requires": [
-            {
-              "role": "lora",
-              "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
-              "loraStrength": 1
-            }
-          ]
+          "note": "Inherit the step count, sampler and sigma settings from the selected base model and sampling adapters."
         }
       }
     ]
