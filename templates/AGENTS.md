@@ -1,4 +1,4 @@
-10
+11
 
 # Slopfab media generation
 
@@ -69,6 +69,8 @@ If the user delegates choices, state reasonable defaults and proceed.
   do not force unrelated scenes through continuous-shot anchors.
 - **Image revisions:** prefer localized editing when only one region should change;
   preserve framing and unaffected content. Keep approved references and recipes.
+- **Lipsync:** Use clean audio reference for lipsync generation. Use Demucs to
+  separate vocals if needed. Use SyncNet to evaluate the quality of the lipsync.
 
 ## Keep a reviewable project
 
