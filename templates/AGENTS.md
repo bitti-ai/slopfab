@@ -89,6 +89,7 @@ OUTPUT/
 ```
 
 Call `slopfab projects open NAME` for the project once, to open OUTPUT/NAME.html in the browser.
+Keep the original .html template, do not rewrite it, only add data to it.
 Read the project instructions and current manifest before edits. Keep working files
 and versioned assets inside the project folder.
 Always copy the final generation result directly into the configured output folder,
