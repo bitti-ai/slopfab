@@ -12,7 +12,7 @@ video VAE to `slopfab_latent_upscale_decode_file_start` when decoding an archive
 Place `minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors` in `weights/`, then run:
 
 ```sh
-slopfab generate --prompt "A cat in warm lamplight" --resolution 512x512 --frames 22 --latent-upscale --out video.mp4
+slopfab video generate --prompt "A cat in warm lamplight" --resolution 512x512 --frames 22 --latent-upscale --out video.mp4
 ```
 
 This denoises at 512×512 and decodes at 1024×1024. The default scale is 2;
@@ -51,8 +51,8 @@ Use `upscale-latents` to create an enlarged **latent archive**, without generati
 another clip or decoding pixels:
 
 ```sh
-slopfab upscale-latents --input joined.safetensors --out joined-2x.safetensors --scale 2
-slopfab upscale-latents --input joined.safetensors --out joined-1.5x.safetensors --scale 1.5 --inference-backend vulkan
+slopfab video upscale-latents --input joined.safetensors --out joined-2x.safetensors --scale 2
+slopfab video upscale-latents --input joined.safetensors --out joined-1.5x.safetensors --scale 1.5 --inference-backend vulkan
 ```
 
 Inputs must be completed `h3-av-v1` archives written by `--save-latents` or the
@@ -105,7 +105,7 @@ The existing `upscale_latents` buffer API remains available. To decode the enlar
 video archive separately into a video-only Y4M file:
 
 ```sh
-slopfab decode --latent joined-2x.safetensors --vae weights/vae/minimax_h3_video_vae_fp16.safetensors --out joined-2x.y4m
+slopfab video decode --latent joined-2x.safetensors --vae weights/vae/minimax_h3_video_vae_fp16.safetensors --out joined-2x.y4m
 ```
 
 The `decode` command reads video archive geometry automatically and does not

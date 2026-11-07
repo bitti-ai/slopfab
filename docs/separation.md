@@ -1,16 +1,16 @@
 # Vocal and stem separation
 
-`slopfab separate` runs standard four-stem HTDemucs directly from safetensors.
+`slopfab audio separate` runs standard four-stem HTDemucs directly from safetensors.
 Inference is native C++ on the CPU, including when the executable also has CUDA
 or Vulkan enabled. Python and PyTorch are not runtime dependencies. GPU inference,
 six-stem models, HDemucs and ensembles such as `htdemucs_ft` are not supported.
 
 ```sh
 # Four files: drums.wav, bass.wav, other.wav, vocals.wav
-slopfab separate song.wav --model weights/htdemucs.safetensors --out output/stems
+slopfab audio separate song.wav --model weights/htdemucs.safetensors --out output/stems
 
 # Two files: vocals.wav and instrumental.wav
-slopfab separate song.wav --model weights/htdemucs.safetensors --two-stems vocals --out output/vocals
+slopfab audio separate song.wav --model weights/htdemucs.safetensors --two-stems vocals --out output/vocals
 ```
 
 The default output directory is `output/<input-name>-stems`. Existing outputs

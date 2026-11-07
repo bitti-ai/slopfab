@@ -160,7 +160,7 @@ by default.
 The CLI now accepts the same settings as the C API:
 
 ```sh
-slopfab generate --lcs drift.safetensors \
+slopfab video generate --lcs drift.safetensors \
   --lcs-settings '{"highlight_strength":0.5,"highlight_knee":0.78,"start_step":16}' \
   --continue-from previous.safetensors --frames 68 --steps 25 --prompt "..."
 ```

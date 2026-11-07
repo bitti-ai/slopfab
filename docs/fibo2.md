@@ -17,9 +17,9 @@ The embedded Qwen tokenizer is compatible. `--model fibo2` discovers the above f
 ## CLI
 
 ```sh
-slopfab generate --model fibo2 --prompt "A blue ceramic vase on a wooden table" --resolution 1024x1024 --steps 4 --seed 42 --out generated.ppm
-slopfab generate --model fibo2 --prompt "Make the car blue" --reference-image source.png --resolution 1024x1024 --steps 4 --seed 42 --out edited.ppm
-slopfab generate --model fibo2 --prompt-file instruction.json --reference-image scene.png --reference-image object.png --resolution 1024x1024 --out combined.ppm
+slopfab image generate --model fibo2 --prompt "A blue ceramic vase on a wooden table" --resolution 1024x1024 --steps 4 --seed 42 --out generated.ppm
+slopfab image generate --model fibo2 --prompt "Make the car blue" --reference-image source.png --resolution 1024x1024 --steps 4 --seed 42 --out edited.ppm
+slopfab image generate --model fibo2 --prompt-file instruction.json --reference-image scene.png --reference-image object.png --resolution 1024x1024 --out combined.ppm
 ```
 
 Reference images are optional: zero inputs generates from text, and up to four inputs provide image conditioning. Ordinary reference inputs are resized and center-cropped to the requested canvas. The default canvas is 1024x1024; explicit dimensions must be positive multiples of 16. Editing an in-memory image preserves its original output dimensions, with internal padding to multiples of 16.

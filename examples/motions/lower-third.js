@@ -1,6 +1,6 @@
 import sf, { motions } from "slopfab";
 
-// slopfab motions render lower-third.js --out title.mov -- FONT.ttf "Your title"
+// slopfab video motions render lower-third.js --out title.mov -- FONT.ttf "Your title"
 export default ([fontPath, title = "A moment in motion"]) => {
   if (!fontPath)
     throw Error(

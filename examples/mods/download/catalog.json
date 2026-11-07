@@ -479,5 +479,23 @@
         "url": "https://huggingface.co/openai/whisper-large-v3-turbo/resolve/main/model.safetensors"
       }
     ]
+  },
+  "syncnet": {
+    "source": "https://github.com/joonson/syncnet_python",
+    "note": "Native SyncNet accepts only the exact SHA256 below. Legacy S3FD is also pinned; standard FP32 S3FD safetensors can be used without a hash restriction.",
+    "files": [
+      {
+        "id": "syncnet-v2",
+        "role": "lipsync_analysis",
+        "url": "https://huggingface.co/lithiumice/models_hub/resolve/a1004b6b826279d04634cbbf8fdd1879e7503fc9/syncnet_v2.model",
+        "sha256": "961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442"
+      },
+      {
+        "id": "s3fd",
+        "role": "face_detector",
+        "url": "https://huggingface.co/lithiumice/syncnet/resolve/16abbb51f33a0f34acd9add2ad0741bce6496531/sfd_face.pth",
+        "sha256": "d54a87c2b7543b64729c9a25eafd188da15fd3f6e02f0ecec76ae1b30d86c491"
+      }
+    ]
   }
 }

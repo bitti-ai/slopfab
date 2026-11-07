@@ -21,7 +21,7 @@ The predictor must have the same layer count, head count and head dimension as
 the transformer. FP32, BF16 and per-head scaled FP8 bundles are supported.
 
 ```sh
-slopfab generate --prompt "A cat walking through a garden" \
+slopfab video generate --prompt "A cat walking through a garden" \
   --attention veda \
   --veda-predictor weights/veda/minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors \
   --frames 124 --resolution 1344x768 --out video.mp4

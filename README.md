@@ -26,6 +26,7 @@ Ask your agent to create [mods](docs/mods.md): reusable workflows you can share 
 | [Sol-H3-VAE](docs/sol_h3_vae.md) / [TAEH3](docs/generation_previews.md) | Alternative H3 video decoding / lightweight generation previews. |
 | Whisper (tiny through large, including large-v3-turbo) | Transcribes speech or song vocals, with subtitle export and optional word timestamps. |
 | [HTDemucs](docs/separation.md) | Separates drums, bass, other instruments and vocals, or vocals and an instrumental track. |
+| [SyncNet / S3FD](docs/syncnet.md) | Measures lip synchronization, with automatic face detection/tracking and per-face timing offsets. |
 
 **Video:** Compatible H3 models support [multimedia references](docs/reference_media.md),
 ending-image anchors, [long-form continuation and latent bridging](docs/continuation.md),

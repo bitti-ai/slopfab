@@ -32,9 +32,9 @@ An explicit family that disagrees with the checkpoint is rejected.
 ## Generation
 
 ```sh
-slopfab generate --model moss --prompt "A red apple on a wooden table, studio photograph" --resolution 512x512 --steps 50 --seed 42 --out apple.ppm
-slopfab generate --model moss --prompt-file layout.json --negative-prompt "watermark" --guidance 3 --uncond-skip-layers 22 --out layout.ppm
-slopfab generate --model moss --resolution 1024x1024 --dry-run
+slopfab image generate --model moss --prompt "A red apple on a wooden table, studio photograph" --resolution 512x512 --steps 50 --seed 42 --out apple.ppm
+slopfab image generate --model moss --prompt-file layout.json --negative-prompt "watermark" --guidance 3 --uncond-skip-layers 22 --out layout.ppm
+slopfab image generate --model moss --resolution 1024x1024 --dry-run
 ```
 
 Defaults follow the [upstream pipeline](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/blob/main/pipeline_moss_image.py):

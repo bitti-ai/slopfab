@@ -46,6 +46,8 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     dry = run("generate", "--host", "gpu", "image", "--prompt", prompt, "--dry-run")
     assert dry["ok"] and dry["artifacts"] == []
     assert dry["arguments"][3] == prompt
+    grouped = run("image", "generate", "--host", "gpu", "--prompt", prompt, "--dry-run")
+    assert grouped["ok"] and grouped["arguments"][3] == prompt
     assert dry["remote_result"]["type"] == "result"
     version = run("version", "--remote", "gpu")
     assert version["remote_result"]["version"]

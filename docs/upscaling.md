@@ -26,8 +26,8 @@ a tiled VAE. The selector works for standalone media and generated output.
 ## Standalone image
 
 ```sh
-slopfab upscale --input image.png --out image-4x.ppm --upscale-method realesrgan
-slopfab upscale --input image.png --out image-4x.ppm --inference-backend vulkan
+slopfab image upscale --input image.png --out image-4x.ppm --upscale-method realesrgan
+slopfab image upscale --input image.png --out image-4x.ppm --inference-backend vulkan
 ```
 
 The default backend is CUDA when compiled in, otherwise Vulkan. Choose a model
@@ -47,7 +47,7 @@ available on `generate`, and library callers use stable method identifiers.
 ## Generated video or still image
 
 ```sh
-slopfab generate --prompt "A cat in warm lamplight" --resolution 256x256 --frames 22 --upscale-method realesrgan --upscale-model weights/upscaler/RealESRGAN_x4plus.safetensors --out video.mp4
+slopfab video generate --prompt "A cat in warm lamplight" --resolution 256x256 --frames 22 --upscale-method realesrgan --upscale-model weights/upscaler/RealESRGAN_x4plus.safetensors --out video.mp4
 ```
 
 The example generates at 256x256 and delivers 1024x1024 frames. Upscaling runs
@@ -118,9 +118,9 @@ backend and memory permit, or increase context padding:
 
 ```sh
 # Complete frames: removes artificial internal tile boundaries.
-slopfab upscale --input input.mp4 --out output.mp4 --upscale-method realesrgan --upscale-tile 0
+slopfab image upscale --input input.mp4 --out output.mp4 --upscale-method realesrgan --upscale-tile 0
 # Bounded spatial tiles with more surrounding context.
-slopfab upscale --input input.mp4 --out output.mp4 --upscale-method realesrgan --upscale-tile 128 --upscale-tile-pad 64
+slopfab image upscale --input input.mp4 --out output.mp4 --upscale-method realesrgan --upscale-tile 128 --upscale-tile-pad 64
 ```
 
 Defaults are unchanged to preserve their runtime/memory tradeoff. The standalone

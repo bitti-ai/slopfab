@@ -5,7 +5,7 @@ Slopfab supports the pruned FastH3 8-Step V2 transformer on CUDA and Vulkan, inc
 The checkpoint selects the trained eight-evaluation Euler schedule automatically. Video/audio shifts are 10/3, with noise-clock rungs 999, 874, 749, 624, 500, 375, 250, and 125 followed by zero. A different `--steps` value does not override this trained schedule.
 
 ```powershell
-build/Release/slopfab.exe generate --prompt "A steam train crosses a mountain bridge" --transformer "D:/Projects/weights/baf29933173ff891-fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors" --resolution 256x256 --frames 22 --out train.mp4
+build/Release/slopfab.exe video generate --prompt "A steam train crosses a mountain bridge" --transformer "D:/Projects/weights/baf29933173ff891-fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors" --resolution 256x256 --frames 22 --out train.mp4
 ```
 
 Use your existing MiniMax H3 text encoder, video VAE, and audio VAE. The CLI's model discovery supplies them when they are in the usual model folders; applications using the C API supply their paths as usual.

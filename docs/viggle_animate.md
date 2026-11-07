@@ -131,7 +131,7 @@ it does not promise sample-identical PCM or establish the cause of earlier
 corrupted audio.
 
 ```sh
-slopfab generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.y4m --driving-audio driving.wav --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.y4m
+slopfab video generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.y4m --driving-audio driving.wav --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.y4m
 ```
 
 Reference clips must be 2-15 seconds; trim longer sources first. The C API takes

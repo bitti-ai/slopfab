@@ -1,5 +1,26 @@
 # Agent CLI
 
+Media commands are grouped by task. Use `slopfab help video`, `slopfab help audio`
+or `slopfab help image`, then `slopfab help video syncnet`, for example.
+
+| Group | Commands |
+| --- | --- |
+| `video` | `generate`, `frames`, `syncnet`, `motions`, `upscale`, `upscale-latents`, `decode`, `compare` |
+| `audio` | `generate` (music), `transcribe`, `separate` |
+| `image` | `generate` (including edits), `upscale`, `motions frame` |
+
+Shared generation requests, validation, jobs, projects, prompts, settings, model
+inspection, tensor comparison, text/reference encoding, mods and remote tools
+remain at the root. Existing root spellings remain compatibility aliases, but
+media-specific aliases are omitted from root help. `generate --request FILE`
+still accepts all tasks; grouped generation checks that the request's task agrees
+with the group (`audio` uses the existing JSON task `music`).
+
+`video compare` replaces the public spelling `compare-y4m`. Image and video
+upscaling share the same implementation. `video motions` renders animations or
+frames; `image motions` accepts `frame` only. See [SyncNet](syncnet.md) for automatic
+face tracking and lip synchronization analysis.
+
 Run `slopfab` with no arguments for a short introduction. Startup first suggests
 installing the NVIDIA CUDA Toolkit when NVIDIA hardware is present without a
 compatible installation, then installing FFmpeg if it is absent from PATH and
@@ -48,23 +69,23 @@ slopfab capabilities
 slopfab models list
 slopfab doctor
 slopfab schema
-slopfab generate image --prompt "A red apple" --seed 42 --out apple.png
-slopfab generate video --prompt "A cat playing piano" --duration 5 --out cat.y4m
-slopfab generate music --prompt "Gentle piano" --duration 10 --out piano.wav
+slopfab image generate --prompt "A red apple" --seed 42 --out apple.png
+slopfab video generate --prompt "A cat playing piano" --duration 5 --out cat.y4m
+slopfab audio generate --prompt "Gentle piano" --duration 10 --out piano.wav
 ```
 
 Image defaults to Krea 2, video to H3, and music to YuE2. `--model` selects a
-family or configured alias. H3 also supports `generate image --model h3`.
+family or configured alias. H3 also supports `image generate --model h3`.
 Models still require compatible local weights and a supported GPU. No command
 downloads weights automatically; an installed [executable mod](mods.md#executable-commands)
 can provide a download command. `capabilities` reports compiled support; `doctor` probes
 available devices. `models list` reports files, which does not prove checkpoint
 compatibility or that inference fits in memory.
 
-For [vocal and stem separation](separation.md), use `slopfab separate FILE
+For [vocal and stem separation](separation.md), use `slopfab audio separate FILE
 --model MODEL.safetensors --out DIRECTORY`. Standard HTDemucs runs on the CPU
 and writes drums, bass, other and vocals; `--two-stems vocals` writes vocals
-and an instrumental track. Discover options with `slopfab help separate`.
+and an instrumental track. Discover options with `slopfab help audio separate`.
 
 To attach a soundtrack to a driving video, use `--reference-video clip.y4m
 --driving-audio clip.wav`. Add `--preserve-driving-audio` to pin it as target
@@ -79,7 +100,7 @@ Scripts can return structured results directly without external Python or batch
 scripts. QuickJS is statically linked only into the executable; DLL dependencies
 and the C ABI are unchanged.
 
-`slopfab motions render|frame SCRIPT.js --out FILE` runs JavaScript vector
+`slopfab video motions render|frame SCRIPT.js --out FILE` runs JavaScript vector
 animations called [Motions](motions.md), using embedded ThorVG. Export PNG/SVG
 stills, MP4/MOV/WebM video, or use `--over VIDEO` and optional `--audio WAV` to
 layer graphics over generated footage. `capabilities.data.motions` describes

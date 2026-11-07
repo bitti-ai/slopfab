@@ -10,9 +10,9 @@ connection is required.
 
 ```sh
 slopfab projects create launch-film --title "Launch film"
-slopfab generate image --project launch-film --prompt "A quiet city at dusk"
-slopfab generate video --project launch-film --prompt "A slow camera move over the city"
-slopfab generate music --project launch-film --prompt "Warm ambient synths" --duration 10
+slopfab image generate --project launch-film --prompt "A quiet city at dusk"
+slopfab video generate --project launch-film --prompt "A slow camera move over the city"
+slopfab audio generate --project launch-film --prompt "Warm ambient synths" --duration 10
 slopfab projects show launch-film
 slopfab projects open launch-film
 ```
@@ -100,7 +100,7 @@ on every platform.
 Every new item has a stable ID. To replace an image while preserving that ID:
 
 ```sh
-slopfab generate image --project launch-film --project-item ITEM_ID --prompt "The same city at sunrise"
+slopfab image generate --project launch-film --project-item ITEM_ID --prompt "The same city at sunrise"
 ```
 
 This writes a new version, retains the old files, and saves the generation

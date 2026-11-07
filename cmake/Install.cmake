@@ -34,7 +34,7 @@ install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs
   FILES_MATCHING PATTERN "*.md")
 install(DIRECTORY examples/workflows examples/mods examples/motions DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples)
 install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab)
-foreach(dependency IN ITEMS sageattention motioncache vulkan seedvr2 quickjs thorvg whisper demucs)
+foreach(dependency IN ITEMS sageattention motioncache vulkan seedvr2 quickjs thorvg whisper demucs syncnet)
   if(dependency STREQUAL "vulkan")
     set(license "third_party/${dependency}/LICENSE.md")
   else()

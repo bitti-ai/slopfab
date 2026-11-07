@@ -64,12 +64,43 @@
 #endif
 
 #include "commands.h"
+#include "media_commands.h"
 #include "agent.h"
 #include "startup.h"
 #include "settings.h"
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"video", "slopfab video COMMAND [options]", "Generate, inspect, restore and analyze video.",
+     "  generate         generate video with audio\n  frames           extract frames or contact sheets\n"
+     "  syncnet          measure lip synchronization with face detection/tracking\n"
+     "  motions          render vector animations and overlays\n  upscale          restore Y4M video\n"
+     "  upscale-latents  enlarge H3 latent video\n  decode           decode video VAE latents\n"
+     "  compare          compare two Y4M videos\nUse slopfab help video COMMAND for options.\n"},
+    {"audio", "slopfab audio COMMAND [options]", "Generate music, transcribe audio and separate stems.",
+     "  generate    generate songs or instrumental music\n  transcribe  transcribe speech or vocals\n"
+     "  separate    extract vocals or four stems\nUse slopfab help audio COMMAND for options.\n"},
+    {"image", "slopfab image COMMAND [options]", "Generate, edit and restore still images.",
+     "  generate  generate or edit an image\n  upscale   restore an image\n"
+     "  motions   render a vector still with motions frame\nUse slopfab help image COMMAND for options.\n"},
+    {"syncnet", "slopfab syncnet VIDEO --model syncnet_v2.model --face-model sfd_face.pth [options]",
+     "Measure lip synchronization per face track using native SyncNet and S3FD.",
+     "  --model FILE          only SHA256 961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442\n"
+     "  --face-model FILE     pinned upstream S3FD .pth or standard FP32 S3FD safetensors\n"
+     "  --cropped             input is already a single face crop; omit --face-model\n"
+     "  --backend NAME        auto (prefer Vulkan), vulkan or cpu\n"
+     "  --out FILE            default output/<input-name>-syncnet.json\n"
+     "  --start SECONDS       start relative to video stream origin (default 0)\n"
+     "  --duration SECONDS    analyze up to 0.24..600 seconds (default 30)\n"
+     "  --vshift N            search +/-N video frames at 25 fps (default 15, max 250)\n"
+     "  --min-track SECONDS   minimum track length (default 1.5); also needs 2*vshift+6 frames\n"
+     "  --detect-every N      detect every 1..10 frames (default 5), interpolate gaps\n"
+     "  --detect-size N       detector longest side 128..1280 (default 320)\n"
+     "  --face-threshold N    face confidence threshold .5..0.9999 (default .9)\n"
+     "  --ffmpeg PATH --ffprobe PATH  external media tools; preserve relative AV timestamps\n"
+     "  --overwrite           atomically replace an existing report\n"
+     "Negative audio_shift_ms advances audio; positive delays it. LSE-D/LSE-C are not accuracy percentages.\n"
+     "Temporary decoded video is bounded to 8 GiB and 1280 pixels per side. See docs/syncnet.md.\n"},
     {"remote", "slopfab remote setup|show|update|remove NAME | remote list",
      "Configure SSH hosts and install/update their executable from the bundled Windows/Linux binaries.",
      "  setup NAME --directory PATH  register a host and provision slopfab in its existing project\n"
@@ -116,7 +147,7 @@ const CommandHelp kCommands[] = {
      "Models: tiny/base/small/medium (including .en), large-v1/v2/v3 and large-v3-turbo.\n"
      "Only weights are needed; tokenizer, mel filters and standard profiles are embedded.\n"
      "Songs use the same recognizer; no vocal separation is applied. Word timing is approximate.\n"},
-    {"video", "slopfab video frames VIDEO --out IMAGE.png [options]",
+    {"frames", "slopfab frames VIDEO --out IMAGE.png [options]",
      "Extract a video frame or a downscaled contact sheet; capture generation samples in RAM.",
      "  VIDEO --out IMAGE.png        extract frame zero by default\n"
      "  --frame N | --time SECONDS   zero-based frame index or nearest timestamp\n"
@@ -630,7 +661,7 @@ const CommandHelp* find_command(std::string_view name) {
     if (name == c.name)
       return &c;
   }
-  return nullptr;
+  return media_command_help(name);
 }
 
 // True when the argument list asks for help. Checked before any other option,
@@ -638,7 +669,7 @@ const CommandHelp* find_command(std::string_view name) {
 bool option_takes_value(std::string_view a, std::string_view command) {
   if (a == "--host" || a == "--remote" || a == "--download-dir" ||
       a == "--download" || a == "--local-project") return true;
-  if (command == "transcribe" && (a == "--word-timestamps" || a == "--no-context"))
+  if (a == "--word-timestamps" || a == "--no-context" || a == "--cropped")
     return false;
   if (command == "prompts" && (a == "--layout" || a == "--instrumental" || a == "--continuation"))
     return false;
@@ -736,6 +767,7 @@ void print_usage(bool list_commands, const json::Array& extra_commands) {
     if (list_commands) {
       Array commands;
       for (const auto& c : kCommands)
+        if (!hidden_media_alias(c.name))
         commands.push_back(
             Value(Object{{"command", str(c.name)}, {"description", str(c.summary)}}));
       for (const auto& c : extra_commands) commands.push_back(c);
@@ -746,6 +778,7 @@ void print_usage(bool list_commands, const json::Array& extra_commands) {
     std::fputs(text.c_str(), stdout);
     if (list_commands) {
       for (const auto& c : kCommands)
+        if (!hidden_media_alias(c.name))
         std::printf("  %-18s %s\n", c.name, c.summary);
       for (const auto& c : extra_commands)
         std::printf("  %-18s %s (mod)\n",c.find("command")->as_string().c_str(),c.find("description")->as_string().c_str());

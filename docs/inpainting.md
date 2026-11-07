@@ -10,7 +10,7 @@ polygon, and brush selections, including holes, disconnected regions, and
 soft edges. The CLI continues to accept rectangular edits.
 
 ```sh
-slopfab generate --edit-image scene.png --edit-box 120,80,240,160 --prompt "A red ceramic vase on the table" --edit-strength 0.8 --edit-feather 8 --seed 17 --out edited.ppm
+slopfab image generate --model h3 --edit-image scene.png --edit-box 120,80,240,160 --prompt "A red ceramic vase on the table" --edit-strength 0.8 --edit-feather 8 --seed 17 --out edited.ppm
 ```
 
 `--edit-box` is `x,y,width,height` in original-image pixels. Its right and

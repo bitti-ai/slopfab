@@ -44,7 +44,7 @@ Generate directly, using explicit paths or your configured H3 model alias for
 the transformer and VAEs:
 
 ```sh
-slopfab generate video --model h3 --prompt "A red ball on a wooden table." \
+slopfab video generate --model h3 --prompt "A red ball on a wooden table." \
   --text-encoder /models/qwen3vl_4b_int8_convrot.safetensors \
   --clip-projection /models/mmh3-4b-ClipProj-v3.1.safetensors \
   --out ball.y4m
@@ -62,7 +62,7 @@ slopfab encode-text --prompt "A red ball on a wooden table." \
   --text-encoder /models/qwen3vl_4b_int8_convrot.safetensors \
   --clip-projection /models/mmh3-4b-ClipProj-v3.1.safetensors \
   --output ball-prompt.safetensors
-slopfab generate video --prompt-embedding ball-prompt.safetensors --out ball.y4m
+slopfab video generate --prompt-embedding ball-prompt.safetensors --out ball.y4m
 ```
 
 The exported archive includes modality tags, encoder/projection file identities
@@ -88,7 +88,7 @@ Model aliases accept `clip_projection` beside `text_encoder`:
 }
 ```
 
-Use `slopfab generate video --model h3-small ...`. You can set these fields with
+Use `slopfab video generate --model h3-small ...`. You can set these fields with
 `slopfab settings set models.h3-small JSON`. Include transformer/VAEs in the
 alias if your weight directories contain ambiguous matches.
 

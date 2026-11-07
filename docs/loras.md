@@ -6,7 +6,7 @@ Repeat the pair to combine adapters. Zero disables an adapter and negative
 strengths subtract its update.
 
 ```powershell
-slopfab generate --prompt "A cat playing piano" --lora weights/loras/style.safetensors --lora-strength 0.7
+slopfab video generate --prompt "A cat playing piano" --lora weights/loras/style.safetensors --lora-strength 0.7
 ```
 
 Adapters update H3's `attn.qkv_proj`, `attn.out_proj`, `mlp.fc1`, and `mlp.fc2`
@@ -105,7 +105,7 @@ curl.exe -L --fail "https://huggingface.co/CZMartin22/TaoMate-H3-3step-ComfyUI/r
 Use FL2VA base weights and select the schedule explicitly:
 
 ```powershell
-slopfab generate --prompt "A person smiles and says hello" --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/TaoMate-H3-3step-ComfyUI.safetensors --schedule taomate-3step --out output/taomate.mp4
+slopfab video generate --prompt "A person smiles and says hello" --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/TaoMate-H3-3step-ComfyUI.safetensors --schedule taomate-3step --out output/taomate.mp4
 ```
 
 Add `--inference-backend vulkan` to use Vulkan. Ordinary model discovery still
@@ -132,7 +132,7 @@ adapter with FL2VA:
 
 ```powershell
 New-Item -ItemType Directory -Force output | Out-Null
-build/Release/slopfab.exe generate --prompt "A polar bear plays the violin in the snow." --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/dmad_minimax_h3_4step_full_critic.safetensors --sampling-settings settings/dmad.json --seed 42 --out output/dmad.mp4
+build/Release/slopfab.exe video generate --prompt "A polar bear plays the violin in the snow." --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/dmad_minimax_h3_4step_full_critic.safetensors --sampling-settings settings/dmad.json --seed 42 --out output/dmad.mp4
 ```
 
 [settings/dmad.json](../settings/dmad.json) contains the complete sampling recipe:
@@ -217,7 +217,7 @@ Remote preparation retains completed projections in a neighboring `.parts`
 directory so interrupted runs can resume. This cache is not needed for inference.
 
 ```powershell
-build/Release/slopfab.exe generate --prompt "A polar bear plays the violin in the snow." --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/minimax_h3_hyperflow_8step_v1.0.safetensors --seed 42 --out output/hyperflow.mp4
+build/Release/slopfab.exe video generate --prompt "A polar bear plays the violin in the snow." --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/minimax_h3_hyperflow_8step_v1.0.safetensors --seed 42 --out output/hyperflow.mp4
 ```
 
 Add `--inference-backend vulkan --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors`

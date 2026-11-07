@@ -1,6 +1,6 @@
 # SeedVR2 video restoration
 
-`slopfab upscale --upscale-method seedvr2` restores decoded video using SeedVR2 3B on CUDA or Vulkan. The native
+`slopfab video upscale --upscale-method seedvr2` restores decoded video using SeedVR2 3B on CUDA or Vulkan. The native
 C++ implementation needs no Python, ComfyUI, text encoder, or H3 weights.
 It reads the Comfy-Org safetensors directly, including their fixed positive
 text conditioning. Model downloads remain separate from the application.
@@ -16,7 +16,7 @@ weights/seedvr2/ema_vae_fp16.safetensors     (vae/)
 with `--upscale-vae`. Custom locations use `--upscale-model FILE --upscale-vae FILE`.
 
 ```sh
-slopfab upscale --input input.y4m --upscale-method seedvr2 --upscale-resolution 1280x720 --out restored.y4m
+slopfab video upscale --input input.y4m --upscale-method seedvr2 --upscale-resolution 1280x720 --out restored.y4m
 ```
 
 The CLI reads native Y4M and writes Y4M, or restores still images to PNG/PPM.
@@ -54,7 +54,7 @@ its existing bounded-memory behavior and is unchanged.
 For a 32 GB RTX 5090 at 720p, an untiled VAE avoids spatial tile boundaries:
 
 ```sh
-slopfab upscale --input input.y4m --upscale-method seedvr2 --upscale-resolution 1280x720 --upscale-segment-frames 5 --upscale-tile 0 --out restored.y4m
+slopfab video upscale --input input.y4m --upscale-method seedvr2 --upscale-resolution 1280x720 --upscale-segment-frames 5 --upscale-tile 0 --out restored.y4m
 ```
 
 For lower memory, retain the default VAE tile, reduce it to 128, or use

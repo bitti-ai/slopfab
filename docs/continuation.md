@@ -3,13 +3,13 @@
 Save normalized FP32 video and stereo audio latents while generating:
 
 ```sh
-slopfab generate --prompt "A camera follows a cyclist along a forest road" --frames 124 --out first.mp4 --save-latents first.safetensors
+slopfab video generate --prompt "A camera follows a cyclist along a forest road" --frames 124 --out first.mp4 --save-latents first.safetensors
 ```
 
 Continue from the archive:
 
 ```sh
-slopfab generate --continue-from first.safetensors --overlap-frames 22 --frames 119 --prompt "The cyclist keeps riding as the road curves to the right" --out extended.mp4 --save-latents extended.safetensors
+slopfab video generate --continue-from first.safetensors --overlap-frames 22 --frames 119 --prompt "The cyclist keeps riding as the road curves to the right" --out extended.mp4 --save-latents extended.safetensors
 ```
 
 With `--continue-from`, `--frames` requests **new** frames, rounded up to a
@@ -47,7 +47,7 @@ ethanfel (Lumifel) by [Geiru Context Suite](https://github.com/roycho87/geiru_co
 adapted to Slopfab's separate guide and target streams.
 
 ```sh
-slopfab generate --continue-from previous.safetensors --keystone-from original.safetensors --context-noise 0.8 --capstone-lock-after 4 --frames 119 --steps 9 --prompt "The same subject continues moving in one uninterrupted shot" --out extended.mp4 --save-latents extended.safetensors
+slopfab video generate --continue-from previous.safetensors --keystone-from original.safetensors --context-noise 0.8 --capstone-lock-after 4 --frames 119 --steps 9 --prompt "The same subject continues moving in one uninterrupted shot" --out extended.mp4 --save-latents extended.safetensors
 ```
 
 `--context-noise` accepts a strength in `[0,1]`; zero is the default and preserves
@@ -91,7 +91,7 @@ continuation source advances. Front Keystone and rear Capstone anchors use
 native CUDA/Vulkan constraints and automatic joining:
 
 ```sh
-slopfab generate --continue-from previous.safetensors --keystone-from original.safetensors --frames 119 --steps 9 --capstone-lock-after 4 --prompt "The same subject continues moving in one uninterrupted shot" --out extended.mp4 --save-latents extended.safetensors
+slopfab video generate --continue-from previous.safetensors --keystone-from original.safetensors --frames 119 --steps 9 --capstone-lock-after 4 --prompt "The same subject continues moving in one uninterrupted shot" --out extended.mp4 --save-latents extended.safetensors
 ```
 
 Continue next from `extended.safetensors`, keeping `--keystone-from original.safetensors`.
@@ -204,7 +204,7 @@ To initialize new video from the previous clip's appearance, add
 an optional latent or image ending anchor:
 
 ```sh
-slopfab generate --continue-from first.safetensors --end-anchor-latents ending.safetensors --continuation-source-noise 0.7 --frames 119 --prompt "One uninterrupted tracking shot following the same cyclist" --out joined.mp4 --save-latents joined.safetensors
+slopfab video generate --continue-from first.safetensors --end-anchor-latents ending.safetensors --continuation-source-noise 0.7 --frames 119 --prompt "One uninterrupted tracking shot following the same cyclist" --out joined.mp4 --save-latents joined.safetensors
 ```
 
 The generated video's initial state is `(1 - sigma) * source + sigma * noise`.
@@ -257,7 +257,7 @@ preserving the entire ending in the returned clip. No source VAE re-encoding is
 needed, and no editable margin is removed from the source.
 
 ```sh
-slopfab generate --end-anchor-latents ending.safetensors --frames 119 --prompt "The cyclist approaches the lake and slows down" --out complete.mp4 --save-latents complete.safetensors
+slopfab video generate --end-anchor-latents ending.safetensors --frames 119 --prompt "The cyclist approaches the lake and slows down" --out complete.mp4 --save-latents complete.safetensors
 ```
 
 Here `--frames` means **new lead-in frames**, excluding the retained ending.
@@ -276,7 +276,7 @@ For the next clip, generate another clean ending independently and combine it
 with ordinary continuation:
 
 ```sh
-slopfab generate --continue-from complete.safetensors --end-anchor-latents next-ending.safetensors --frames 119 --prompt "The cyclist walks the bicycle along the shore" --out joined.mp4 --save-latents joined.safetensors
+slopfab video generate --continue-from complete.safetensors --end-anchor-latents next-ending.safetensors --frames 119 --prompt "The cyclist walks the bicycle along the shore" --out joined.mp4 --save-latents joined.safetensors
 ```
 
 This returns `previous clip + new gap + ending clip`. With two sources, the gap
@@ -345,7 +345,7 @@ Use `--end-anchor` to guide a clip toward a clean ending image, including when
 continuing an existing clip:
 
 ```sh
-slopfab generate --continue-from first.safetensors --frames 119 --lock-overlap --end-anchor ending.png --prompt "The cyclist slows down and stops beside the lake" --out extended.mp4 --save-latents extended.safetensors
+slopfab video generate --continue-from first.safetensors --frames 119 --lock-overlap --end-anchor ending.png --prompt "The cyclist slows down and stops beside the lake" --out extended.mp4 --save-latents extended.safetensors
 ```
 
 It also works without `--continue-from`. The anchor is resized with Lanczos to
@@ -388,7 +388,7 @@ The temporal placement follows the upstream
 Add `--lock-overlap` to constrain the target overlap during sampling:
 
 ```sh
-slopfab generate --continue-from first.safetensors --overlap-frames 22 --lock-overlap --frames 119 --prompt "The cyclist keeps riding" --out extended.mp4
+slopfab video generate --continue-from first.safetensors --overlap-frames 22 --lock-overlap --frames 119 --prompt "The cyclist keeps riding" --out extended.mp4
 ```
 
 The default remains conditioning only. With locking enabled, the source tail
@@ -436,7 +436,7 @@ of the left clip and an editable head of the right clip. The rest of each source
 is retained exactly in latent space. The full joined timeline is decoded together.
 
 ```sh
-slopfab generate --bridge-from left.safetensors --bridge-to right.safetensors --frames 46 --bridge-left-margin 17 --bridge-right-margin 34 --bridge-context 22 --reference-image original-subject.png --prompt "The same subject continues walking, with the camera maintaining its direction" --out joined.mp4 --save-latents joined.safetensors
+slopfab video generate --bridge-from left.safetensors --bridge-to right.safetensors --frames 46 --bridge-left-margin 17 --bridge-right-margin 34 --bridge-context 22 --reference-image original-subject.png --prompt "The same subject continues walking, with the camera maintaining its direction" --out joined.mp4 --save-latents joined.safetensors
 ```
 
 Use compatible Ref2VA weights when attaching ordinary references. Image, video,

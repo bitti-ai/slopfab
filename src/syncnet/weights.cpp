@@ -14,8 +14,10 @@ struct Entry {
   size_t offset;
   std::vector<int> shape;
 };
+
 #include "syncnet_manifest.inc"
 #include "s3fd_manifest.inc"
+
 std::string hex(const Sha256Digest& d) {
   std::string result;
   for (auto v : d) {

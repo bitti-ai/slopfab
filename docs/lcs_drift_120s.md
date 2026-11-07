@@ -127,7 +127,7 @@ The cancellation status is recorded explicitly; it is not presented as a
 successful decoded generation.
 
 Every eight pairs, both complete archives are decoded through the standard
-`slopfab decode` command. This produces checkpoints near 54, 77, 99 and 122
+`slopfab video decode` command. This produces checkpoints near 54, 77, 99 and 122
 seconds. The final video is decoded from the complete cumulative latents, with
 normal VAE temporal context; independently decoded windows are not spliced.
 Comparison videos are silent, while the saved archives retain generated audio.

@@ -81,7 +81,8 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-std::vector<std::string> prepare_arguments(const std::vector<std::string>& args);
+std::vector<std::string> prepare_arguments(const std::vector<std::string>& args,
+                                         const std::string& task = {});
 Value request_schema();
 Value capabilities();
 int discovery_command(const std::string& command, const std::vector<std::string>& args);
@@ -89,7 +90,7 @@ int job_command(const std::string& command, const std::vector<std::string>& args
 void resolve_model_alias(GenerateRequest& request, const std::string& name);
 Value plan_json(const GenerateRequest&, const GeneratePlan&);
 void check_models_ready(const GenerateRequest&, bool need_text);
-int run_generation_arguments(const std::vector<std::string>& args);
+int run_generation_arguments(const std::vector<std::string>& args, const std::string& task = {});
 
 // The command layer owns delivery. No changes to the DLL's sample contract.
 struct Delivery {

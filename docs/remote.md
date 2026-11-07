@@ -96,7 +96,7 @@ file and its adjacent host profiles; the remote uses its own settings.
 slopfab generate --host gpu music --prompt "Warm ambient synths" --duration 10
 slopfab generate --host gpu image --prompt "Connection check" --dry-run
 slopfab generate --host gpu --request settings/request.json
-slopfab transcribe interview.wav --model whisper-small.safetensors --out transcript.srt --host gpu
+slopfab audio transcribe interview.wav --model whisper-small.safetensors --out transcript.srt --host gpu
 slopfab video frames output/scene.y4m --out contact.png --grid 4x3 --host gpu
 slopfab settings set weight_paths /models/weights --host gpu
 slopfab projects create film --host gpu

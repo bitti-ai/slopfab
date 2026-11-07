@@ -8,7 +8,8 @@
 
 namespace slopfab::syncnet {
 std::vector<float> mfcc(const std::vector<int16_t>& pcm) {
-  if (pcm.empty()) throw std::invalid_argument("SyncNet: empty audio");
+  if (pcm.empty())
+    throw std::invalid_argument("SyncNet: empty audio");
   constexpr double pi = 3.14159265358979323846;
   constexpr double eps = std::numeric_limits<double>::epsilon();
   const size_t frames = pcm.size() <= 400 ? 1 : 1 + (pcm.size() - 400 + 159) / 160;
@@ -22,13 +23,16 @@ std::vector<float> mfcc(const std::vector<int16_t>& pcm) {
     std::array<std::complex<double>, 512> fft{};
     for (size_t j = 0; j < 400; ++j) {
       size_t pos = f * 160 + j;
-      if (pos < pcm.size()) fft[j] = pcm[pos] - (pos ? .97 * pcm[pos - 1] : 0);
+      if (pos < pcm.size())
+        fft[j] = pcm[pos] - (pos ? .97 * pcm[pos - 1] : 0);
     }
     for (int i = 1, j = 0; i < 512; ++i) {
       int bit = 256;
-      for (; j & bit; bit >>= 1) j ^= bit;
+      for (; j & bit; bit >>= 1)
+        j ^= bit;
       j ^= bit;
-      if (i < j) std::swap(fft[i], fft[j]);
+      if (i < j)
+        std::swap(fft[i], fft[j]);
     }
     for (int len = 2; len <= 512; len *= 2) {
       auto root = std::polar(1., -2 * pi / len);
@@ -43,7 +47,10 @@ std::vector<float> mfcc(const std::vector<int16_t>& pcm) {
       }
     }
     double power[257], energy = 0, filters[26]{};
-    for (int i = 0; i < 257; ++i) { power[i] = std::norm(fft[i]) / 512; energy += power[i]; }
+    for (int i = 0; i < 257; ++i) {
+      power[i] = std::norm(fft[i]) / 512;
+      energy += power[i];
+    }
     for (int m = 0; m < 26; ++m) {
       for (int k = bins[m]; k < bins[m + 1]; ++k)
         filters[m] += power[k] * (k - bins[m]) / (bins[m + 1] - bins[m]);
@@ -54,7 +61,8 @@ std::vector<float> mfcc(const std::vector<int16_t>& pcm) {
     result[f * 13] = float(std::log(energy == 0 ? eps : energy));
     for (int k = 1; k < 13; ++k) {
       double dct = 0;
-      for (int j = 0; j < 26; ++j) dct += filters[j] * std::cos(pi * k * (j + .5) / 26);
+      for (int j = 0; j < 26; ++j)
+        dct += filters[j] * std::cos(pi * k * (j + .5) / 26);
       result[f * 13 + k] = float(dct * std::sqrt(2. / 26) * (1 + 11 * std::sin(pi * k / 22)));
     }
   }
@@ -99,21 +107,24 @@ Score score(const std::vector<std::vector<float>>& video,
   return result;
 }
 
-Image resize_crop(const Image& x, float left, float top, float width, float height,
-                  int out_h, int out_w) {
+Image resize_crop(const Image& x, float left, float top, float width, float height, int out_h,
+                  int out_w) {
   Image y(out_h, out_w, x.c);
   for (int r = 0; r < out_h; ++r) {
     float sy = top + (r + .5f) * height / out_h - .5f;
     // OpenCV resize replicates edge pixels of the integer crop before interpolation.
     sy = std::clamp(sy, top, top + height - 1);
-    int y0 = int(std::floor(sy)); float fy = sy - y0;
+    int y0 = int(std::floor(sy));
+    float fy = sy - y0;
     for (int s = 0; s < out_w; ++s) {
       float sx = left + (s + .5f) * width / out_w - .5f;
       sx = std::clamp(sx, left, left + width - 1);
-      int x0 = int(std::floor(sx)); float fx = sx - x0;
+      int x0 = int(std::floor(sx));
+      float fx = sx - x0;
       auto pixel = [&](int iy, int ix, int c) {
-        return iy < 0 || ix < 0 || iy >= x.h || ix >= x.w ? 110.f :
-               x.data[(size_t(iy) * x.w + ix) * x.c + c];
+        return iy < 0 || ix < 0 || iy >= x.h || ix >= x.w
+                   ? 110.f
+                   : x.data[(size_t(iy) * x.w + ix) * x.c + c];
       };
       for (int c = 0; c < x.c; ++c)
         y.data[(size_t(r) * out_w + s) * x.c + c] =

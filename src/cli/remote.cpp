@@ -460,7 +460,9 @@ int remote_execute(const std::string& host, const std::vector<std::string>& args
         "projects open launches a local browser; use projects show --host NAME or open a downloaded project locally");
   fs::path project;
   if (!local_project.empty()) {
-    if (args[0] != "generate" && args[0] != "wait" && args[0] != "status")
+    const bool media_generate = args.size() > 1 && args[1] == "generate" &&
+                               (args[0] == "video" || args[0] == "image" || args[0] == "audio");
+    if (args[0] != "generate" && args[0] != "wait" && args[0] != "status" && !media_generate)
       throw CliError("INVALID_REQUEST", "--local-project applies to generation results");
     project = project_directory(local_project);
     read_json(project / "project.json");

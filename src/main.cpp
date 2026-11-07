@@ -10,6 +10,8 @@
 #include "cli/prompting.h"
 #include "cli/transcribe.h"
 #include "cli/separate.h"
+#include "cli/syncnet.h"
+#include "cli/media_commands.h"
 #include "cli/remote.h"
 #include <cstdio>
 #include <set>
@@ -71,8 +73,7 @@ int cli_main(int argc, char** argv) {
       }
       args.push_back(a);
       // Keep option values opaque: a prompt equal to "--agent" is still a prompt.
-      if (option_takes_value(a,
-                             args.empty() ? std::string_view{} : std::string_view(args.front())) &&
+      if (option_takes_value(a, media_option_command(args)) &&
           i + 1 < argc)
         args.push_back(argv[++i]);
     }
@@ -109,6 +110,7 @@ int cli_main(int argc, char** argv) {
       return finish_command(0);
     }
 #endif
+    const std::string media_task = route_media_command(args);
     const std::string command = args.front();
     args.erase(args.begin());
     std::vector<char*> av;
@@ -134,10 +136,7 @@ int cli_main(int argc, char** argv) {
       return script_command(args);
     if (command == "motions")
       return motions_command(args);
-    if (command == "video") {
-      if (args.empty() || args.front() != "frames")
-        throw CliError("INVALID_REQUEST", "use slopfab video frames; see slopfab help video");
-      args.erase(args.begin());
+    if (command == "frames") {
       return frames_command(args);
     }
     if (command == "prompts")
@@ -146,6 +145,8 @@ int cli_main(int argc, char** argv) {
       return transcribe_command(args);
     if (command == "separate")
       return separate_command(args);
+    if (command == "syncnet")
+      return syncnet_command(args);
     if (command == "projects")
       return projects_command(args);
     if (command == "remote")
@@ -157,7 +158,7 @@ int cli_main(int argc, char** argv) {
     if (command == "generate" || command == "validate") {
       if (command == "validate")
         args.push_back("--dry-run");
-      return finish_command(run_generation_arguments(args));
+      return finish_command(run_generation_arguments(args, media_task));
     }
     if (command == "capabilities" || command == "schema" || command == "models" ||
         command == "doctor" || command == "devices")

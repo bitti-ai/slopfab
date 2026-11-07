@@ -48,7 +48,7 @@ image/reference is rejected with instructions for selecting the override.
 Decode an existing normalized latent archive without denoising again:
 
 ```sh
-slopfab decode --latent clip.safetensors --vae C:/Users/NN/Downloads/sol_h3_vae.safetensors --out clip.y4m
+slopfab video decode --latent clip.safetensors --vae C:/Users/NN/Downloads/sol_h3_vae.safetensors --out clip.y4m
 ```
 
 The DLL's `slopfab_latent_upscale_decode_file_start` accepts the Sol checkpoint

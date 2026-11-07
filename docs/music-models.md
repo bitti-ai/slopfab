@@ -22,16 +22,16 @@ The CLI discovers these files under `weights/`, `weights/transformer/`, `weights
 From the repository root on Windows:
 
 ```powershell
-build/Release/slopfab.exe generate --model yue2 --prompt "Warm piano ballad with a gentle female vocal" --lyrics "[verse] Morning light across the sea" --music-duration 30 --seed 42 --out yue2.wav
-build/Release/slopfab.exe generate --model yue2 --prompt "Gentle instrumental piano and strings" --music-planning off --music-duration 8 --seed 42 --out piano.wav
-build/Release/slopfab.exe generate --model minimax_music3 --prompt "Warm piano ballad with a gentle female vocal" --lyrics "[verse] Morning light across the sea" --music-duration 30 --seed 42 --out music3.wav
+build/Release/slopfab.exe audio generate --model yue2 --prompt "Warm piano ballad with a gentle female vocal" --lyrics "[verse] Morning light across the sea" --music-duration 30 --seed 42 --out yue2.wav
+build/Release/slopfab.exe audio generate --model yue2 --prompt "Gentle instrumental piano and strings" --music-planning off --music-duration 8 --seed 42 --out piano.wav
+build/Release/slopfab.exe audio generate --model minimax_music3 --prompt "Warm piano ballad with a gentle female vocal" --lyrics "[verse] Morning light across the sea" --music-duration 30 --seed 42 --out music3.wav
 ```
 
 For Vulkan, add `--inference-backend vulkan --vulkan-arithmetic portable` to either model's command:
 
 ```powershell
-build/Release/slopfab.exe generate --model yue2 --inference-backend vulkan --vulkan-arithmetic portable --prompt "Gentle instrumental piano and strings" --music-planning off --music-duration 8 --seed 42 --out yue-vulkan.wav
-build/Release/slopfab.exe generate --model minimax_music3 --inference-backend vulkan --vulkan-arithmetic portable --prompt "Gentle instrumental piano with warm strings" --music-duration 12 --seed 42 --out music3-vulkan.wav
+build/Release/slopfab.exe audio generate --model yue2 --inference-backend vulkan --vulkan-arithmetic portable --prompt "Gentle instrumental piano and strings" --music-planning off --music-duration 8 --seed 42 --out yue-vulkan.wav
+build/Release/slopfab.exe audio generate --model minimax_music3 --inference-backend vulkan --vulkan-arithmetic portable --prompt "Gentle instrumental piano with warm strings" --music-duration 12 --seed 42 --out music3-vulkan.wav
 ```
 
 Vulkan executes every neural stage, including autoregressive generation, flow synthesis and waveform decoding. It does not call CUDA. Builds with `-DSLOPFAB_ENABLE_CUDA=OFF` support both music models. Vulkan music requires portable arithmetic; exact arithmetic is rejected because cross-backend bit parity is not guaranteed. Music selects fixed attention kernels internally, so leave `--attention` unset.
@@ -45,7 +45,7 @@ Vulkan executes every neural stage, including autoregressive generation, flow sy
 Use six steps with DPM++ 2M on either CUDA or Vulkan:
 
 ```sh
-slopfab generate --model yue2 --prompt "Warm piano ballad" --music-settings '{"flow_sampler":"dpmpp_2m"}' --steps 6 --music-duration 30 --seed 42 --out yue-fast.wav
+slopfab audio generate --model yue2 --prompt "Warm piano ballad" --music-settings '{"flow_sampler":"dpmpp_2m"}' --steps 6 --music-duration 30 --seed 42 --out yue-fast.wav
 ```
 
 This performs six flow predictions per chunk, versus 64 for the default 32-step

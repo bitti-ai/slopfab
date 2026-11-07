@@ -272,7 +272,8 @@ void resolve_model_alias(GenerateRequest& request, const std::string& name) {
   }
 }
 
-std::vector<std::string> prepare_arguments(const std::vector<std::string>& input) {
+std::vector<std::string> prepare_arguments(const std::vector<std::string>& input,
+                                         const std::string& task) {
   std::vector<std::string> args = input;
   size_t request_pos = args.size();
   for (size_t i = 0; i < args.size(); ++i) {
@@ -306,6 +307,12 @@ std::vector<std::string> prepare_arguments(const std::vector<std::string>& input
       throw CliError("INVALID_REQUEST", e.what());
     }
     args.insert(args.end(), controls.begin(), controls.end());
+  }
+  if (!task.empty()) {
+    if (!args.empty() && (args[0] == "video" || args[0] == "image" || args[0] == "music")) {
+      if (args[0] != task)
+        throw CliError("INVALID_REQUEST", "request task conflicts with media command", 2, "task");
+    } else args.insert(args.begin(), task);
   }
   agent().task.clear();
   agent().deadline_seconds = 0;
@@ -503,12 +510,19 @@ Value capabilities() {
           {"duration_policy", str("trim_end_or_pad_silence")}, {"source_slicing", Value(false)},
           {"preserve_option", str("--preserve-driving-audio")},
           {"pin_target_audio", Value(true)}, {"include_reference_audio_when_pinned", Value(false)}})},
-      {"separation", Value(Object{{"command", str("slopfab separate FILE --model MODEL.safetensors")},
+      {"syncnet", Value(Object{{"command", str("slopfab video syncnet VIDEO --model syncnet_v2.model --face-model sfd_face.pth")},
+          {"model_sha256", str("961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442")},
+          {"automatic_face_tracking", Value(true)}, {"fps", num(25)},
+          {"s3fd_safetensors", Value(true)}, {"cli_only", Value(true)}})},
+      {"media_commands", Value(Object{{"video", Value(Array{str("generate"), str("frames"), str("syncnet"), str("motions"), str("upscale"), str("upscale-latents"), str("decode"), str("compare")})},
+          {"audio", Value(Array{str("generate"), str("transcribe"), str("separate")})},
+          {"image", Value(Array{str("generate"), str("upscale"), str("motions")})}})},
+      {"separation", Value(Object{{"command", str("slopfab audio separate FILE --model MODEL.safetensors")},
           {"model", str("htdemucs")}, {"backends", Value(Array{str("cpu")})},
           {"sources", Value(Array{str("drums"), str("bass"), str("other"), str("vocals")})},
           {"sample_rate", num(44100)}, {"format", str("float32 WAV")},
           {"two_stems", Value(true)}})},
-      {"transcription", Value(Object{{"command",str("slopfab transcribe FILE --model MODEL.safetensors")},
+      {"transcription", Value(Object{{"command",str("slopfab audio transcribe FILE --model MODEL.safetensors")},
           {"model",str("whisper")}, {"multilingual",Value(true)}, {"word_timestamps",Value(true)},
           {"embedded_tokenizer",Value(true)}, {"weights",str("Hugging Face safetensors, F16/BF16/F32")},
           {"formats",Value(Array{str("json"),str("txt"),str("srt"),str("vtt")})},
@@ -518,7 +532,7 @@ Value capabilities() {
           {"generation_ram_capture",Value(true)}, {"native_y4m",Value(true)},
           {"compressed_video",str("external FFmpeg and ffprobe")}, {"cli_only",Value(true)}})},
       {"motions", Value(Object{{"renderer",str("ThorVG 1.1.3")}, {"runtime",str("embedded JavaScript")},
-        {"command",str("slopfab motions render|frame FILE.js --out FILE")},
+        {"command",str("slopfab video motions render|frame FILE.js --out FILE")},
         {"formats",Value(Array{str("svg"),str("png"),str("mp4"),str("mov"),str("webm")})},
         {"overlay",Value(true)}, {"video_encoder",str("external FFmpeg")}, {"cli_only",Value(true)}})},
       {"scripting", Value(Object{{"engine",str("QuickJS-NG 0.18.0")}, {"api_version",num(1)},
@@ -655,9 +669,9 @@ int discovery_command(const std::string& command, const std::vector<std::string>
   return 0;
 }
 
-int run_generation_arguments(const std::vector<std::string>& args) {
+int run_generation_arguments(const std::vector<std::string>& args, const std::string& task) {
   start_request();
-  auto prepared = prepare_arguments(args);
+  auto prepared = prepare_arguments(args, task);
   std::vector<char*> argv;
   for (auto& a : prepared)
     argv.push_back(a.data());

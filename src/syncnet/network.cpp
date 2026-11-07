@@ -14,6 +14,7 @@ Image::Image(int height, int width, int channels) : h(height), w(width), c(chann
     throw std::runtime_error("SyncNet: invalid or excessive image dimensions");
   data.resize(size_t(h) * w * c);
 }
+
 struct Network::Impl {
   Weights weights;
   std::function<void()> check;
@@ -22,6 +23,7 @@ struct Network::Impl {
   std::map<std::string, vulkan::DeviceTensor> gpu_weights;
 #endif
 };
+
 Network::Network(Weights weights, const std::string& backend, std::function<void()> check)
     : impl_(std::make_unique<Impl>()) {
   impl_->weights = std::move(weights);
@@ -42,7 +44,9 @@ Network::Network(Weights weights, const std::string& backend, std::function<void
     throw std::runtime_error("SyncNet: Vulkan is not built");
 #endif
 }
+
 Network::~Network() = default;
+
 std::string Network::backend() const {
 #if SLOPFAB_WITH_VULKAN
   if (impl_->gpu)
@@ -50,8 +54,9 @@ std::string Network::backend() const {
 #endif
   return "cpu";
 }
-Image Network::conv(const Image& x, const std::string& name, int stride, int pad,
-                    int dilation, bool relu) {
+
+Image Network::conv(const Image& x, const std::string& name, int stride, int pad, int dilation,
+                    bool relu) {
   if (impl_->check)
     impl_->check();
   const auto& weight = impl_->weights.at(name + ".weight");
@@ -128,6 +133,7 @@ Image Network::conv(const Image& x, const std::string& name, int stride, int pad
   }
   return y;
 }
+
 void Network::norm(Image& x, const std::string& name) {
   const auto& w = impl_->weights.at(name + ".weight").data;
   const auto& b = impl_->weights.at(name + ".bias").data;
@@ -141,6 +147,7 @@ void Network::norm(Image& x, const std::string& name) {
     }
   }
 }
+
 void Network::l2norm(Image& x, const std::string& name) {
   const auto& w = impl_->weights.at(name + ".weight").data;
   for (int p = 0; p < x.h * x.w; ++p) {
@@ -154,11 +161,14 @@ void Network::l2norm(Image& x, const std::string& name) {
       x.data[size_t(p) * x.c + c] *= w.at(c) / norm;
   }
 }
+
 Image Network::pool(const Image& x, int kh, int kw, int sh, int sw, int pad, bool ceil) {
   int h = (x.h + 2 * pad - kh + (ceil ? sh - 1 : 0)) / sh + 1;
   int w = (x.w + 2 * pad - kw + (ceil ? sw - 1 : 0)) / sw + 1;
-  if ((h - 1) * sh >= x.h + pad) --h;
-  if ((w - 1) * sw >= x.w + pad) --w;
+  if ((h - 1) * sh >= x.h + pad)
+    --h;
+  if ((w - 1) * sw >= x.w + pad)
+    --w;
   Image y(h, w, x.c);
   for (int r = 0; r < h; ++r)
     for (int s = 0; s < w; ++s)
@@ -174,11 +184,13 @@ Image Network::pool(const Image& x, int kh, int kw, int sh, int sw, int pad, boo
       }
   return y;
 }
+
 std::vector<float> Network::embedding(Image x, bool audio) {
   const std::string prefix = audio ? "netcnnaud." : "netcnnlip.";
   x = conv(x, prefix + "0", audio ? 1 : 2, audio ? 1 : 0);
   norm(x, prefix + "1");
-  if (!audio) x = pool(x, 3, 3, 2, 2);
+  if (!audio)
+    x = pool(x, 3, 3, 2, 2);
   x = conv(x, prefix + "4", audio ? 1 : 2, 1);
   norm(x, prefix + "5");
   x = pool(x, 3, 3, audio ? 1 : 2, 2, audio ? 0 : 1);

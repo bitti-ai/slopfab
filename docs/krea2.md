@@ -22,10 +22,10 @@ by tensor structure, even if the file has been renamed.
 ## CLI
 
 ```sh
-slopfab generate --model krea2 --prompt "A red apple on a wooden table" --resolution 1024x1024 --seed 42 --out apple.ppm
-slopfab generate --model krea2 --prompt "A mountain lake at sunrise" --resolution 1536x1024 --steps 8 --out lake.ppm
-slopfab generate --model krea2 --dry-run
-slopfab generate --model krea2 --inference-backend vulkan --vulkan-arithmetic portable --prompt "A red apple on a wooden table" --resolution 1024x1024 --out apple.ppm
+slopfab image generate --model krea2 --prompt "A red apple on a wooden table" --resolution 1024x1024 --seed 42 --out apple.ppm
+slopfab image generate --model krea2 --prompt "A mountain lake at sunrise" --resolution 1536x1024 --steps 8 --out lake.ppm
+slopfab image generate --model krea2 --dry-run
+slopfab image generate --model krea2 --inference-backend vulkan --vulkan-arithmetic portable --prompt "A red apple on a wooden table" --resolution 1024x1024 --out apple.ppm
 ```
 
 Defaults match Turbo: eight Euler updates, CFG disabled, a fixed timestep-shift
