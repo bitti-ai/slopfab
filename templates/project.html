@@ -443,9 +443,12 @@
       .generation-prompts .section-row {
         flex-wrap: wrap;
       }
-      .prompt-version {
-        width: auto !important;
+      select.action.prompt-version {
+        width: auto;
         max-width: 100%;
+        height: 28px;
+        padding: 3px 8px;
+        font-size: 12px;
       }
       .prompt-card + .prompt-card {
         margin-top: 20px;
@@ -599,6 +602,11 @@
       .tab.active {
         border-color: var(--accent);
         color: var(--text);
+      }
+      .library-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 14px;
       }
       .show-removed {
         display: flex;
@@ -844,9 +852,6 @@
           width: 100%;
           gap: 4px;
         }
-        .show-removed {
-          padding: 10px 0;
-        }
         .grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -966,13 +971,15 @@
       <section class="library" aria-label="Project media">
         <div class="section-row">
           <h2>Project library</h2>
-          <span id="asset-count" class="tiny muted"></span>
+          <div class="library-header-actions">
+            <span id="asset-count" class="tiny muted"></span>
+            <label class="show-removed"
+              ><input id="show-removed" type="checkbox" />Show removed</label
+            >
+          </div>
         </div>
         <div class="library-toolbar">
           <div class="tabs" role="tablist" aria-label="Media filters"></div>
-          <label class="show-removed"
-            ><input id="show-removed" type="checkbox" />Show removed</label
-          >
         </div>
         <div id="grid" class="grid"></div>
       </section>
