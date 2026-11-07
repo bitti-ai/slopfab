@@ -340,60 +340,257 @@
         "role": "lora",
         "url": "https://huggingface.co/CZMartin22/TaoMate-H3-3step-ComfyUI/resolve/main/TaoMate-H3-3step-ComfyUI.safetensors",
         "name": "TaoMate 3-Step",
-        "stepOverride": 3
+        "stepOverride": 3,
+        "recommendedSampling": {
+          "steps": 3,
+          "baseModel": "H3 FL2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.673469387755102,
+              0.32653061224489793,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/CZMartin22/TaoMate-H3-3step-ComfyUI",
+            "https://github.com/TaoLiveAIGC/TaoMate-H3/blob/main/src/taomate_h3/denoise_schedule.py"
+          ],
+          "note": "Retains teacher states 0/16/33/49. Slopfab also exposes this grid as --schedule taomate-3step; an ordinary uniform three-step grid is different."
+        }
       },
       {
         "id": "turbo-4step",
         "role": "lora",
         "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
         "name": "Turbo",
-        "stepOverride": 4
+        "stepOverride": 4,
+        "recommendedSampling": {
+          "steps": 4,
+          "baseModel": "H3 Ref2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.75,
+              0.5,
+              0.25,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://github.com/ModelTC/Minimax-H3-Turbo#1-model-specs",
+            "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/COMFYUI_SETUP_AND_INFERENCE.md"
+          ],
+          "note": "Recipe for this Ref2VA v0.1 file; the FL2VA 768p Turbo variants use different video shifts."
+        }
       },
       {
         "id": "viggle-animate-4step",
         "role": "lora",
         "url": "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/viggle_animate_distillation_bf16.safetensors",
         "name": "Viggle Animate Distillation",
-        "stepOverride": 4
+        "stepOverride": 4,
+        "recommendedSampling": {
+          "steps": 3,
+          "baseModel": "Viggle Animate",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 3,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.6666666666666666,
+              0.3333333333333333,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/Viggle/Viggle-Animate/blob/main/inference/sample.py"
+          ],
+          "note": "The upstream four-point schedule has three denoising updates. Use Animate conditioning and this explicit grid; Slopfab --steps counts updates, not sigma boundaries. The legacy file ID/stepOverride retain upstream four-point naming."
+        }
       },
       {
         "id": "lightx2v-turbo-6step",
         "role": "lora",
         "url": "https://huggingface.co/silveroxides/MiniMax-H3_tests/resolve/main/experimental/minimax_h3_fl2v_lightx2v_turbo_4to8step_v0.1-v1.0_768p_v4_step600_dareties.safetensors",
         "name": "LightX2V Turbo",
-        "stepOverride": 6
+        "stepOverride": 6,
+        "recommendedSampling": {
+          "steps": 6,
+          "baseModel": "H3 FL2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "default_steps": 6,
+            "scheduler": "default"
+          },
+          "basis": "local-default",
+          "sources": [
+            "https://huggingface.co/silveroxides/MiniMax-H3_tests",
+            "src/sampling_plan.cpp",
+            "src/sampler/scheduler.cpp"
+          ],
+          "note": "Retains the catalog six-step choice with Slopfab Euler/uniform defaults and shifts 12/3. The current upstream card does not specify a recipe for this experimental DARE-TIES file; these are starting settings, not a verified author preset. Pruned bases may need a companion AdaLN grid."
+        }
       },
       {
         "id": "dmad-4step",
         "role": "lora",
         "url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors",
         "name": "DMAD 4-Step",
-        "samplingPreset": "dmad-4step"
+        "samplingPreset": "dmad-4step",
+        "recommendedSampling": {
+          "steps": 4,
+          "baseModel": "H3 FL2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "renoise",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 2,
+            "base_sigmas": [
+              1,
+              0.75,
+              0.5,
+              0.25,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/ZhengmingYu/DMAD"
+          ],
+          "note": "Re-noise updates with fresh intermediate noise; not ordinary Euler. Slopfab also exposes this recipe as --schedule dmad-4step."
+        }
       },
       {
         "id": "pika-h3-flex-fl2va",
         "role": "lora",
         "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/pika_h3_flex_fl2va_v1_bf16.safetensors",
         "name": "Pika H3 First/Last",
-        "samplingPreset": "pika-6step"
+        "samplingPreset": "pika-6step",
+        "recommendedSampling": {
+          "steps": 6,
+          "baseModel": "H3 FL2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "renoise",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.75,
+              0.5,
+              0.25,
+              0.1,
+              0.04,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://github.com/Pika-Labs/Pika-H3-Flex#runtime-notes"
+          ],
+          "note": "Six updates on the released 1000/750/500/250/100/40/0 knots with fresh intermediate noise. Use settings via --sampling-settings; the legacy pika-6step samplingPreset is not a Slopfab --schedule value."
+        }
       },
       {
         "id": "pika-h3-flex-ref2va",
         "role": "lora",
         "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/pika_h3_flex_ref2va_v1_bf16.safetensors",
         "name": "Pika H3 Reference",
-        "samplingPreset": "pika-6step"
+        "samplingPreset": "pika-6step",
+        "recommendedSampling": {
+          "steps": 6,
+          "baseModel": "H3 Ref2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "renoise",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.75,
+              0.5,
+              0.25,
+              0.1,
+              0.04,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://github.com/Pika-Labs/Pika-H3-Flex#runtime-notes"
+          ],
+          "note": "Six updates on the released 1000/750/500/250/100/40/0 knots with fresh intermediate noise. Use settings via --sampling-settings; the legacy pika-6step samplingPreset is not a Slopfab --schedule value."
+        }
       },
       {
         "id": "hyperflow-8step",
         "role": "lora",
         "url": "https://huggingface.co/VideoRebirthAI/hyperflow/resolve/main/minimax_h3_hyperflow_8step_v1.0.safetensors",
         "name": "Hyperflow 8-Step",
-        "stepOverride": 8
+        "stepOverride": 8,
+        "recommendedSampling": {
+          "steps": 8,
+          "baseModel": "H3 FL2VA or Ref2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.931506,
+              0.839236,
+              0.703462,
+              0.5,
+              0.296538,
+              0.160764,
+              0.068494,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/VideoRebirthAI/hyperflow"
+          ],
+          "note": "Fixed grid and shifts from the released V1.0 file metadata. Slopfab selects them automatically; omit step/schedule overrides. Pruned bases require the matching Hyperflow companion."
+        }
       }
     ],
     "name": "MiniMax H3 LoRAs",
-    "note": "Optional H3 adapters. stepOverride and samplingPreset describe Slopus defaults; downloading does not configure generation or prepare companion sampling grids.",
+    "note": "Optional H3 adapters. recommendedSampling is advisory and includes native Slopfab settings JSON. Legacy stepOverride/samplingPreset fields are retained for existing consumers, not CLI arguments. Downloading does not configure generation or prepare companion grids.",
     "source": "https://huggingface.co/Comfy-Org/MiniMax-H3"
   },
   "realesrgan": {
@@ -506,7 +703,34 @@
         "id": "v1.5",
         "role": "lora",
         "url": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/resolve/main/h3_character_swap_v1.5.safetensors",
-        "minVramGb": 0
+        "minVramGb": 0,
+        "recommendedSampling": {
+          "steps": 8,
+          "baseModel": "H3 Ref2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "er_sde",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "default_steps": 8,
+            "scheduler": "default"
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA",
+            "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/blob/main/examples/H3-Character-Swap-Relay-V2.api.json"
+          ],
+          "note": "Eight-step recipe requires the separate Turbo adapter below at strength 1. Without Turbo, inherit the base model schedule; Character Swap itself is not distilled. This workflow uses video shift 12 even though the Turbo file standalone was trained at shift 6.",
+          "requires": [
+            {
+              "role": "lora",
+              "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+              "loraStrength": 1
+            }
+          ]
+        }
       }
     ]
   }

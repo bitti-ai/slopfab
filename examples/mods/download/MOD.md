@@ -1,7 +1,7 @@
 ---
 name: download
 description: List available model files and download selected weights.
-version: "1.6"
+version: "1.7"
 command: download
 script: main.js
 ---
@@ -15,6 +15,14 @@ slopfab download MODEL FILE_ID DESTINATION    # Override the destination
 ```
 
 Listings are offline. Add `--agent` for structured responses.
+
+LoRA URL entries include advisory `recommendedSampling`: denoising update count,
+base model, strength, CFG, sources and native Slopfab `settings` JSON. Sigma
+arrays are unshifted, include terminal zero, and have one more entry than updates;
+video/audio shifts are applied separately. `requires` identifies recipe companions.
+`basis: local-default` marks a fallback rather than an upstream recommendation.
+Downloads do not apply these settings; legacy `stepOverride`/`samplingPreset`
+fields are retained for older consumers and are not Slopfab CLI arguments.
 
 Before selecting downloads, run `slopfab devices` and check the current GPU's
 available VRAM. Choose compatible model variants and companion files that fit,
