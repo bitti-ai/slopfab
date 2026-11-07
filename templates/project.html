@@ -8,16 +8,16 @@
       content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' file: data:; media-src 'self' file: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>Slopfab project</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23121415'/%3E%3Cpath d='M23 9H12a4 4 0 0 0 0 8h8a3 3 0 0 1 0 6H9' fill='none' stroke='%23d4ef85' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%224%22%20fill%3D%22%23202226%22%2F%3E%3Ctext%20x%3D%223%22%20y%3D%2222%22%20font-family%3D%22monospace%22%20font-weight%3D%22700%22%20font-size%3D%2222%22%20fill%3D%22%2382b5f7%22%3Es%26gt%3B%3C%2Ftext%3E%3C%2Fsvg%3E" />
     <style>
       :root {
         color-scheme: dark;
-        --bg: #121415;
-        --panel: #1b1e20;
-        --line: #323638;
-        --muted: #a4acae;
-        --text: #f0f1ec;
-        --accent: #d4ef85;
+        --bg: #101113;
+        --panel: #202226;
+        --line: #34373d;
+        --muted: #a2a8b3;
+        --text: #e0e3e8;
+        --accent: #82b5f7;
         --warn: #efc282;
         font-family:
           Inter,
@@ -70,31 +70,33 @@
         outline: 2px solid var(--accent);
       }
       header {
-        height: 76px;
+        height: 48px;
         border-bottom: 1px solid var(--line);
-        padding: 0 36px;
+        background: #25272c;
+        padding: 0 16px;
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
         align-items: center;
-        gap: 20px;
+        gap: 16px;
       }
       .brand {
         display: flex;
         align-items: center;
-        gap: 12px;
-        font-size: 17px;
-        font-weight: 750;
-        letter-spacing: -0.4px;
+        gap: 9px;
+        font-size: 13px;
+        font-weight: 650;
+        letter-spacing: -0.2px;
       }
       .logo {
-        color: #171c10;
-        background: var(--accent);
-        border-radius: 4px;
-        width: 31px;
-        height: 31px;
+        color: var(--accent);
+        background: #15171b;
+        border: 1px solid #414751;
+        border-radius: 3px;
+        width: 30px;
+        height: 28px;
         display: grid;
         place-items: center;
-        font-weight: 900;
+        font: 700 16px ui-monospace, Consolas, monospace;
       }
       .header-right {
         display: flex;
@@ -107,7 +109,7 @@
         letter-spacing: 0.07em;
         text-transform: uppercase;
         border: 1px solid var(--line);
-        border-radius: 6px;
+        border-radius: 2px;
         padding: 5px 10px;
         color: var(--muted);
       }
@@ -120,9 +122,9 @@
         margin-right: 6px;
       }
       main {
-        max-width: 1600px;
-        margin: auto;
-        padding: 36px;
+        width: 100%;
+        margin: 0;
+        padding: 8px;
       }
       .eyebrow {
         font-size: 11px;
@@ -132,8 +134,8 @@
         color: var(--muted);
       }
       h1 {
-        font-size: 20px;
-        letter-spacing: -0.4px;
+        font-size: 13px;
+        font-weight: 550;
         margin: 0;
         line-height: 1.3;
         text-align: center;
@@ -142,12 +144,13 @@
         white-space: nowrap;
       }
       h2 {
-        font-size: 18px;
-        letter-spacing: -0.4px;
+        font-size: 13px;
+        font-weight: 600;
         margin: 0;
       }
       h3 {
-        font-size: 14px;
+        font-size: 12px;
+        font-weight: 600;
         margin: 0;
       }
       .muted {
@@ -158,28 +161,29 @@
       }
       .stats {
         display: flex;
-        gap: 22px;
+        gap: 14px;
         color: var(--muted);
-        font-size: 12px;
+        font-size: 10px;
       }
       .stats strong {
-        display: block;
-        font-size: 18px;
-        line-height: 1.25;
+        display: inline;
+        margin-right: 4px;
+        font-size: 11px;
         color: var(--text);
-        font-weight: 550;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
       }
       .workspace {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 330px;
-        gap: 24px;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 8px;
         align-items: start;
       }
       .viewer {
         border: 1px solid var(--line);
-        border-radius: 6px;
+        border-radius: 2px;
         overflow: hidden;
-        background: #0a0b0c;
+        background: #0b0c0e;
       }
       .stage {
         width: 100%;
@@ -187,9 +191,9 @@
         display: flex;
         flex-direction: column;
         justify-content: center;
-        background: radial-gradient(ellipse at 45% 45%, #252b2c, #090b0b);
-        min-height: 340px;
-        aspect-ratio: 16/9;
+        background: #090a0c;
+        height: clamp(280px, 51vh, 680px);
+        min-height: 0;
         overflow: hidden;
       }
       .stage > img {
@@ -314,7 +318,10 @@
         place-items: center;
       }
       .viewer-footer {
-        padding: 18px 20px;
+        min-height: 56px;
+        padding: 9px 14px;
+        border-top: 1px solid var(--line);
+        background: #202226;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -326,10 +333,11 @@
       }
       .badge {
         color: var(--accent);
-        font-size: 11px;
-        padding: 4px 9px;
+        font-size: 10px;
+        padding: 3px 7px;
+        border: 1px solid #82b5f735;
         border-radius: 2px;
-        background: #d4ef8510;
+        background: #82b5f710;
         white-space: nowrap;
       }
       .warning {
@@ -341,16 +349,22 @@
       }
       .inspector {
         border: 1px solid var(--line);
-        border-radius: 6px;
+        border-radius: 2px;
         background: var(--panel);
-        padding: 24px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
       }
-      #main-workspace > .inspector {
+      .workspace > .inspector {
         height: var(--viewer-height, auto);
         overflow: auto;
       }
       .inspector h2 {
-        margin: 8px 0;
+        margin: -14px -14px 10px;
+        padding: 8px 14px;
+        background: #282b30;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
       }
       .inspector p {
         font-size: 12px;
@@ -359,22 +373,23 @@
       .separator {
         border: 0;
         border-top: 1px solid var(--line);
-        margin: 22px 0;
+        margin: 14px 0 0;
       }
       .label {
         display: block;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 600;
-        margin: 17px 0 8px;
+        margin: 12px 0 6px;
+        color: #b7bdc7;
       }
       select.action,
       textarea {
         width: 100%;
-        border: 1px solid #41484b;
+        border: 1px solid #454a54;
         border-radius: 3px;
-        background: #131718;
+        background: #15171b;
         color: var(--text);
-        padding: 11px 12px;
+        padding: 8px 10px;
       }
       textarea {
         resize: vertical;
@@ -385,16 +400,17 @@
         color: #7d8789;
       }
       .primary {
-        border: 0;
-        border-radius: 3px;
+        border: 1px solid #91bfff;
+        border-radius: 2px;
         background: var(--accent);
-        color: #202815;
-        padding: 12px 18px;
+        color: #101b2b;
+        padding: 8px 12px;
         font-weight: 650;
+        font-size: 12px;
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 9px;
+        gap: 8px;
       }
       .inspector .primary {
         width: 100%;
@@ -411,11 +427,11 @@
         font-size: 11px;
       }
       .generation-prompts {
-        margin-top: 22px;
-        padding: 22px;
+        margin-top: 8px;
+        padding: 12px;
         background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 6px;
+        border-radius: 2px;
         min-width: 0;
       }
       #popup-workspace > .generation-prompts {
@@ -470,28 +486,31 @@
         color: #bac4c3;
       }
       .sequence {
-        margin-top: 22px;
+        margin-top: 8px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        background: #1b1d21;
       }
       .section-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 16px;
-        margin-bottom: 12px;
+        gap: 12px;
+        margin-bottom: 10px;
       }
       .sequence-list {
         display: flex;
-        gap: 10px;
+        gap: 6px;
         overflow: auto;
-        padding-bottom: 5px;
+        padding: 2px 0 5px;
       }
       .clip {
-        flex: 0 0 180px;
+        flex: 0 0 146px;
         text-align: left;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        padding: 14px;
+        background: #252931;
+        border: 1px solid #3e4653;
+        border-radius: 2px;
+        padding: 8px;
         color: var(--text);
       }
       .clip.selected {
@@ -548,7 +567,10 @@
         margin-top: 5px;
       }
       .library {
-        margin-top: 32px;
+        margin-top: 8px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        background: var(--panel);
       }
       .library-toolbar {
         display: flex;
@@ -556,11 +578,11 @@
         justify-content: space-between;
         gap: 16px;
         border-bottom: 1px solid var(--line);
-        margin-bottom: 20px;
+        margin-bottom: 12px;
       }
       .tabs {
         display: flex;
-        gap: 22px;
+        gap: 4px;
         overflow: auto;
       }
       .tab {
@@ -569,7 +591,8 @@
         background: none;
         color: var(--muted);
         white-space: nowrap;
-        padding: 12px 0;
+        padding: 8px 12px;
+        font-size: 12px;
       }
       .tab.active {
         border-color: var(--accent);
@@ -588,8 +611,8 @@
       }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
-        gap: 16px;
+        grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+        gap: 8px;
       }
       .card {
         text-align: left;
@@ -602,11 +625,11 @@
       }
       .card.selected {
         border-color: var(--accent);
-        box-shadow: 0 0 0 1px var(--accent);
+        box-shadow: inset 0 -2px var(--accent);
       }
       .thumb {
-        aspect-ratio: 16/10;
-        background: linear-gradient(140deg, #303936, #182022);
+        aspect-ratio: 16/9;
+        background: #15171b;
         display: grid;
         place-items: center;
         position: relative;
@@ -634,7 +657,8 @@
         color: #dde4df;
       }
       .card-info {
-        padding: 12px 13px;
+        padding: 8px 9px;
+        background: #25282e;
       }
       .card-info strong {
         display: block;
@@ -658,11 +682,12 @@
         grid-column: 1/-1;
       }
       .file-guide {
-        border-top: 1px solid var(--line);
-        margin-top: 32px;
-        padding-top: 20px;
+        border: 1px solid var(--line);
+        margin-top: 8px;
+        padding: 10px 12px;
+        background: #1b1d21;
         color: var(--muted);
-        font-size: 12px;
+        font-size: 11px;
       }
       .file-guide summary {
         cursor: pointer;
@@ -675,10 +700,11 @@
       footer {
         display: flex;
         justify-content: space-between;
-        gap: 20px;
-        font-size: 11px;
-        color: #899391;
-        margin-top: 30px;
+        gap: 16px;
+        font-size: 10px;
+        color: #9299a5;
+        margin-top: 8px;
+        padding: 6px 4px;
       }
       a {
         color: var(--accent);
@@ -687,8 +713,8 @@
         background: var(--panel);
         color: var(--text);
         border: 1px solid #515a56;
-        border-radius: 6px;
-        padding: 28px;
+        border-radius: 2px;
+        padding: 14px;
         width: min(680px, calc(100vw - 32px));
         box-shadow: 0 30px 100px #0008;
       }
@@ -738,25 +764,25 @@
       }
       @media (min-width: 1450px) {
         .workspace {
-          grid-template-columns: minmax(0, 1fr) 370px;
+          grid-template-columns: minmax(0, 1fr) 360px;
         }
         .inspector {
-          padding: 28px;
+          padding: 14px;
         }
         .stage {
-          min-height: 440px;
+          min-height: 0;
         }
       }
       @media (max-width: 1000px) {
         .workspace {
           grid-template-columns: minmax(0, 1fr) 285px;
-          gap: 16px;
+          gap: 8px;
         }
         main {
-          padding: 24px;
+          padding: 8px;
         }
         .inspector {
-          padding: 18px;
+          padding: 14px;
         }
         .volume {
           display: none;
@@ -768,9 +794,9 @@
       @media (max-width: 760px) {
         header {
           padding: 0 16px;
-          height: 64px;
+          height: 48px;
           gap: 10px;
-          grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+          grid-template-columns: auto minmax(0, 1fr) auto;
         }
         .brand {
           gap: 6px;
@@ -781,28 +807,30 @@
           height: 24px;
         }
         h1 {
-          font-size: 16px;
+          font-size: 12px;
         }
         main {
-          padding: 24px 16px;
+          padding: 8px;
         }
         .stats {
           gap: 8px;
           font-size: 10px;
         }
         .stats strong {
-          font-size: 15px;
+          font-size: 11px;
         }
         .workspace {
           grid-template-columns: 1fr;
         }
         .stage {
-          min-height: 230px;
+          height: auto;
+          aspect-ratio: 16/9;
+          min-height: 220px;
         }
         .inspector {
-          padding: 22px;
+          padding: 14px;
         }
-        #main-workspace > .inspector {
+        .workspace > .inspector {
           height: auto;
         }
         .library-toolbar {
@@ -812,7 +840,7 @@
         }
         .tabs {
           width: 100%;
-          gap: 20px;
+          gap: 4px;
         }
         .show-removed {
           padding: 10px 0;
@@ -838,6 +866,27 @@
       .workspace > * {
         min-width: 0;
       }
+      .panel-heading {
+        padding: 8px 14px;
+        background: #282b30;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .inspector > * {
+        flex-shrink: 0;
+      }
+      .inspector textarea {
+        flex: 1 0 104px;
+        resize: vertical;
+      }
+      .card:hover, .clip:hover, .tab:hover, .secondary:hover {
+        background-color: #303640;
+      }
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: #505661 #1b1d21;
+      }
       .audio-cover {
         min-height: 0;
       }
@@ -860,7 +909,7 @@
   <body>
     <header>
       <div class="brand">
-        <span class="logo" aria-hidden="true">s.</span>slopfab
+        <span class="logo" aria-hidden="true">s&gt;</span>slopfab
       </div>
       <h1 id="title"></h1>
       <div id="stats" class="stats header-right"></div>
@@ -869,6 +918,7 @@
       <div id="main-workspace" class="workspace">
         <div>
           <section class="viewer" aria-label="Media preview">
+            <div class="panel-heading">Preview</div>
             <div id="stage" class="stage"></div>
             <div id="warning" class="warning hidden"></div>
             <div class="viewer-footer">
@@ -881,9 +931,9 @@
           </section>
         </div>
         <aside class="inspector">
-          <h2>Continue with your agent</h2>
+          <h2>Edit</h2>
           <p>
-            Choose an action, write your prompt, then copy it into your agent.
+            Describe your change and copy the prompt to your agent.
           </p>
           <label class="label" for="action">Action</label
           ><select id="action" class="action"></select
@@ -895,8 +945,7 @@
           ><button id="prepare" class="primary">Copy prompt</button>
           <p id="prompt-copy-status" class="tiny" role="status"></p>
           <p class="tiny">
-            Nothing runs here. Your agent makes the changes; refresh this page
-            afterward.
+            Apply changes in your agent, then refresh this project.
           </p>
           <hr class="separator" />
           <details class="asset-details">
@@ -911,6 +960,19 @@
           <span class="tiny muted">Select a clip to review or edit</span>
         </div>
         <div id="sequence-list" class="sequence-list"></div>
+      </section>
+      <section class="library" aria-label="Project media">
+        <div class="section-row">
+          <h2>Project library</h2>
+          <span id="asset-count" class="tiny muted"></span>
+        </div>
+        <div class="library-toolbar">
+          <div class="tabs" role="tablist" aria-label="Media filters"></div>
+          <label class="show-removed"
+            ><input id="show-removed" type="checkbox" />Show removed</label
+          >
+        </div>
+        <div id="grid" class="grid"></div>
       </section>
       <section
         class="generation-prompts"
@@ -931,19 +993,6 @@
           class="prompt-status tiny muted"
           role="status"
         ></span>
-      </section>
-      <section class="library" aria-label="Project media">
-        <div class="section-row">
-          <h2>Project library</h2>
-          <span id="asset-count" class="tiny muted"></span>
-        </div>
-        <div class="library-toolbar">
-          <div class="tabs" role="tablist" aria-label="Media filters"></div>
-          <label class="show-removed"
-            ><input id="show-removed" type="checkbox" />Show removed</label
-          >
-        </div>
-        <div id="grid" class="grid"></div>
       </section>
       <details class="file-guide">
         <summary>Project files &amp; naming rules</summary>
@@ -1744,9 +1793,12 @@
         popupLookup("prepare").onclick = () => copyAgentPrompt(popupLookup);
         $("media-dialog").showModal();
         choose(item, true);
+        panelSizeObserver.observe(popupPreview.querySelector(".viewer"));
       }
       $("close-media").onclick = () => $("media-dialog").close();
       $("media-dialog").addEventListener("close", () => {
+        const viewer = $("popup-workspace").querySelector(".viewer");
+        if (viewer) panelSizeObserver.unobserve(viewer);
         releaseMedia(popupMedia);
         popupMedia = null;
         popupSelected = null;
@@ -1764,12 +1816,14 @@
           event.target.close();
       });
       const mainViewer = document.querySelector("#main-workspace .viewer");
-      new ResizeObserver(() => {
-        $("main-workspace").style.setProperty(
-          "--viewer-height",
-          `${mainViewer.getBoundingClientRect().height}px`,
-        );
-      }).observe(mainViewer);
+      const panelSizeObserver = new ResizeObserver((entries) => {
+        for (const { target } of entries)
+          target.closest(".workspace").style.setProperty(
+            "--viewer-height",
+            `${target.getBoundingClientRect().height}px`,
+          );
+      });
+      panelSizeObserver.observe(mainViewer);
       choose(latestFullVideo() || project.items.find(available) || null);
     </script>
   </body>
