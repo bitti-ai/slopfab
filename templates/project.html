@@ -8,7 +8,7 @@
       content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' file: data:; media-src 'self' file: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>Slopfab project</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%224%22%20fill%3D%22%23202226%22%2F%3E%3Ctext%20x%3D%223%22%20y%3D%2222%22%20font-family%3D%22monospace%22%20font-weight%3D%22700%22%20font-size%3D%2222%22%20fill%3D%22%2382b5f7%22%3Es%26gt%3B%3C%2Ftext%3E%3C%2Fsvg%3E" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%224%22%20fill%3D%22%23202226%22%2F%3E%3Ctext%20x%3D%223%22%20y%3D%2222%22%20font-family%3D%22monospace%22%20font-weight%3D%22700%22%20font-size%3D%2222%22%20fill%3D%22%23d4ef85%22%3Es%26gt%3B%3C%2Ftext%3E%3C%2Fsvg%3E" />
     <style>
       :root {
         color-scheme: dark;
@@ -17,7 +17,7 @@
         --line: #34373d;
         --muted: #a2a8b3;
         --text: #e0e3e8;
-        --accent: #82b5f7;
+        --accent: #d4ef85;
         --warn: #efc282;
         font-family:
           Inter,
@@ -177,7 +177,7 @@
         display: grid;
         grid-template-columns: minmax(0, 1fr) 340px;
         gap: 8px;
-        align-items: start;
+        align-items: stretch;
       }
       .viewer {
         border: 1px solid var(--line);
@@ -335,9 +335,9 @@
         color: var(--accent);
         font-size: 10px;
         padding: 3px 7px;
-        border: 1px solid #82b5f735;
+        border: 1px solid #d4ef8535;
         border-radius: 2px;
-        background: #82b5f710;
+        background: #d4ef8510;
         white-space: nowrap;
       }
       .warning {
@@ -356,7 +356,9 @@
         flex-direction: column;
       }
       .workspace > .inspector {
-        height: var(--viewer-height, auto);
+        /* Let the preview size the grid row; stretch Edit to its full height. */
+        contain: size;
+        min-height: 0;
         overflow: auto;
       }
       .inspector h2 {
@@ -400,10 +402,10 @@
         color: #7d8789;
       }
       .primary {
-        border: 1px solid #91bfff;
+        border: 1px solid var(--accent);
         border-radius: 2px;
         background: var(--accent);
-        color: #101b2b;
+        color: #202815;
         padding: 8px 12px;
         font-weight: 650;
         font-size: 12px;
@@ -831,7 +833,7 @@
           padding: 14px;
         }
         .workspace > .inspector {
-          height: auto;
+          contain: none;
         }
         .library-toolbar {
           align-items: flex-start;
@@ -1793,12 +1795,9 @@
         popupLookup("prepare").onclick = () => copyAgentPrompt(popupLookup);
         $("media-dialog").showModal();
         choose(item, true);
-        panelSizeObserver.observe(popupPreview.querySelector(".viewer"));
       }
       $("close-media").onclick = () => $("media-dialog").close();
       $("media-dialog").addEventListener("close", () => {
-        const viewer = $("popup-workspace").querySelector(".viewer");
-        if (viewer) panelSizeObserver.unobserve(viewer);
         releaseMedia(popupMedia);
         popupMedia = null;
         popupSelected = null;
@@ -1815,15 +1814,6 @@
         )
           event.target.close();
       });
-      const mainViewer = document.querySelector("#main-workspace .viewer");
-      const panelSizeObserver = new ResizeObserver((entries) => {
-        for (const { target } of entries)
-          target.closest(".workspace").style.setProperty(
-            "--viewer-height",
-            `${target.getBoundingClientRect().height}px`,
-          );
-      });
-      panelSizeObserver.observe(mainViewer);
       choose(latestFullVideo() || project.items.find(available) || null);
     </script>
   </body>
