@@ -505,7 +505,8 @@
       {
         "id": "v1.5",
         "role": "lora",
-        "url": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/resolve/main/h3_character_swap_v1.5.safetensors"
+        "url": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/resolve/main/h3_character_swap_v1.5.safetensors",
+        "minVramGb": 0
       }
     ]
   }
