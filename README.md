@@ -33,6 +33,7 @@ ending-image anchors, [long-form continuation and latent bridging](docs/continua
 and [extending or bridging imported clips](docs/video-transitions.md). Optional
 [LoRAs](docs/loras.md) include Turbo, TaoMate, LightX2V, DMAD, Pika and Hyperflow.
 [Motions](docs/motions.md) adds scripted vector titles, graphics and overlays.
+[Character Swap](docs/character-swap.md) combines an H3 Ref2VA source video with a replacement character image.
 
 **Image editing:** [H3 inpainting and outpainting](docs/inpainting.md) replace selected
 content or expand the canvas, with edit strength and edge blending. Fibo supports

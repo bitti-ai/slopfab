@@ -7,6 +7,8 @@
 #include "slopfab/safetensors_write.h"
 #include "slopfab/sha256.h"
 #include "../src/core/lora_grid.h"
+#include "../src/sampling_plan.h"
+#include "slopfab/tensor_convert.h"
 
 namespace {
 using namespace slopfab;
@@ -39,6 +41,74 @@ struct Fixture {
             {prefix + ".alpha", {}, {4}}};
   }
 };
+}
+
+SLOPFAB_TEST(lora_declared_ref2va_base_is_checked_before_loading_or_sampling) {
+  Fixture f;
+  write_safetensors(f.path, f.tensors(), {{"ss_base_model_version", "minimax_h3_ref2va"}});
+  LoraAdapters loras;
+  bool rejected = false;
+  try { loras.load({{f.path, 1}}, f.base); }
+  catch (const std::invalid_argument& e) {
+    rejected = std::string(e.what()).find("requires a Ref2VA") != std::string::npos;
+  }
+  CHECK(rejected);
+  GenerateRequest request;
+  request.transformer_path = f.base.path();
+  request.loras = {{f.path, 1}};
+  GeneratePlan plan;
+  rejected = false;
+  try { resolve_sampling_plan(request, plan); }
+  catch (const std::invalid_argument& e) {
+    rejected = std::string(e.what()).find("requires a Ref2VA") != std::string::npos;
+  }
+  CHECK(rejected);
+  request.loras[0].strength = 0;
+  resolve_sampling_plan(request, plan);
+  loras.load(request.loras, f.base);
+  CHECK(loras.projection_count() == 0);
+  const auto path = (f.dir / "fixture_ref2va.safetensors").string();
+  write_safetensors(path, {{"blocks.0.attn.qkv_proj.weight", {6, 3}, std::vector<float>(18)},
+                           {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+                           {"blocks.0.adaln_proj.linear.weight", {18, 8}, std::vector<float>(144)}});
+  SafeTensors ref2va;
+  ref2va.open(path);
+  loras.load({{f.path, 1}}, ref2va);
+  CHECK(loras.projection_count() == 1);
+  request.loras[0].strength = 1;
+  request.transformer_path = path;
+  resolve_sampling_plan(request, plan);
+}
+
+SLOPFAB_TEST(lora_character_swap_released_adapter_compatibility) {
+  const std::string adapter = "weights/h3_character_swap_v1.5.safetensors";
+  const std::string checkpoint = "weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors";
+  if (!std::filesystem::exists(adapter) || !std::filesystem::exists(checkpoint)) {
+    SKIP_MISSING_FIXTURE("Character Swap V1.5 or Ref2VA checkpoint unavailable");
+    return;
+  }
+  SafeTensors base, source;
+  base.open(checkpoint); source.open(adapter);
+  const auto digest = sha256_file(adapter);
+  LoraAdapters loras;
+  loras.load({{adapter, 1}}, base);
+  CHECK(source.tensor_count() == 416);
+  CHECK(loras.projection_count() == 208);
+  for (const auto& item : source.tensors()) {
+    const std::string suffix = ".lora_A.weight";
+    if (item.first.size() < suffix.size() || item.first.substr(item.first.size() - suffix.size()) != suffix)
+      continue;
+    const auto original = item.first.substr(0, item.first.size() - suffix.size());
+    const auto name = original.substr(std::string("diffusion_model.").size());
+    const auto* factors = loras.find(name);
+    CHECK(factors && factors->size() == 1);
+    if (!factors || factors->empty()) continue;
+    const auto& f = factors->front();
+    CHECK(f.rank == 16);
+    CHECK(f.a == to_f32(item.second));
+    CHECK(f.b == to_f32(source.at(original + ".lora_B.weight")));
+  }
+  CHECK(sha256_file(adapter) == digest);
 }
 
 SLOPFAB_TEST(lora_adaln_rebase_preserves_weight_bias_and_stacking) {

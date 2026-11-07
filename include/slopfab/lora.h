@@ -26,6 +26,10 @@ struct LoraFactors {
 // Requires an embedded grid or a local companion file.
 void prepare_lora_grid(const std::string& adapter_path, int width);
 
+// Honor a declared Ref2VA training base, including AI Toolkit Character Swap
+// checkpoints. Header-only; also used during planning before GPU/model uploads.
+void validate_lora_base(const SafeTensors& adapter, const SafeTensors& base);
+
 class LoraAdapters {
 public:
   // Accepts H3 block/refiner attention and MLP adapters, including Diffusers

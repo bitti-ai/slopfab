@@ -197,6 +197,43 @@ SLOPFAB_TEST(lora_cuda_vulkan_projection_numerics) {
   }
 }
 
+SLOPFAB_TEST(lora_character_swap_cuda_vulkan_real_projections) {
+  using namespace slopfab::vulkan;
+  const std::string path = "weights/h3_character_swap_v1.5.safetensors";
+  const std::string base_path = "weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors";
+  if (!std::filesystem::exists(path) || !std::filesystem::exists(base_path)) {
+    SKIP_MISSING_FIXTURE("Character Swap V1.5 or Ref2VA checkpoint unavailable");
+    return;
+  }
+  if (!Instance::available() || cuda::device_count() == 0) {
+    SKIP_UNSUPPORTED_HARDWARE("CUDA and Vulkan required");
+    return;
+  }
+  auto instance = Instance::create();
+  auto physical = instance.enumerate_devices();
+  if (physical.empty()) { SKIP_UNSUPPORTED_HARDWARE("No Vulkan device"); return; }
+  DeviceOptions options;
+  options.portable_arithmetic = true;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  auto device = physical.front().create_device(options);
+  TensorContext vk(device);
+  SafeTensors base;
+  base.open(base_path);
+  LoraAdapters loras;
+  loras.load({{path, 1}}, base);
+  for (const auto& prefix : {std::string("blocks.0."), std::string("token_refiner.blocks.1.")})
+    for (const auto& target : {"attn.qkv_proj", "attn.out_proj", "mlp.fc1", "mlp.fc2"}) {
+      const auto& f = loras.find(prefix + target)->front();
+      if (std::string(target) == "attn.qkv_proj") {
+        for (int offset : {0, 7168, 14336}) compare_projection(vk, f, 3, offset, 7168);
+      } else compare_projection(vk, f, 3, 0, f.out);
+    }
+}
+
 static void reduced_lora_trajectory(bool dmad, bool hyperflow = false) {
   using namespace slopfab::vulkan;
   const std::string adapter = hyperflow ? "weights/loras/minimax_h3_hyperflow_8step_v1.0.safetensors" : dmad ? "weights/loras/dmad_minimax_h3_4step_full_critic.safetensors"

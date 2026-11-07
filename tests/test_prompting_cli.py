@@ -29,13 +29,13 @@ with tempfile.TemporaryDirectory(prefix="slopfab-prompts-") as temporary:
     first = run("prompts", "list")
     assert "prompting guide" in first["agent_context"]["instructions"]
     index = first["data"]["guides"]
-    assert len(index) == 18
+    assert len(index) == 19
     assert {g["model"] for g in index} == {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3"}
     for entry in index:
         guide = run("prompts", "get", entry["model"], entry["use_case"])["data"]
         assert guide["prompt_template"] and guide["example"]["prompt"]
         assert guide["model_guidance"]["sources"] and guide["model_guidance"]["slopfab_support"]
-    assert len(run("prompts", "list", "--model", "MyVideo")["data"]["guides"]) == 8
+    assert len(run("prompts", "list", "--model", "MyVideo")["data"]["guides"]) == 9
     assert run("prompts", "get", "h3", "FL2VA")["data"]["use_case"] == "fl2va"
     assert select()["use_case"] == "t2va"
     assert select("MyVideo")["use_case"] == "t2va"
@@ -57,6 +57,18 @@ with tempfile.TemporaryDirectory(prefix="slopfab-prompts-") as temporary:
     generic = select("h3", "--reference-image", "identity.png", "--reference-video", "motion.y4m",
                      "--reference-audio", "voice.wav")
     assert generic["use_case"] == "ref2va" and "0.00-second" not in generic["prompt_template"]
+    swapped = select("h3", "--character-swap", "--reference-image", "character.png",
+                     "--reference-video", "source.y4m")
+    assert swapped["use_case"] == "character-swap"
+    assert [b["label"] for b in swapped["reference_bindings"]] == ["<Picture 1>", "<Video 1>"]
+    assert [b["role"] for b in swapped["reference_bindings"]] == ["replacement character identity", "source performance and scene"]
+    assert "--lora" in swapped["slopfab_support"] and "Turbo" in swapped["slopfab_support"]
+    for args in [[], ['--reference-image', 'a'], ['--reference-video', 'v'],
+                 ['--reference-image', 'a', '--reference-video', 'v', '--first-frame', 'b'],
+                 ['--reference-image', 'a', '--reference-video', 'v', '--shots', '2'],
+                 ['--reference-image', 'a', '--reference-image', 'b', '--reference-video', 'v']]:
+        run('prompts', 'select', '--model', 'h3', '--character-swap', *args, code=2)
+    run('prompts', 'select', '--model', 'moss', '--character-swap', code=2)
     assert [b["label"] for b in generic["reference_bindings"]] == ["<Picture 1>", "<Video 1>", "<Audio 1>"]
     assert select("h3", "--continuation")["use_case"] == "continuation"
     assert select("h3", "--task", "image")["use_case"] == "image"

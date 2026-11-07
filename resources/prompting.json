@@ -46,6 +46,21 @@
   },
   "guides": [
     {
+      "model": "h3",
+      "use_case": "character-swap",
+      "title": "Replace a character while following a source performance",
+      "guidance": "Use the Character Swap V1.5 LoRA on H3 Ref2VA. Identify one person to replace in <Video 1> and assign the new identity, hair, clothing and proportions to <Picture 1>. Describe the action that should carry over and the scene elements to retain. Use a short continuous shot; do not promise exact pose, lip synchronization or background preservation.",
+      "binding": "One --reference-video is <Video 1>; one --reference-image is <Picture 1>. These are ordinary Ref2VA references, not first/last-frame anchors. The --character-swap flag selects this prompting guide only; generation uses --lora.",
+      "slopfab_support": "The original rank-16 BF16 safetensors loads directly on CUDA and Vulkan. Use --lora PATH --lora-strength 1. An eight-step recipe additionally requires the separate H3 Turbo 8-step LoRA at strength 1; use --steps 8 --sampler er_sde with the default schedule (video/audio shifts 12/3). Without Turbo, use the base sampling schedule. Optional --driving-audio FILE.wav --preserve-driving-audio conditions on source audio; mux the original soundtrack for exact preservation. This workflow does not include SAM segmentation, video edit masks or the upstream Relay window loop. ClipProj text-only encoders do not support these image/video references.",
+      "prompt_template": "Replace {{selected_person}} in <Video 1> with the character in <Picture 1>. Retain the reference character's {{identity_details}} while following {{source_action}} from the video. Keep {{scene_and_other_people}}. Maintain the source camera framing and continuous shot. {{sound_description}}",
+      "example": {
+        "prompt": "Replace the person wearing a green coat in <Video 1> with the robot character in <Picture 1>. Keep the robot's blue metal face, round eyes and copper jacket. Follow the source person's head turns, hand wave and walking pace. Retain the station platform, passing train and other passengers. Keep the source framing and continuous camera movement. Preserve the station ambience without adding dialogue."
+      },
+      "sources": [
+        "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA"
+      ]
+    },
+    {
       "model": "h3", "use_case": "t2va", "title": "Video from text, without frame references",
       "guidance": "Build an observable audiovisual sequence from the brief. No image-alignment prelude is needed. Do not invent reference labels for absent files.",
       "prompt_template": "integrated_multimodal_description: [Shot 1] {{visual_action_camera_and_dialogue}}\n\noverall_soundscape: {{ambience_and_physical_sounds}}\n\nnon_diegetic_music: {{score_or_N/A}}",

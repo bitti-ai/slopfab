@@ -5,6 +5,11 @@
 Repeat the pair to combine adapters. Zero disables an adapter and negative
 strengths subtract its update.
 
+[H3 Character Swap V1.5](character-swap.md) loads directly with a Ref2VA base,
+one source video and one character image. Adapters declaring
+`ss_base_model_version=minimax_h3_ref2va` reject bases without reference support
+before loading or sampling.
+
 ```powershell
 slopfab video generate --prompt "A cat playing piano" --lora weights/loras/style.safetensors --lora-strength 0.7
 ```

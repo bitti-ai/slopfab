@@ -48,6 +48,14 @@ std::vector<float> values(const TensorView& tensor) {
 
 } // namespace
 
+void validate_lora_base(const SafeTensors& adapter, const SafeTensors& base) {
+  const auto version = adapter.metadata().find("ss_base_model_version");
+  if (version != adapter.metadata().end() && version->second == "minimax_h3_ref2va" &&
+      !dit::resolve_model_descriptor(base).supports_references)
+    throw std::invalid_argument("LoRA '" + adapter.path() +
+                                "' declares minimax_h3_ref2va and requires a Ref2VA transformer");
+}
+
 const std::vector<LoraFactors>* LoraAdapters::find(const std::string& name) const {
   const auto it = factors_.find(name);
   return it == factors_.end() ? nullptr : &it->second;
@@ -63,6 +71,7 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
     if (spec.strength == 0) continue;
     SafeTensors adapter;
     adapter.open(spec.path);
+    validate_lora_base(adapter, base);
     AdaLNBasis adaln_basis;
     double worst_adaln_error = 0;
     int rebased = 0;

@@ -12,6 +12,7 @@ slopfab prompts get h3 fl2va
 slopfab prompts select --model h3 --first-frame opening.png --last-frame ending.png --duration 5.875
 slopfab prompts select --model h3 --last-frame ending.png
 slopfab prompts select --model h3 --reference-image character.png
+slopfab prompts select --model h3 --character-swap --reference-image character.png --reference-video source.y4m
 slopfab prompts select --model moss --layout
 slopfab prompts select --model fibo2 --reference-image room.png --reference-image object.png
 slopfab prompts select --model minimax_music3 --instrumental
@@ -26,7 +27,7 @@ generation. A bare `prompts` lists the catalog; `help prompts` describes selecto
 
 | Model | Use cases |
 | --- | --- |
-| `h3` | `t2va`, `i2va`, `fl2va`, `l2va`, `ref2va`, `continuation`, `image`, `edit` |
+| `h3` | `t2va`, `i2va`, `fl2va`, `l2va`, `ref2va`, `character-swap`, `continuation`, `image`, `edit` |
 | `krea2` | `image` |
 | `moss` | `image`, `layout` |
 | `fibo2` | `image`, `edit`, `multi-reference` |

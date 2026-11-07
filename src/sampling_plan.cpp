@@ -96,6 +96,11 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     if (std::filesystem::exists(lora.path)) {
       SafeTensors adapter;
       adapter.open(lora.path);
+      if (!request.transformer_path.empty() && std::filesystem::exists(request.transformer_path)) {
+        SafeTensors base;
+        base.open(request.transformer_path);
+        validate_lora_base(adapter, base);
+      }
       if (auto hf = dit::hyperflow_metadata(adapter.metadata())) {
         if (hyperflow) throw std::invalid_argument("Hyperflow: only one active adapter is supported");
         hyperflow = hf;

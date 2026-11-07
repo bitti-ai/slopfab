@@ -60,6 +60,7 @@ struct Selection {
   std::string model, task, first, last, edit, duration, shots = "1";
   std::vector<std::string> images, videos, audio;
   bool instrumental = false, layout = false, continuation = false;
+  bool character_swap = false;
   bool timing = false;
 };
 
@@ -82,6 +83,10 @@ Selection parse_selection(const std::vector<std::string>& args) {
     }
     if (flag == "--continuation") {
       s.continuation = true;
+      continue;
+    }
+    if (flag == "--character-swap") {
+      s.character_swap = true;
       continue;
     }
     if (flag != "--model" && flag != "--task" && flag != "--first-frame" &&
@@ -146,7 +151,13 @@ Object select_guide(const Value& catalog, const Selection& s) {
   const bool endpoints = !s.first.empty() || !s.last.empty();
   const bool refs = !s.images.empty() || !s.videos.empty() || !s.audio.empty();
   std::string use_case;
-  if (s.task == "music") {
+  if (s.character_swap) {
+    if (s.model != "h3" || s.task != "video" || s.images.size() != 1 || s.videos.size() != 1 ||
+        s.audio.size() > 1 || endpoints || !s.edit.empty() || s.layout || s.continuation ||
+        s.instrumental || s.shots != "1")
+      invalid("character swap requires H3 video, one character image and one source video; use a single shot without endpoint, edit or continuation selectors");
+    use_case = "character-swap";
+  } else if (s.task == "music") {
     if (endpoints || refs || !s.edit.empty() || s.layout || s.continuation || s.timing)
       invalid("music guides accept --instrumental, without visual, timing or reference selectors");
     use_case = s.instrumental ? "instrumental" : "song";
@@ -205,11 +216,11 @@ Object select_guide(const Value& catalog, const Selection& s) {
   if (!s.first.empty())
     bind(s.first, image_label(), "intended opening", "--reference-image");
   for (const auto& path : s.images)
-    bind(path, image_label(), "assign identity/style/content role", "--reference-image");
+    bind(path, image_label(), s.character_swap ? "replacement character identity" : "assign identity/style/content role", "--reference-image");
   if (!s.last.empty())
     bind(s.last, image_label(), "ending anchor", "--end-anchor");
   for (const auto& path : s.videos)
-    bind(path, "<Video " + std::to_string(++video) + ">", "assign reference role",
+    bind(path, "<Video " + std::to_string(++video) + ">", s.character_swap ? "source performance and scene" : "assign reference role",
          "--reference-video");
   for (const auto& path : s.audio)
     bind(path, "<Audio " + std::to_string(++audio) + ">", "assign reference role",

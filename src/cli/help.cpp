@@ -214,6 +214,7 @@ const CommandHelp kCommands[] = {
      "  --layout                            MOSS spatial-layout JSON guide\n"
      "  --instrumental                      music without vocals; otherwise clarify vocal intent\n"
      "  --continuation                      H3 long-shot/latent continuation guide\n"
+     "  --character-swap                    H3 character LoRA guide; one source video and identity image\n"
      "  --duration SECONDS --shots N         video template timing; validated sampling window, default 1 shot\n"
      "Model names: h3, krea2, moss, fibo2, yue2, minimax_music3; configured aliases also work.\n"
      "These selectors retrieve context only; they neither read files nor generate media.\n"
@@ -671,7 +672,7 @@ bool option_takes_value(std::string_view a, std::string_view command) {
       a == "--download" || a == "--local-project") return true;
   if (a == "--word-timestamps" || a == "--no-context" || a == "--cropped")
     return false;
-  if (command == "prompts" && (a == "--layout" || a == "--instrumental" || a == "--continuation"))
+  if (command == "prompts" && (a == "--layout" || a == "--instrumental" || a == "--continuation" || a == "--character-swap"))
     return false;
   if (command == "decode" && a == "--bench-load")
     return false;

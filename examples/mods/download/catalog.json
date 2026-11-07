@@ -497,5 +497,16 @@
         "sha256": "d54a87c2b7543b64729c9a25eafd188da15fd3f6e02f0ecec76ae1b30d86c491"
       }
     ]
+  },
+  "h3-character-swap": {
+    "source": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA",
+    "note": "V1.5 character adapter for H3 Ref2VA. Base, text encoder, VAEs and optional Turbo adapter are separate downloads.",
+    "files": [
+      {
+        "id": "v1.5",
+        "role": "lora",
+        "url": "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/resolve/main/h3_character_swap_v1.5.safetensors"
+      }
+    ]
   }
 }
