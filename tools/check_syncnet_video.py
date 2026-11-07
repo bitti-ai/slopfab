@@ -90,7 +90,7 @@ assert safe == tracked
 print('Unpinned FP32 S3FD safetensors gives identical results')
 
 # A stream timestamp delay must survive the two decoder invocations.
-subprocess.run([ffmpeg, '-y', '-v', 'error', '-i', str(root/'example.avi'), '-itsoffset', '.16',
+subprocess.run([ffmpeg, '-y', '-v', 'error', '-i', str(root/'example.avi'), '-itsoffset', '0.16',
                 '-i', str(root/'example.avi'), '-map', '0:v:0', '-map', '1:a:0', '-t', '4',
                 '-c:v', 'ffv1', '-c:a', 'pcm_s16le', str(root/'timestamp-delay.mkv')], check=True)
 timestamp = analyze('timestamp-delay.mkv', 'timestamp-report.json', '--cropped')['tracks'][0]
