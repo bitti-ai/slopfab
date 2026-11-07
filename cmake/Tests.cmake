@@ -1,6 +1,10 @@
 # --- tests ------------------------------------------------------------------
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
+  add_executable(slopfab_syncnet_tests tests/test_syncnet.cpp)
+  target_link_libraries(slopfab_syncnet_tests PRIVATE slopfab_syncnet)
+  add_test(NAME syncnet COMMAND slopfab_syncnet_tests)
+  set_tests_properties(syncnet PROPERTIES LABELS synthetic TIMEOUT 60)
   add_executable(slopfab_reference_decode_tests tests/test_reference_decode.cpp
     src/cli/reference_decode.cpp src/cli/native_media.cpp)
   target_link_libraries(slopfab_reference_decode_tests PRIVATE slopfab_core)
