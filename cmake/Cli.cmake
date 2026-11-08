@@ -21,6 +21,15 @@ configure_file(src/cli/prompting_catalog.h.in generated/prompting_catalog.h @ONL
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
+add_library(slopfab_update_package STATIC src/cli/update_package.cpp third_party/miniz/miniz_tinfl.c)
+set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES LANGUAGE CXX)
+target_include_directories(slopfab_update_package PRIVATE third_party/miniz)
+target_compile_definitions(slopfab_update_package PRIVATE
+  MINIZ_NO_ARCHIVE_APIS MINIZ_NO_DEFLATE_APIS MINIZ_NO_ZLIB_APIS)
+target_link_libraries(slopfab_update_package PUBLIC slopfab_core)
+target_sources(slopfab PRIVATE src/cli/update.cpp)
+target_link_libraries(slopfab PRIVATE slopfab_update_package)
+target_compile_definitions(slopfab PRIVATE SLOPFAB_CLI_VERSION="${PROJECT_VERSION}")
 target_sources(slopfab PRIVATE src/cli/transcribe.cpp)
 target_link_libraries(slopfab PRIVATE slopfab_whisper)
 target_sources(slopfab PRIVATE src/cli/separate.cpp)

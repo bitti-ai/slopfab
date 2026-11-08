@@ -498,6 +498,10 @@ Value capabilities() {
   }
   return Value(Object{
       {"version", str(kVersion)},
+      {"updates", Value(Object{{"command", str("slopfab update")},
+                                {"check_command", str("slopfab update --check")},
+                                {"source", str("https://github.com/bitti-ai/slopfab/releases/latest")},
+                                {"automatic", Value(false)}})},
       {"protocol_version", num(1)},
       {"remote", Value(Object{{"command", str("slopfab COMMAND --host NAME")},
           {"setup", str("slopfab remote setup NAME --directory PATH")}, {"automatic_binary_update", Value(true)}, {"transport", str("OpenSSH")}, {"platforms", Value(Array{str("linux"), str("windows")})},

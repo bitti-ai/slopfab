@@ -13,6 +13,7 @@
 #include "cli/syncnet.h"
 #include "cli/media_commands.h"
 #include "cli/remote.h"
+#include "cli/update.h"
 #include <cstdio>
 #include <set>
 #ifdef _WIN32
@@ -25,6 +26,8 @@
 using namespace slopfab::cli;
 
 int cli_main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "_update-install")
+    return update_worker(argv[0], argv[2]);
   if (argc == 2 && (std::string(argv[1]) == "_ssh-run" || std::string(argv[1]) == "_ssh-fetch"))
     return remote_worker(argv[0], std::string(argv[1]) == "_ssh-fetch");
 #ifdef _WIN32
@@ -132,6 +135,8 @@ int cli_main(int argc, char** argv) {
       return print_command_help(*help);
     if (command == "mods")
       return mods_command(args);
+    if (command == "update")
+      return update_command(args);
     if (command == "run")
       return script_command(args);
     if (command == "motions")

@@ -10,6 +10,9 @@ Ask your agent to create [mods](docs/mods.md): reusable workflows you can share 
 
 [Documentation](docs/agent-cli.md)
 
+Update to the latest GitHub release with `slopfab update`, or check availability
+with `slopfab update --check`. Your weights, projects and settings are preserved.
+
 ## Models and capabilities
 
 | Model | What it does |

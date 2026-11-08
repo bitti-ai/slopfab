@@ -30,6 +30,12 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_executable(slopfab_update_fixture tests/update_fixture.cpp)
+    target_link_libraries(slopfab_update_fixture PRIVATE slopfab_update_package)
+    add_test(NAME update_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_update.py"
+      "$<TARGET_FILE:slopfab_update_fixture>" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(update_cli PROPERTIES LABELS synthetic TIMEOUT 120)
     add_test(NAME media_commands_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_media_commands_cli.py" "$<TARGET_FILE:slopfab>")
     add_test(NAME syncnet_cli COMMAND ${Python3_EXECUTABLE}

@@ -7,7 +7,10 @@
 #include "slopfab/json.h"
 
 namespace slopfab::cli {
-inline constexpr const char* kVersion = "0.1.0";
+#ifndef SLOPFAB_CLI_VERSION
+#define SLOPFAB_CLI_VERSION "0.1.0"
+#endif
+inline constexpr const char* kVersion = SLOPFAB_CLI_VERSION;
 
 struct CommandHelp {
   const char* name;

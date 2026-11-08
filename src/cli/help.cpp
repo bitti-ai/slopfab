@@ -71,6 +71,11 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"update", "slopfab update [--check]", "Download and install the latest GitHub release.",
+     "  --check  report the latest stable version without downloading or installing\n"
+     "Verifies GitHub's package SHA256; replaces executables and bundled download/licenses mods.\n"
+     "Preserves weights, projects, settings and other mods. Windows installs after this process exits.\n"
+     "Backups and installation status are saved beside the executable.\n"},
     {"video", "slopfab video COMMAND [options]", "Generate, inspect, restore and analyze video.",
      "  generate         generate video with audio\n  frames           extract frames or contact sheets\n"
      "  syncnet          measure lip synchronization with face detection/tracking\n"
@@ -671,6 +676,8 @@ bool option_takes_value(std::string_view a, std::string_view command) {
   if (a == "--host" || a == "--remote" || a == "--download-dir" ||
       a == "--download" || a == "--local-project") return true;
   if (a == "--word-timestamps" || a == "--no-context" || a == "--cropped")
+    return false;
+  if (command == "update" && a == "--check")
     return false;
   if (command == "prompts" && (a == "--layout" || a == "--instrumental" || a == "--continuation" || a == "--character-swap"))
     return false;

@@ -1,5 +1,27 @@
 # Agent CLI
 
+Run `slopfab update` to download and install the latest stable public release from
+[`bitti-ai/slopfab`](https://github.com/bitti-ai/slopfab/releases/latest).
+`slopfab update --check` reports availability without downloading the package.
+Updates verify the ZIP against GitHub's SHA256 asset digest and replace both
+platform executables and the bundled `download`/`licenses` mods beside the running
+executable. Weights, projects, settings, other mods and separately installed DLLs
+are preserved. The installation directory must be writable.
+
+Windows returns `status: "scheduled"`; a hidden helper completes installation
+after the original process exits. Read `.slopfab-update-result.json` beside the
+executable for `installed` or `failed` (also included in the next successful
+`update --check`). Linux installs before returning. Replaced files remain in
+`.slopfab-update-*/backup`; a failed replacement restores them automatically.
+Close other running slopfab processes before updating on Windows. There are no
+background update checks. No public release, an unavailable package, or a missing
+or mismatched checksum causes an error without replacing the installation.
+
+Release maintainers: publish the bundle made by `tools/package_bundle.py` as
+`slopfab-VERSION-windows-linux-x64.zip` on a stable `VERSION` or `vVERSION` release.
+Build with the matching `VERSION` file. GitHub must expose the uploaded asset's
+`sha256:` digest; old assets without a digest need to be uploaded again.
+
 Media commands are grouped by task. Use `slopfab help video`, `slopfab help audio`
 or `slopfab help image`, then `slopfab help video syncnet`, for example.
 
