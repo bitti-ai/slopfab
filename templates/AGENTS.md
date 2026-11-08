@@ -21,17 +21,14 @@ Python or batch scripts. Consult run help for scripting capabilities.
 `slopfab video frames --help`: Review a specific video frame or a downscaled grid.
 The scripting `video frames` API also captures decoded generation frames directly from RAM.
 
+Search weights on the generating machine first before downloading.
+
 ## Establish the brief
 
 Know these answers before generating, or ask one compact set of questions with
 suggested choices. Reuse answers from the conversation/project; do not ask again.
 If the user delegates choices, state reasonable defaults and proceed.
 
-- **Execution preference:** does the user want to review prompts and key settings
-  before generation, or authorize starting as soon as the agent is ready? Ask if
-  this is not already known. In review mode, show them and wait for approval;
-  with immediate execution authorized, proceed without repeated confirmations.
-  Carry this preference forward unless the user changes it.
 - **Purpose and look:** where will it be used, what subject/style matters, and
   which references or existing assets must remain consistent?
 - **Images/video:** aspect ratio, generation resolution and final delivery size.
