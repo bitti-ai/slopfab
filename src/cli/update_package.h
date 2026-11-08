@@ -9,12 +9,17 @@ inline constexpr uint64_t kMaxPackageBytes = 512ull * 1024 * 1024;
 inline constexpr const char* kRepository = "bitti-ai/slopfab";
 
 struct Release {
-  std::string version, url, digest;
+  std::string version, url, digest, signature_url;
   uint64_t bytes = 0;
 };
 
 const std::vector<std::string>& package_files();
 Release parse_release(const json::Value& value);
+std::string signature_message(const Release& release);
+void verify_release_signature(const Release& release, const std::string& signature);
+// Explicit-key primitive for test vectors; production callers use the pinned-key wrapper above.
+void verify_ed25519(const std::string& public_key_hex, const std::string& message,
+                    const std::string& signature);
 bool newer_version(const std::string& candidate, const std::string& installed);
 std::string file_hash(const std::filesystem::path& path);
 void verify_package(const std::filesystem::path& archive, const std::string& digest,

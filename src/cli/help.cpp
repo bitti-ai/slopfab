@@ -83,7 +83,8 @@ const CommandHelp kCommands[] = {
      "  run       generate from arguments or JSON\n  validate  validate without inference\n  schema    generation JSON schema\n"},
     {"update", "slopfab update [--check]", "Download and install the latest GitHub release.",
      "  --check  report the latest stable version without downloading or installing\n"
-     "Verifies GitHub's package SHA256; replaces executables and bundled download/licenses mods.\n"
+     "Requires a pinned-key Ed25519 release signature and matching package SHA256.\n"
+     "Replaces executables and bundled download/licenses mods.\n"
      "Preserves weights, projects, settings and other mods. Windows installs after this process exits.\n"
      "Backups and installation status are saved beside the executable.\n"},
     {"video", "slopfab video COMMAND [options]", "Generate, inspect, restore and analyze video.",

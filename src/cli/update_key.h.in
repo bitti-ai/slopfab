@@ -1,0 +1,2 @@
+#pragma once
+inline constexpr const char* kUpdatePublicKey = "@SLOPFAB_UPDATE_PUBLIC_KEY@";

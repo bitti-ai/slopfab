@@ -22,6 +22,17 @@ configure_file(src/cli/prompting_catalog.h.in generated/prompting_catalog.h @ONL
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 add_library(slopfab_update_package STATIC src/cli/update_package.cpp third_party/miniz/miniz_tinfl.c)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resources/update_public_key.hex")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/resources/update_public_key.hex" SLOPFAB_UPDATE_PUBLIC_KEY)
+string(STRIP "${SLOPFAB_UPDATE_PUBLIC_KEY}" SLOPFAB_UPDATE_PUBLIC_KEY)
+string(LENGTH "${SLOPFAB_UPDATE_PUBLIC_KEY}" SLOPFAB_UPDATE_KEY_LENGTH)
+if(NOT SLOPFAB_UPDATE_KEY_LENGTH EQUAL 64 OR NOT SLOPFAB_UPDATE_PUBLIC_KEY MATCHES "^[0-9a-f]+$")
+  message(FATAL_ERROR "A 32-byte hex Ed25519 update public key is required")
+endif()
+configure_file(src/cli/update_key.h.in generated/update_key.h @ONLY)
+target_sources(slopfab_update_package PRIVATE third_party/monocypher/monocypher.c
+  third_party/monocypher/monocypher-ed25519.c)
+target_include_directories(slopfab_update_package PRIVATE third_party/monocypher "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set_source_files_properties(third_party/miniz/miniz_tinfl.c PROPERTIES LANGUAGE CXX)
 target_include_directories(slopfab_update_package PRIVATE third_party/miniz)
 target_compile_definitions(slopfab_update_package PRIVATE

@@ -99,6 +99,14 @@ int update_command(const std::vector<std::string>& args) {
   if (status != 200)
     throw CliError("UPDATE_FAILED", "GitHub release check returned HTTP " + std::to_string(status));
   const auto release = updater::parse_release(json::parse(script_string(response, "body")));
+  auto signature_options = http_options(30000).as_object();
+  signature_options["maxBytes"] = num(64);
+  const auto signature_response =
+      script_http_request(release.signature_url, Value(signature_options), {}, check_cancelled);
+  if (signature_response.find("status")->as_int() != 200)
+    throw CliError("UPDATE_FAILED", "Cannot download the release signature");
+  const auto signature = script_string(signature_response, "body");
+  updater::verify_release_signature(release, signature);
   const bool available = updater::newer_version(release.version, kVersion);
   const auto executable = fs::canonical(fs::u8path(agent().executable));
   const auto root = executable.parent_path();
@@ -160,6 +168,13 @@ int update_command(const std::vector<std::string>& args) {
     if (!file)
       throw CliError("UPDATE_FAILED", "Cannot finish writing update package");
     updater::verify_package(archive, release.digest, release.bytes);
+    // Recheck the signed metadata immediately before extracting downloaded code.
+    updater::verify_release_signature(release, signature);
+    std::ofstream signature_file(stage / "package.sig", std::ios::binary);
+    signature_file.write(signature.data(), std::streamsize(signature.size()));
+    signature_file.close();
+    if (!signature_file)
+      throw CliError("UPDATE_FAILED", "Cannot save release signature");
     updater::extract_package(archive, stage / "payload");
     Value plan(Object{{"version", str(release.version)},
                       {"sha256", str(release.digest)},
@@ -238,6 +253,20 @@ int update_worker(const std::string& executable, const std::string& parent_pid) 
     updater::check_path(stage, "plan.json");
     updater::check_path(stage, "package.zip");
     const auto plan = read_json(stage / "plan.json");
+    updater::check_path(stage, "package.sig");
+    if (fs::file_size(stage / "package.sig") != 64)
+      throw std::runtime_error("invalid release signature size");
+    std::ifstream signature_file(stage / "package.sig", std::ios::binary);
+    std::string signature(64, '\0');
+    if (!signature_file.read(signature.data(), 64))
+      throw std::runtime_error("cannot read release signature");
+    updater::Release release;
+    release.version = script_string(plan, "version");
+    release.digest = script_string(plan, "sha256");
+    release.bytes = script_uint(plan, "bytes", 0);
+    updater::verify_release_signature(release, signature);
+    if (!updater::newer_version(release.version, kVersion))
+      throw std::runtime_error("refusing an update to the same or an older version");
     updater::verify_package(stage / "package.zip", script_string(plan, "sha256"),
                             script_uint(plan, "bytes", 0));
     // Re-extract the verified archive so changes to the parent's payload cannot be installed.

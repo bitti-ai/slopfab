@@ -88,11 +88,28 @@ with test_directory() as directory:
     os.chdir(work)
     package = work / "package.zip"
     archive(package)
+    # RFC 8032 test vector 1 (empty message), independent of the release signer.
+    public_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    vector = bytes.fromhex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555f"
+                           "b8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+    message_file, signature_file = work / "message", work / "signature"
+    message_file.write_bytes(b"")
+    signature_file.write_bytes(vector)
+    run(DRIVER, "signature", public_key, message_file, signature_file)
+    message_file.write_bytes(b"tampered")
+    run(DRIVER, "signature", public_key, message_file, signature_file, ok=False)
+    message_file.write_bytes(b"")
+    run(DRIVER, "signature", "1" * 64, message_file, signature_file, ok=False)
+    for bad_signature in [vector[:-1], vector + b"x", bytes(64), vector[:32] + bytes([255]) * 32]:
+        signature_file.write_bytes(bad_signature)
+        run(DRIVER, "signature", public_key, message_file, signature_file, ok=False)
     tag = "v0.2.0"
     name = "slopfab-0.2.0-windows-linux-x64.zip"
     release = {"draft": False, "prerelease": False, "tag_name": tag, "assets": [{
         "name": name, "browser_download_url": f"https://github.com/bitti-ai/slopfab/releases/download/{tag}/{name}",
         "digest": "sha256:" + digest(package), "size": package.stat().st_size}]}
+    release["assets"].append({"name": name + ".sig", "size": 64,
+                              "browser_download_url": release["assets"][0]["browser_download_url"] + ".sig"})
     metadata = work / "release.json"
 
     def check_release(value, installed_version="0.1.0", ok=True):
@@ -102,6 +119,13 @@ with test_directory() as directory:
     assert check_release(release) == "available"
     assert check_release(release, "0.2.0") == "up_to_date"
     assert check_release(release, "0.10.0") == "up_to_date"
+    unsigned = copy.deepcopy(release)
+    unsigned["assets"].pop()
+    check_release(unsigned, ok=False)
+    for field, value in [("size", 63), ("browser_download_url", "https://evil.invalid/signature")]:
+        bad = copy.deepcopy(release)
+        bad["assets"][1][field] = value
+        check_release(bad, ok=False)
     for field, value in [("draft", True), ("prerelease", True), ("tag_name", "v0.2.0-rc1"),
                          ("tag_name", "v../../evil"), ("assets", []),
                          ("assets", release["assets"] * 2)]:
@@ -222,23 +246,21 @@ with test_directory() as directory:
             stage.mkdir()
             shutil.copyfile(CLI, stage / "updater.exe")
             shutil.copyfile(package, stage / "package.zip")
+            if corrupt:
+                (stage / "package.sig").write_bytes(bytes(64))
             (stage / "plan.json").write_text(json.dumps({
-                "version": "0.2.0", "sha256": "0" * 64 if corrupt else digest(package),
+                "version": "0.2.0", "sha256": digest(package),
                 "bytes": package.stat().st_size, "previous_sha256": digest(target / "slopfab.exe")}))
             # Wait on a real process, rather than assuming an arbitrary PID does not exist.
             parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
             try:
-                run(stage / "updater.exe", "_update-install", parent.pid, ok=not corrupt)
+                run(stage / "updater.exe", "_update-install", parent.pid, ok=False)
             finally:
                 parent.wait(timeout=5)
             status = json.loads((target / ".slopfab-update-result.json").read_text())
-            assert status["status"] == ("failed" if corrupt else "installed"), status
-            if not corrupt:
-                for name, data in FILES.items():
-                    assert (target / name).read_bytes() == data
-                assert digest(stage / "backup/slopfab.exe") == digest(CLI)
-            else:
-                assert digest(target / "slopfab.exe") == digest(CLI)
+            assert status["status"] == "failed", status
+            assert digest(target / "slopfab.exe") == digest(CLI)
+            assert not (stage / "install").exists()
             preserved(target)
 
 print("Updater release, checksum, archive, preservation, rollback and handoff checks passed")

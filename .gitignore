@@ -12,3 +12,4 @@ __pycache__/
 /generate.cmd
 
 /build-agent-test/
+*.private.pem

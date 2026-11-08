@@ -1,6 +1,8 @@
 #include "update_package.h"
 #include "slopfab/sha256.h"
 #include "miniz_tinfl.h"
+#include "monocypher-ed25519.h"
+#include "update_key.h"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -139,7 +141,43 @@ Release parse_release(const json::Value& value) {
   }
   if (matches != 1)
     fail("latest release must contain exactly one " + name);
+  matches = 0;
+  for (const auto& asset : required(value, "assets").as_array()) {
+    if (required(asset, "name").as_string() != name + ".sig")
+      continue;
+    ++matches;
+    result.signature_url = required(asset, "browser_download_url").as_string();
+    if (result.signature_url != result.url + ".sig" || required(asset, "size").as_number() != 64)
+      fail("invalid release signature asset");
+  }
+  if (matches != 1)
+    fail("latest release must contain exactly one " + name + ".sig");
   return result;
+}
+
+std::string signature_message(const Release& release) {
+  version(release.version);
+  if (!digest_valid(release.digest) || !release.bytes || release.bytes > kMaxPackageBytes)
+    fail("invalid signed release metadata");
+  return "slopfab-update-v1\n" + std::string(kRepository) + "\n" + release.version + "\nslopfab-" +
+         release.version + "-windows-linux-x64.zip\n" + std::to_string(release.bytes) + "\n" +
+         release.digest + "\n";
+}
+
+void verify_ed25519(const std::string& public_key_hex, const std::string& message,
+                    const std::string& signature) {
+  if (!digest_valid(public_key_hex) || signature.size() != 64)
+    fail("invalid Ed25519 public key or signature length");
+  std::array<uint8_t, 32> key{};
+  for (size_t i = 0; i < key.size(); ++i)
+    key[i] = uint8_t(std::stoul(public_key_hex.substr(i * 2, 2), nullptr, 16));
+  if (crypto_ed25519_check(reinterpret_cast<const uint8_t*>(signature.data()), key.data(),
+                           reinterpret_cast<const uint8_t*>(message.data()), message.size()) != 0)
+    fail("release Ed25519 signature verification failed");
+}
+
+void verify_release_signature(const Release& release, const std::string& signature) {
+  verify_ed25519(kUpdatePublicKey, signature_message(release), signature);
 }
 
 bool newer_version(const std::string& candidate, const std::string& installed) {
