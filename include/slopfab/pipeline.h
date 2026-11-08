@@ -111,6 +111,8 @@ struct GenerateRequest {
   // target-sized references, and no reference soundtrack. The fixed embedding
   // is supplied through RunOptions::prompt_embedding_path.
   bool animate = false;
+  // Viggle Remake: prompt-conditioned swap/edit, six-step Euler, source audio.
+  std::string remake_mode;
   bool preserve_driving_audio = false;
 
   uint64_t seed = 0;

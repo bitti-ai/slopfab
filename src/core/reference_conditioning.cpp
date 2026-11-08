@@ -129,14 +129,19 @@ std::vector<float> target_audio_rows(const std::vector<float>& encoded, int targ
 
 void order_animate_references(std::vector<dit::ReferenceGeometry>& geometry,
                               std::vector<float>& video_rows) {
-  if (geometry.size() != 2 || geometry[0].kind != dit::ReferenceKind::kImage ||
-      geometry[1].kind != dit::ReferenceKind::kVideo || geometry[0].audio_rows() ||
-      geometry[1].audio_rows() ||
-      video_rows.size() != size_t(geometry[0].video_rows() + geometry[1].video_rows()) * 96)
-    throw std::invalid_argument("Animate requires one image and one silent video reference");
-  std::rotate(video_rows.begin(), video_rows.begin() + size_t(geometry[0].video_rows()) * 96,
-              video_rows.end());
-  std::swap(geometry[0], geometry[1]);
+  if (geometry.size() < 2 || geometry.back().kind != dit::ReferenceKind::kVideo ||
+      geometry.back().audio_rows())
+    throw std::invalid_argument("video-first conditioning requires images followed by one silent video");
+  size_t image_rows = 0;
+  for (size_t i = 0; i + 1 < geometry.size(); ++i) {
+    if (geometry[i].kind != dit::ReferenceKind::kImage || geometry[i].audio_rows())
+      throw std::invalid_argument("video-first conditioning requires image references");
+    image_rows += geometry[i].video_rows();
+  }
+  if (video_rows.size() != (image_rows + geometry.back().video_rows()) * 96)
+    throw std::invalid_argument("video-first reference row count mismatch");
+  std::rotate(video_rows.begin(), video_rows.begin() + image_rows * 96, video_rows.end());
+  std::rotate(geometry.begin(), geometry.end() - 1, geometry.end());
 }
 
 ReferenceConditionPlan reference_condition_plan(const ReferenceMedia& reference,

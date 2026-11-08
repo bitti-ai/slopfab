@@ -31,7 +31,9 @@ Viggle's Diffusers-format adapter is also supported directly: `proj_in`,
 Separate Q/K/V factors are applied to their respective base projection slices.
 Diffusers SwiGLU B rows are reordered from `[value; gate]` to `[gate; value]`.
 The video input/output updates are merged into the floating-point weights at
-load time on both backends. See [Viggle usage and workflow limits](viggle_animate.md).
+load time on both backends. See [Viggle Remake](viggle_remake.md) for the
+rank-64 swap/edit adapters and merged INT8 alternatives. A merged Remake
+transformer already includes its mode adapter; do not apply it again.
 
 The update is `strength * alpha / rank * B @ A`. For block projections, the implementation folds
 scaling into B and uploads both factors as BF16; intermediate projections and

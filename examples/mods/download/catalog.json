@@ -1,7 +1,7 @@
 {
   "minimaxh3": {
     "source": "https://huggingface.co/Comfy-Org/MiniMax-H3",
-    "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Singularity and Singularity v2 use the Turbo LoRA; Animate also needs animate-conditioning and the Viggle Animate LoRA from minimaxh3-loras. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained. Smaller text encoders and their required projections are listed in minimaxh3-clipproj.",
+    "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Singularity and Singularity v2 use the Turbo LoRA; Viggle Remake swap/edit files are listed under viggle-remake. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained. Smaller text encoders and their required projections are listed in minimaxh3-clipproj.",
     "files": [
       {
         "id": "fl2va-w6a8",
@@ -114,18 +114,6 @@
         "role": "transformer",
         "url": "https://huggingface.co/WAS/Minimax-h3_Singularity_v2_pruned/resolve/main/Minimax-h3_Singularity_ref2va_v2_pruned_w4a8.safetensors",
         "minVramGb": 12
-      },
-      {
-        "id": "animate-int8",
-        "role": "transformer",
-        "url": "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/Viggle-Animate-pruned_rank8_int8_convrot.safetensors",
-        "minVramGb": 21
-      },
-      {
-        "id": "animate-conditioning",
-        "role": "prompt_embedding",
-        "url": "https://huggingface.co/drbaph/Viggle-Animate-ComfyUI/resolve/main/text_cond/fixed_embed_fwd_anyframe.safetensors",
-        "name": "Animate conditioning"
       },
       {
         "id": "sol-h3-vae",
@@ -396,36 +384,6 @@
             "https://github.com/ModelTC/Minimax-H3-Turbo/blob/main/COMFYUI_SETUP_AND_INFERENCE.md"
           ],
           "note": "Recipe for this Ref2VA v0.1 file; the FL2VA 768p Turbo variants use different video shifts."
-        }
-      },
-      {
-        "id": "viggle-animate-4step",
-        "role": "lora",
-        "url": "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/loras/viggle_animate_distillation_bf16.safetensors",
-        "name": "Viggle Animate Distillation",
-        "stepOverride": 4,
-        "recommendedSampling": {
-          "steps": 3,
-          "baseModel": "Viggle Animate",
-          "loraStrength": 1,
-          "cfg": 1,
-          "settings": {
-            "version": 1,
-            "sampler": "euler",
-            "video_sigma_shift": 3,
-            "audio_sigma_shift": 3,
-            "base_sigmas": [
-              1,
-              0.6666666666666666,
-              0.3333333333333333,
-              0
-            ]
-          },
-          "basis": "upstream",
-          "sources": [
-            "https://huggingface.co/Viggle/Viggle-Animate/blob/main/inference/sample.py"
-          ],
-          "note": "The upstream four-point schedule has three denoising updates. Use Animate conditioning and this explicit grid; Slopfab --steps counts updates, not sigma boundaries. The legacy file ID/stepOverride retain upstream four-point naming."
         }
       },
       {
@@ -713,6 +671,180 @@
             "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA"
           ],
           "note": "Inherit the step count, sampler and sigma settings from the selected base model and sampling adapters."
+        }
+      }
+    ]
+  },
+  "viggle-remake": {
+    "name": "Viggle Remake",
+    "note": "Choose one merged swap/edit INT8 transformer OR the matching rank-64 LoRA for an existing H3 FL2VA base. Shared H3 text encoder and video/audio VAEs are in minimaxh3. No frozen Animate embedding or distillation LoRA is needed. LoRA VRAM values exclude the base model.",
+    "files": [
+      {
+        "id": "swap-int8",
+        "role": "transformer",
+        "name": "Viggle Remake swap (LoRA merged)",
+        "url": "https://huggingface.co/Viggle/Viggle-Remake/resolve/main/int8/viggle_remake_swap_pruned_int8_convrot.safetensors",
+        "minVramGb": 24,
+        "recommendedSampling": {
+          "steps": 6,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1.0,
+              0.896549851370972,
+              0.6982739973971426,
+              0.5000002708334577,
+              0.25000000000000006,
+              0.12500002473958619,
+              0.0
+            ]
+          },
+          "videoSigmas": [
+            1,
+            0.990476,
+            0.965243,
+            0.923077,
+            0.8,
+            0.631579,
+            0
+          ],
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/Viggle/Viggle-Remake/blob/main/inference/sample.py"
+          ],
+          "baseModel": "H3 FL2VA + merged Remake swap",
+          "note": "Mode LoRA already merged; do not download an additional mode LoRA for this transformer. VRAM estimate depends on resolution, clip length and CPU offload."
+        }
+      },
+      {
+        "id": "swap-lora-r64",
+        "role": "lora",
+        "name": "Viggle Remake swap rank 64",
+        "filename": "viggle_remake_swap_lora_r64.safetensors",
+        "url": "https://huggingface.co/Viggle/Viggle-Remake/resolve/main/lora_lowrank/swap-r64/pytorch_lora_weights.safetensors",
+        "minVramGb": 0,
+        "recommendedSampling": {
+          "steps": 6,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1.0,
+              0.896549851370972,
+              0.6982739973971426,
+              0.5000002708334577,
+              0.25000000000000006,
+              0.12500002473958619,
+              0.0
+            ]
+          },
+          "videoSigmas": [
+            1,
+            0.990476,
+            0.965243,
+            0.923077,
+            0.8,
+            0.631579,
+            0
+          ],
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/Viggle/Viggle-Remake/blob/main/inference/sample.py"
+          ],
+          "baseModel": "H3 FL2VA (unmerged)",
+          "loraStrength": 1,
+          "note": "Alternative to the merged transformer; not an additional download for it."
+        }
+      },
+      {
+        "id": "edit-int8",
+        "role": "transformer",
+        "name": "Viggle Remake edit (LoRA merged)",
+        "url": "https://huggingface.co/Viggle/Viggle-Remake/resolve/main/int8/viggle_remake_edit_pruned_int8_convrot.safetensors",
+        "minVramGb": 24,
+        "recommendedSampling": {
+          "steps": 6,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1.0,
+              0.8333371458490603,
+              0.6666666666666661,
+              0.5000002708334577,
+              0.333333592592751,
+              0.166666430555772,
+              0.0
+            ]
+          },
+          "videoSigmas": [
+            1,
+            0.983607,
+            0.96,
+            0.923077,
+            0.857143,
+            0.705882,
+            0
+          ],
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/Viggle/Viggle-Remake/blob/main/inference/sample.py"
+          ],
+          "baseModel": "H3 FL2VA + merged Remake edit",
+          "note": "Mode LoRA already merged; do not download an additional mode LoRA for this transformer. VRAM estimate depends on resolution, clip length and CPU offload."
+        }
+      },
+      {
+        "id": "edit-lora-r64",
+        "role": "lora",
+        "name": "Viggle Remake edit rank 64",
+        "filename": "viggle_remake_edit_lora_r64.safetensors",
+        "url": "https://huggingface.co/Viggle/Viggle-Remake/resolve/main/lora_lowrank/edit-r64/pytorch_lora_weights.safetensors",
+        "minVramGb": 0,
+        "recommendedSampling": {
+          "steps": 6,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1.0,
+              0.8333371458490603,
+              0.6666666666666661,
+              0.5000002708334577,
+              0.333333592592751,
+              0.166666430555772,
+              0.0
+            ]
+          },
+          "videoSigmas": [
+            1,
+            0.983607,
+            0.96,
+            0.923077,
+            0.857143,
+            0.705882,
+            0
+          ],
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/Viggle/Viggle-Remake/blob/main/inference/sample.py"
+          ],
+          "baseModel": "H3 FL2VA (unmerged)",
+          "loraStrength": 1,
+          "note": "Alternative to the merged transformer; not an additional download for it."
         }
       }
     ]

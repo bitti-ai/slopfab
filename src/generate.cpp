@@ -394,7 +394,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       prepared.plan.audio_samples =
           static_cast<int>(std::floor(double(plan.sampling_frames + 1) / 24 * 32000 + .5));
       if (!cached_media)
-        prepared.audio = prepare_target_audio(*media->soundtrack(), plan.sampling_frames);
+        prepared.audio = prepare_target_audio(media->soundtrack() ? *media->soundtrack() :
+                                               ReferenceAudio{{}, 2, 32000, 0}, plan.sampling_frames);
     }
     if (options.verbose) {
       const auto& p = prepared_media.back().plan;
@@ -481,7 +482,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     // have incompatible timestep/AdaLN graphs. Check the cheap header contract
     // before loading the 15+ GiB conditioner so a wrong --transformer fails in
     // milliseconds rather than after an otherwise successful text encode.
-    if (request.has_references()) {
+    if (request.has_references() && request.remake_mode.empty()) {
       try {
         SafeTensors transformer_header;
         transformer_header.open(request.transformer_path);

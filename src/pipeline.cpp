@@ -1,4 +1,5 @@
 #include "slopfab/pipeline.h"
+#include "slopfab/remake.h"
 #include "slopfab/model_profile.h"
 #include "slopfab/krea.h"
 
@@ -26,6 +27,7 @@ constexpr int kMinLatentFrames = 7;
 constexpr int kMinFrames = 22;
 
 void append_media_identity(std::string& key, const GenerateRequest& request) {
+  key += ":remake:" + request.remake_mode;
   key += ":end-anchor:" + std::to_string(!request.end_anchor_path.empty());
   if (!request.end_anchor_path.empty()) {
     const auto plan = resolve_plan(request);
@@ -84,6 +86,7 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  validate_remake_request(request);
   request.context_noise.validate();
   if (request.context_noise.strength > 0 &&
       (request_model_family(request) != "h3" || request.still_image || request.bridge ||
@@ -95,7 +98,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   if (!request.clip_projection_path.empty()) {
     if (request_model_family(request) != "h3")
       throw std::invalid_argument("ClipProj is supported only for MiniMax H3");
-    if (!request.conditioning_image_paths().empty() || !request.reference_media.empty() || request.image_edit.invert_mask)
+    if (request.remake_mode.empty() && (!request.conditioning_image_paths().empty() || !request.reference_media.empty() || request.image_edit.invert_mask))
       throw std::invalid_argument("ClipProj currently supports text-only H3 conditioning; use the 32B encoder for image/video references");
   }
   if (request.keystone.source) {
@@ -178,7 +181,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     require_h3_latent_geometry(plan.geometry);
     const bool fl2va = plan.model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable &&
                        !plan.model.compressed_attention;
-    if ((request.has_references() && !plan.model.supports_references) ||
+    if ((request.has_references() && !plan.model.supports_references && request.remake_mode.empty()) ||
         ((request.continuation || request.bridge || request.end_anchor_latents || !request.end_anchor_path.empty()) &&
          !plan.model.supports_references && !fl2va))
       throw std::invalid_argument("selected model does not support reference conditioning");

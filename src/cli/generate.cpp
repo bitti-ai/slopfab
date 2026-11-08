@@ -608,8 +608,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         req.schedule = slopfab::sampler::ScheduleKind::kBeta;
       else
         throw std::runtime_error("--schedule wants default, beta, taomate-3step or dmad-4step");
-    } else if (arg == "--animate") {
-      req.animate = true;
+    } else if (arg == "--remake") {
+      req.remake_mode = next("--remake");
+      if (req.remake_mode != "swap" && req.remake_mode != "edit")
+        throw std::invalid_argument("--remake wants swap or edit");
     } else if (arg == "--preserve-driving-audio") {
       req.preserve_driving_audio = true;
     } else if (arg == "--prompt-embedding") {

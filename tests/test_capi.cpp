@@ -1748,6 +1748,30 @@ SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
   CHECK(plan.num_model_evaluations == 50);
 }
 
+SLOPFAB_TEST(capi_remake_plan_and_silent_source) {
+  Request request;
+  CHECK(slopfab_request_set_remake(nullptr, "swap") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake(request.handle, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake(request.handle, "other") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake(request.handle, "swap") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_prompt(request.handle, "subject_definitions: mascot; summary: dance; retention_analysis: motion; detailed_description: dancing; overall_soundscape: source; non_diegetic_music: source") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_frames(request.handle, 124) == SLOPFAB_OK);
+  slopfab_reference_video* video = nullptr;
+  CHECK(slopfab_reference_video_create(124.0 / 24, &video) == SLOPFAB_OK);
+  std::vector<uint8_t> rgb(64*96*3, 127);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgb.data(), rgb.size(), 64, 96, 64*3, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_video(request.handle, video) == SLOPFAB_OK);
+  slopfab_reference_video_destroy(video);
+  CHECK(slopfab_request_add_reference_image(request.handle, "painted.png") == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 6);
+  CHECK(slopfab_request_set_remake(request.handle, "edit") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 6);
+  CHECK(slopfab_request_set_remake(request.handle, "") == SLOPFAB_OK);
+}
+
 SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
   Request request;
   CHECK(slopfab_request_set_animate(nullptr, 1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);

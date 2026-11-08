@@ -1,5 +1,6 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
+#include "slopfab/remake.h"
 
 #include <algorithm>
 #include <chrono>
@@ -60,6 +61,21 @@ bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions&
   auto& reference_conditioning_ids = inputs.reference_conditioning_ids;
   auto& media_qwen_pairs = inputs.media_qwen_pairs;
   auto& conditioning_tokenizer = inputs.tokenizer;
+  if (!request.remake_mode.empty()) {
+    if (options.prompt_embedding_path.empty()) {
+      for (const auto& segment : remake_prompt_segments(request.num_frames, reference_images.size(), request.prompt)) {
+        const auto ids = conditioning_tokenizer().encode(segment);
+        reference_conditioning_ids.insert(reference_conditioning_ids.end(), ids.begin(), ids.end());
+      }
+      if (reference_conditioning_ids.size() > text::kMaxPromptTokens)
+        throw std::invalid_argument("Remake conditioning exceeds the prompt token limit");
+    } else if (inputs.fixed_prompt.modality_tags.empty() ||
+               !std::all_of(inputs.fixed_prompt.modality_tags.begin(), inputs.fixed_prompt.modality_tags.end(),
+                            [](int32_t tag) { return tag == 1; })) {
+      throw std::invalid_argument("Remake captured embeddings must contain only text tags; Animate embeddings are incompatible");
+    }
+    return true;
+  }
   if (options.source == LatentSource::kDenoise && !reference_images.empty() &&
       options.prompt_embedding_path.empty()) {
     try {
@@ -217,12 +233,12 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     std::vector<int32_t> ids;
     std::vector<text::QwenPixelValues> qwen_images;
     if (has_prompt_references) {
-      if (reference_conditioning_grids.size() != reference_images.size() ||
+      if ((request.remake_mode.empty() && reference_conditioning_grids.size() != reference_images.size()) ||
           reference_conditioning_ids.empty())
         throw std::logic_error("reference conditioning preflight is absent");
       ids = reference_conditioning_ids;
     }
-    for (size_t i = 0; i < reference_images.size(); ++i) {
+    for (size_t i = 0; request.remake_mode.empty() && i < reference_images.size(); ++i) {
       const auto& grid = reference_conditioning_grids[i];
       const int rw = grid.width * 16, rh = grid.height * 16;
       auto rgb = resize_rgb_bilinear(reference_images[i], rw, rh);
@@ -320,6 +336,8 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
 #endif
     }
     result.conditioner_executed = true;
+    if (!request.remake_mode.empty())
+      prompt.modality_tags.assign(prompt.num_tokens, 1);
     if (cache_prompt) {
       reuse.conditioning_key = prompt_key;
       reuse.prompt = prompt;

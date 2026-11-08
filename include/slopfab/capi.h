@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 50
+#define SLOPFAB_CAPI_VERSION_MINOR 51
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
@@ -749,6 +749,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(slopfab
  * Disabling clears these two mode flags but retains other request settings. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* request, int32_t enable,
                                                            int32_t preserve_driving_audio);
+
+/* Since 1.51. Viggle Remake: mode is "swap", "edit", or "" to disable.
+ * Requires one source video, 1..4 painted images and a six-section H3 prompt.
+ * Uses the trained six-step Euler grid and preserves the source soundtrack
+ * through the audio VAE (silence for a silent source). A merged Remake INT8
+ * transformer needs no LoRA; a pruned FL2VA base needs the matching mode LoRA.
+ * References set appearance; upstream optional timeline pins are not exposed. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake(slopfab_request* request, const char* mode);
 
 /* Since 1.13. Synchronously prepare an adapter's AdaLN grid outside inference.
  * adapter_path is a nonempty UTF-8 path; width is the positive base transformer

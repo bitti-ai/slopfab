@@ -453,7 +453,7 @@ const CommandHelp kCommands[] = {
      "  --bridge-left-margin <n>     replace left tail, multiple of 17 (default 17).\n"
      "  --bridge-right-margin <n>    replace right head, multiple of 17 (default 17).\n"
      "  --bridge-context <n>         locked context per side, 17*k+5 frames (default 22).\n"
-     "  --animate                   Viggle fixed-conditioning recipe (default 4 steps)\n"
+     "  --remake swap|edit          Viggle Remake: source video + 1..4 painted frames, 6 steps\n"
      "  --preserve-driving-audio    pin attached driving soundtrack as clean target audio;\n"
      "                             default include_reference_audio=false; explicit conflicts fail\n"
      "  --prompt-embedding <f>       F32 prompt_embedding [L,5120] safetensors;\n"
@@ -712,7 +712,6 @@ bool option_takes_value(std::string_view a, std::string_view command) {
                            "--keystone-front-only",
                            "--context-noise-include-first",
                            "--lock-overlap",
-                           "--animate",
                            "--preserve-driving-audio",
                            "--latent-upscale",
                            "--latent-upscale-no-chunking",

@@ -186,7 +186,9 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   if (text_only)
     return;
   if (req.transformer_path.empty()) {
-    const auto architecture = (std::string_view(profile.family) == "h3" && req.has_references())
+    const std::string architecture = !req.remake_mode.empty()
+                                  ? "viggle_remake_" + req.remake_mode + "_pruned_"
+                                  : (std::string_view(profile.family) == "h3" && req.has_references())
                                   ? "ref2va"
                                   : profile.transformer_hint;
     req.transformer_path = find_weight(weights, {"transformer", ""}, architecture);

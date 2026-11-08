@@ -8,7 +8,7 @@ image/video references.
 
 Use one source performance as `<Video 1>` and one replacement identity as
 `<Picture 1>`. These are ordinary references, not first-frame anchors or the
-Viggle Animate mode. With the other model components configured:
+Viggle Remake mode. With the other model components configured:
 
 ```sh
 slopfab video generate --model h3 --transformer weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors --lora weights/h3_character_swap_v1.5.safetensors --lora-strength 1 --reference-video source.y4m --reference-image character.png --prompt "Replace the person wearing a green coat in <Video 1> with the robot in <Picture 1>. Keep the robot's face, jacket and proportions. Follow the source person's head turns, hand wave and walking pace. Retain the station platform and other passengers." --frames 73 --resolution 512x512 --out output/project.y4m

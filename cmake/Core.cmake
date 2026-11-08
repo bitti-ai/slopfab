@@ -37,6 +37,7 @@ add_library(slopfab_core STATIC
   src/dit/hyperflow.cpp
   src/core/conditioning_settings.cpp
   src/conditioning_plan.cpp
+  src/core/remake.cpp
   src/generation_validation.cpp
   src/dit/block_cache.cpp
   src/dit/chunking.cpp

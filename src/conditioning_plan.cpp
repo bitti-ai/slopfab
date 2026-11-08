@@ -81,6 +81,20 @@ ResolvedConditioning resolve_conditioning_settings(const GenerateRequest& reques
   }
   overlay(out, adapters);
   overlay(out, request.conditioning);
+  if (!request.remake_mode.empty()) {
+    if (out.require_prompt_embedding || out.fixed_prompt_tokens ||
+        request.conditioning.include_reference_audio.value_or(false) ||
+        (request.conditioning.pin_target_audio && !*request.conditioning.pin_target_audio))
+      throw std::invalid_argument("Remake requires prompt conditioning and clean target audio, without reference audio");
+    out.references_at_target_canvas = true;
+    out.canvas_from_reference_video = true;
+    out.include_reference_audio = false;
+    out.video_first = true;
+    out.pin_target_audio = true;
+    out.max_frames = 345;
+    out.require_euler = true;
+    out.allow_caches = false;
+  }
   if (request.preserve_driving_audio) {
     if (request.conditioning.include_reference_audio.value_or(false))
       throw std::invalid_argument(
@@ -117,11 +131,13 @@ void validate_conditioning_request(const GenerateRequest& r, const ResolvedCondi
   if (s.fixed_prompt_tokens > 0 && !s.require_prompt_embedding)
     throw std::invalid_argument("fixed_prompt_tokens requires require_prompt_embedding");
   if (s.video_first) {
-    if (r.still_image || r.continuation || r.has_refmods() || r.reference_image_paths.size() != 1 ||
+    if (r.still_image || r.continuation || r.has_refmods() ||
+        (r.remake_mode.empty() ? r.reference_image_paths.size() != 1 :
+         (r.reference_image_paths.empty() || r.reference_image_paths.size() > 4)) ||
         r.reference_media.size() != 1 || !r.reference_media.front()->is_video())
       throw std::invalid_argument(
           "video_first requires one driving video and one image without continuation or refmods");
-    if (!s.require_prompt_embedding)
+    if (!s.require_prompt_embedding && r.remake_mode.empty())
       throw std::invalid_argument("video_first currently requires fixed prompt conditioning");
   }
   if (s.canvas_from_reference_video &&
@@ -129,7 +145,8 @@ void validate_conditioning_request(const GenerateRequest& r, const ResolvedCondi
     throw std::invalid_argument("canvas_from_reference_video requires a leading video reference");
   if (s.pin_target_audio &&
       (r.still_image || r.continuation || r.reference_media.size() != 1 ||
-       !r.reference_media.front()->is_video() || !r.reference_media.front()->soundtrack()))
+       !r.reference_media.front()->is_video() ||
+       (!r.reference_media.front()->soundtrack() && r.remake_mode.empty())))
     throw std::invalid_argument(
         "pin_target_audio requires one video with a soundtrack, without continuation or still-image mode");
 }

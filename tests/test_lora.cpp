@@ -561,6 +561,31 @@ SLOPFAB_TEST(lora_viggle_released_adapter_compatibility) {
   }
 }
 
+SLOPFAB_TEST(lora_remake_released_rank64_compatibility) {
+  const std::string adapter = "weights/viggle_remake_swap_lora_r64.safetensors";
+  const std::string checkpoint = "weights/transformer/fl2va_pruned_fp8_scaled.safetensors";
+  if (!std::filesystem::exists(adapter) || !std::filesystem::exists(checkpoint)) {
+    SKIP_MISSING_FIXTURE("Remake rank-64 adapter or FL2VA base absent");
+    return;
+  }
+  SafeTensors base;
+  base.open(checkpoint);
+  LoraAdapters loras;
+  loras.load({{adapter, 1}}, base);
+  CHECK(loras.projection_count() == 302);
+  for (int layer = 0; layer < 50; ++layer) {
+    const std::string prefix = "blocks." + std::to_string(layer) + ".";
+    for (const char* name : {"attn.to_q", "attn.to_k", "attn.to_v", "attn.out_proj", "mlp.fc1", "mlp.fc2"}) {
+      const auto* factors = loras.find(prefix + name);
+      CHECK(factors && factors->size() == 1 && factors->front().rank == 64);
+    }
+  }
+  for (const char* name : {"video_patch_proj", "final_layer.video_out"}) {
+    CHECK(loras.find(name)->front().rank == 64);
+    CHECK(loras.merged_endpoint_weight(base, name).size() == size_t(base.at(std::string(name)+".weight").numel()));
+  }
+}
+
 SLOPFAB_TEST(lora_taomate_three_step_schedule_and_plan) {
   using namespace slopfab::sampler;
   for (float shift : {12.0f, 3.0f}) {

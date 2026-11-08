@@ -1,4 +1,5 @@
 #include "slopfab/dit/checkpoint.h"
+#include "slopfab/remake.h"
 
 #include <algorithm>
 #include <cctype>
@@ -95,6 +96,8 @@ static TransformerArchitecture infer_legacy_architecture(const SafeTensors& chec
                                          : TransformerArchitecture::kUnknown;
     if (marks_viggle(checkpoint))
       return TransformerArchitecture::kViggleAnimatePrunedTable;
+    if (!remake_checkpoint_mode(checkpoint).empty())
+      return TransformerArchitecture::kRef2VAPrunedTable;
     // The released pruned Ref2VA FP8 file has the exact same tensor names,
     // shapes, dtypes and empty metadata as the FL2VA file. The distribution
     // filename is therefore the only identity signal available in the file.

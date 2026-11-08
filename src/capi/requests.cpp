@@ -552,6 +552,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(slopfab
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake(slopfab_request* request, const char* mode) {
+  if (!request || !mode)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_remake: null request or mode");
+  return guarded([&] {
+    const std::string value(mode);
+    if (!value.empty() && value != "swap" && value != "edit")
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_remake: mode must be swap or edit");
+    request->request.remake_mode = value;
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* request, int32_t enable,
                                                            int32_t preserve_driving_audio) {
   if (!request)

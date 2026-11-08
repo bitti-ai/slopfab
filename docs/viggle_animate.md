@@ -1,5 +1,9 @@
 # Viggle-Animate transformer checkpoints
 
+Archived implementation notes. The CLI and download catalog now use
+[Viggle Remake](viggle_remake.md). The old C ABI setter is retained for
+existing hosts; the `--animate` CLI option has been removed.
+
 For CUDA denoising VRAM reductions and stage profiling, see
 [Denoising memory](denoising_memory.md). Flash2 uses compact Q/output buffers
 by default; projection/FFN scratch is bounded to 2,048 rows.

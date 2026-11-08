@@ -1,4 +1,5 @@
 #include "sampling_plan.h"
+#include "slopfab/remake.h"
 
 #include <algorithm>
 #include <cmath>
@@ -135,6 +136,23 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     throw std::invalid_argument("taomate-3step requires an enabled TaoMate LoRA");
   overlay_sampling_settings(effective, adapters);
   overlay_sampling_settings(effective, overrides);
+  if (!request.remake_mode.empty()) {
+    const auto required = remake_sampling(request.remake_mode);
+    if (request.schedule != sampler::ScheduleKind::kDefault ||
+        (request.num_inference_steps && request.num_inference_steps != 6) ||
+        (overrides.default_steps && *overrides.default_steps != 6) ||
+        (effective.sampler && effective.sampler != sampler::SamplerKind::kEuler) ||
+        effective.audio_steps || effective.scheduler == sampler::SigmaSchedule::kBeta ||
+        (effective.base_sigmas &&
+         (effective.base_sigmas->size() != required.base_sigmas->size() ||
+          !std::equal(effective.base_sigmas->begin(), effective.base_sigmas->end(),
+                      required.base_sigmas->begin(), [](float a, float b) { return std::abs(a-b) < 1e-6f; }))) ||
+        effective.video_sigma_shift != required.video_sigma_shift ||
+        effective.audio_sigma_shift != required.audio_sigma_shift)
+      throw std::invalid_argument("Remake requires its six-step Euler grid and shifts 12/3; omit alternate sampling settings");
+    overlay_sampling_settings(effective, required);
+    plan.sampling_sources.push_back("Viggle Remake " + request.remake_mode);
+  }
   if (has_settings(overrides))
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);

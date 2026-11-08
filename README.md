@@ -19,7 +19,7 @@ with `slopfab update --check`. Your weights, projects and settings are preserved
 | --- | --- |
 | MiniMax H3 (FL2VA, Ref2VA, Singularity / v2) | Generates video with audio, or still images. Ref2VA supports image, video and audio references; Singularity variants use the Turbo LoRA. |
 | [FastH3 V2](docs/fasth3_v2.md) / [FastH3 OmniRef](docs/omniref.md) | Eight-step H3 generation: V2 generates video/audio from text; OmniRef also accepts multimedia references. |
-| [Viggle-Animate](docs/viggle_animate.md) | Animates a repainted scene using motion from a driving video. |
+| [Viggle Remake](docs/viggle_remake.md) | Recasts characters or edits a scene from a source video, painted frames and a prompt; retains source audio. |
 | [Krea 2](docs/krea2.md) (Turbo / Raw) | Text-to-image generation; Turbo is the default image model. |
 | [MOSS Image](docs/moss.md) | Text-to-image generation with Qwen3.5 conditioning. |
 | [Fibo 2.0](docs/fibo2.md) | Text-to-image generation and instruction-based image editing; Edit Turbo accepts up to four reference images. |
