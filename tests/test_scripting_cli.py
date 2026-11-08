@@ -203,8 +203,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-js-") as directory:
     assert run('licenses', 'unexpected', code=6)['error']['code'] == 'SCRIPT_ERROR'
 
     # Use a real FFmpeg when it is installed; no media/model fixture required.
-    ffmpeg=Path(exe).parents[2]/'external'/'ffmpeg'/'bin'/'ffmpeg.exe'
-    ffmpeg=str(ffmpeg) if ffmpeg.exists() else shutil.which('ffmpeg')
+    ffmpeg=shutil.which('ffmpeg')
+    bundled_ffmpeg=repo/'external'/'ffmpeg'/'bin'/'ffmpeg.exe'
+    if os.name == 'nt' and not ffmpeg and bundled_ffmpeg.exists():
+        ffmpeg=str(bundled_ffmpeg)
     if ffmpeg:
         data=js(f"export default () => slopfab.exec([{json.dumps(ffmpeg)},'-hide_banner','-f','lavfi','-i','color=c=red:s=16x16:d=0.1','-frames:v','1','-y','frame.png']);")["data"]
         assert data['exitCode']==0 and (root/'frame.png').stat().st_size > 0

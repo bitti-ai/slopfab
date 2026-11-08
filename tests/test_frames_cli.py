@@ -11,8 +11,11 @@ import zlib
 
 exe = str(Path(sys.argv[1]).resolve())
 repo = Path(__file__).resolve().parents[1]
-ffmpeg = shutil.which('ffmpeg') or str(repo/'external/ffmpeg/bin/ffmpeg.exe')
-ffprobe = shutil.which('ffprobe') or str(repo/'external/ffmpeg/bin/ffprobe.exe')
+ffmpeg = shutil.which('ffmpeg')
+ffprobe = shutil.which('ffprobe')
+if os.name == 'nt':
+    ffmpeg = ffmpeg or str(repo/'external/ffmpeg/bin/ffmpeg.exe')
+    ffprobe = ffprobe or str(repo/'external/ffmpeg/bin/ffprobe.exe')
 
 def png(file):
     data = file.read_bytes()
@@ -113,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix='slopfab-frames-') as temp:
     assert data['exitCode']==2 and data['result']['type']=='error'
     assert not list(root.rglob('*.slopfab-reserved')) and not list(root.rglob('*.tmp'))
 
-    if Path(ffmpeg).exists() and Path(ffprobe).exists():
+    if ffmpeg and ffprobe and Path(ffmpeg).exists() and Path(ffprobe).exists():
         def ff(*args):
             p=subprocess.run([ffmpeg,'-v','error',*map(str,args)],cwd=root,capture_output=True,timeout=30)
             assert p.returncode==0,p.stderr
