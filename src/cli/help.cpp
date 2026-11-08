@@ -116,7 +116,7 @@ const CommandHelp kCommands[] = {
      "  --overwrite           atomically replace an existing report\n"
      "Negative audio_shift_ms advances audio; positive delays it. LSE-D/LSE-C are not accuracy percentages.\n"
      "Temporary decoded video is bounded to 8 GiB and 1280 pixels per side. See docs/syncnet.md.\n"},
-    {"remote", "slopfab remote setup|show|update|remove NAME | remote list",
+    {"remote", "slopfab remote setup|show|update|remove NAME | remote list | remote fetch RECEIPT",
      "Configure SSH hosts and install/update their executable from the bundled Windows/Linux binaries.",
      "  setup NAME --directory PATH  register a host and provision slopfab in its existing project\n"
      "  --host SSH_HOST              SSH alias or user@hostname (default NAME)\n"
@@ -126,6 +126,7 @@ const CommandHelp kCommands[] = {
      "  show NAME | list             inspect saved connections\n"
      "  update NAME                 verify/upload the current bundled executable\n"
      "  remove NAME                 forget a connection; retain remote files\n"
+     "  fetch RECEIPT               retry downloads from a remote.json receipt\n"
      "Execute regular commands with --host NAME (alias --remote NAME), for example:\n"
      "  slopfab requests run --host gpu image --prompt \"A red apple\"\n"
      "  slopfab system devices --host gpu\n"

@@ -2,7 +2,7 @@
 #include "commands.h"
 
 namespace slopfab::cli {
-// Normalize public media groups after global/remote options have been consumed.
+// Normalize public command groups after global/remote options have been consumed.
 // Returns the task constraint for a typed generate command.
 std::string route_media_command(std::vector<std::string>&);
 const CommandHelp* media_command_help(std::string_view);
