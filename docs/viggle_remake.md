@@ -7,6 +7,8 @@ the native H3 CUDA/Vulkan pipeline, one source video and one to four painted
 frames, with a six-section H3 prompt. This implements the upstream workflow
 without optional timeline pins; references determine appearance, not a fixed
 composition at a particular output frame. Split shots at cuts when needed.
+Use a short edge of 480 or 736 for visual work; very small test canvases can
+produce abstract textures despite completing inference successfully.
 
 ## Weights
 
@@ -82,3 +84,14 @@ C API 1.51 adds `slopfab_request_set_remake(request, "swap")` (or `"edit"`;
 `""` disables it). Attach decoded video/PCM and painted image paths using
 the existing reference setters. The older Animate setter remains available
 for ABI compatibility; its frozen-conditioning recipe is separate.
+
+## Validation
+
+The local swap INT8 checkpoint rendered 90 frames at 832x480 with two upstream
+painted references and a shortened six-section prompt. Beginning, middle and
+final frames show the pineapple mascot following the source performance.
+CUDA and Vulkan also completed six-step 160x96 execution tests; these tiny
+canvases are not quality tests. Both runs verified that the pinned audio
+latents stayed unchanged. The local rank-64 adapter passed all 302 projection
+target checks against the FL2VA base. Edit-mode schedules and request validation
+are covered by host tests; edit weights were not available for a visual test.
