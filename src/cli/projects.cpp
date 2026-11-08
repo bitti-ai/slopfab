@@ -93,6 +93,8 @@ Value naming_rules() {
   return Value(Object{
       {"manifest",
        str("project.json is the source of truth. The project HTML page uses items[].file and items[].preview as exact project-relative paths; it does not scan folders.")},
+      {"page_updates",
+       str("For review-page content, edit only project.json. Never edit the generated HTML, its layout/template or PROJECT.md. After editing JSON or adding generated media/previews, run slopfab projects update NAME to construct output/NAME.html from the bundled template. Generation with --project and media registration rebuild the page automatically.")},
       {"imports",
        str("Imported files: assets/ITEM_ID/vVERSION/source.EXT and preview.EXT. IDs use lowercase letters, digits, - or _. Versions are positive integers; old files are retained.")},
       {"generation",
@@ -217,7 +219,7 @@ void render(const fs::path& directory, const Value& manifest) {
   for (const auto& rule : rules.as_object())
     guide += "- " + rule.second.as_string() + "\n";
   guide +=
-      "\n## Agent workflow\n\nRead project.json before editing; IDs are stable and array entries carry version, prompt, generation recipe, parent and position. Clip order is ascending position. Removed items stay in the manifest and retain their files.\n\nUse slopfab help projects for commands. After regenerating a clip or removing/restoring/reordering it, rebuild its parent video with external FFmpeg and register the replacement using projects update. needs_rebuild marks an outdated parent. The page only prepares prompts; it never runs commands.\n\nGeneration recipes record arguments, working directory, resolved plan and artifacts. Resolve relative model/reference paths against that working directory. Use a new output and seed when asked to regenerate. Preserve other items. --if-revision can reject stale project edits.\n";
+      "\n## Agent workflow\n\nRead project.json before editing; it is the only review-page source file the agent should modify. Never edit the generated HTML, template or this guide. After each direct JSON edit, increment revision and run slopfab projects update " + directory.filename().u8string() + ". Rebuild the page whenever new generated media or previews are ready to show; --project generation and media registration do this automatically.\n\nIDs are stable and array entries carry version, prompt, generation recipe, parent and position. Clip order is ascending position. Removed items stay in the manifest and retain their files.\n\nUse slopfab help projects for commands. After regenerating a clip or removing/restoring/reordering it, rebuild its parent video with external FFmpeg and register the replacement using projects update NAME ITEM_ID. needs_rebuild marks an outdated parent. The page only prepares prompts; it never runs commands.\n\nGeneration recipes record arguments, working directory, resolved plan and artifacts. Resolve relative model/reference paths against that working directory. Use a new output and seed when asked to regenerate. Preserve other items. --if-revision can reject stale project edits.\n";
   atomic_text(inside(directory, "PROJECT.md"), guide);
 }
 
@@ -225,7 +227,7 @@ void open_index(const fs::path& directory) {
   const auto path = project_index_path(directory);
   if (!fs::is_regular_file(path))
     throw CliError("INPUT_NOT_FOUND",
-                   "project HTML page not found; run projects render " + directory.filename().u8string(), 3);
+                   "project HTML page not found; run projects update " + directory.filename().u8string(), 3);
 #ifdef _WIN32
   const auto result = reinterpret_cast<INT_PTR>(
       ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
@@ -470,15 +472,16 @@ int projects_command(const std::vector<std::string>& args) {
     invalid(
         "use projects create, list, show, open, add, update, remove, restore or render; slopfab help projects");
   const auto action = positional[0];
-  const bool edit = action == "update" || action == "remove" || action == "restore";
+  const bool rebuild = action == "render" || (action == "update" && positional.size() == 2);
+  const bool edit = (action == "update" && !rebuild) || action == "remove" || action == "restore";
   const bool known = edit || action == "list" || action == "create" || action == "show" ||
-                     action == "render" || action == "add" || action == "open";
+                     rebuild || action == "add" || action == "open";
   if (!known || positional.size() != (action == "list" ? 1u : edit ? 3u : 2u))
     invalid("wrong project action or arguments; run slopfab help projects");
   std::set<std::string> permitted = {"--output-dir"};
   if (action == "create")
     permitted.insert("--title");
-  if (action == "add" || action == "update") {
+  if (action == "add" || (action == "update" && edit)) {
     for (const char* key : {"--title", "--file", "--preview", "--position", "--start", "--end",
                             "--prompt", "--request", "--if-revision"})
       permitted.insert(key);
@@ -486,7 +489,7 @@ int projects_command(const std::vector<std::string>& args) {
       for (const char* key : {"--id", "--kind", "--parent"})
         permitted.insert(key);
   }
-  if (action == "remove" || action == "restore")
+  if (action == "remove" || action == "restore" || rebuild)
     permitted.insert("--if-revision");
   for (const auto& option : options)
     if (!permitted.count(option.first))
@@ -525,13 +528,16 @@ int projects_command(const std::vector<std::string>& args) {
           {"naming_rules", naming_rules()}};
       atomic_json(directory / "project.json", Value(manifest));
       render(directory, Value(manifest));
-    } else if (action == "render") {
+    } else if (rebuild) {
       if (!fs::is_regular_file(directory / "project.json"))
         throw CliError("INPUT_NOT_FOUND", "project not found; use projects create first", 3);
       FileLock lock(inside(directory, ".project.lock"));
       if (!lock.acquired())
         throw CliError("PROJECT_BUSY", "project is being updated; retry", 7, {}, true);
-      render(directory, load(directory));
+      const auto manifest = load(directory);
+      check_revision(manifest, options);
+      render(directory, manifest);
+      response["updated"] = Value(true);
     } else if (action == "add" || edit) {
       std::string id = action == "add" ? options.count("--id") ? options.at("--id")
                                                                : "item-" + unique_id().substr(0, 12)

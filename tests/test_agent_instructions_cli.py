@@ -12,6 +12,8 @@ expected = template.read_text(encoding="utf-8")
 version = int(expected.splitlines()[0])
 assert version > 0 and expected[0].isdigit()
 assert "`slopfab projects open NAME`" in expected and "OUTPUT/NAME.html" in expected
+assert "`slopfab projects update NAME`" in expected
+assert "edit only OUTPUT/NAME/project.json" in expected
 
 with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
     root = Path(temporary)

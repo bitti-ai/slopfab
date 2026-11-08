@@ -42,6 +42,17 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert data["relative_directory"] == "demo"
     assert Path(data["index_path"]) == output / "demo.html"
     assert "fetch(" not in html and "XMLHttpRequest" not in html
+    template = (Path(__file__).resolve().parents[1] / "templates/project.html").read_text(encoding="utf-8")
+
+    def page_data():
+        page = (output / "demo.html").read_text(encoding="utf-8")
+        match = re.search(r'(<script id="project-data" type="application/json">)(.*?)(</script>)', page, re.S)
+        assert match
+        assert page == template.replace("__SLOPFAB_PROJECT_DATA__", match[2].strip())
+        return json.loads(match[2])
+
+    page_data()
+    assert "edit only project.json" in created["naming_rules"]["page_updates"]
     listed = run("projects", "list")["projects"][0]
     assert listed["name"] == "demo"
     assert Path(listed["index_path"]) == output / "demo.html"
@@ -55,6 +66,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     run("projects", "open", "../escape", code=2)
     run("projects", "open", "demo", "--title", "ignored", code=2)
     run("projects", "add", "missing", "--file", "missing.png", code=3)
+    run("projects", "update", "missing", code=3)
+    run("projects", "update", code=2)
+    run("projects", "update", "demo", "--title", "ignored", code=2)
+    run("projects", "update", "demo", "--file", "ignored.png", code=2)
     assert not (output / "missing").exists()
 
     png = root / "source # one.png"
@@ -76,6 +91,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert image["file"] == "assets/cover/v1/source.png" and image["title"] == "--agent"
     assert image["request"]["prompt"] == "Original direction"
     assert (directory / image["file"]).read_bytes() == png.read_bytes()
+    assert page_data()["items"] == json.loads((directory / "project.json").read_text())["items"]
     canonical = directory / "assets/manual/v1/source.png"
     canonical.parent.mkdir(parents=True)
     canonical.write_bytes(png.read_bytes())
@@ -119,6 +135,42 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert item("film")["needs_rebuild"]
     assert item("film")["media_revision"] == film_media_revision
 
+    # The JSON is the sole page source. Direct edits and new external media are
+    # published through update NAME, restoring any hand-edited HTML to the template.
+    manifest = directory / "project.json"
+    edited = json.loads(manifest.read_text(encoding="utf-8"))
+    edited["title"] = "Updated project title"
+    edited["revision"] += 1
+    external = directory / "assets/external/v1/source.png"
+    external.parent.mkdir(parents=True)
+    external.write_bytes(png.read_bytes())
+    edited["items"].append({"id": "external", "kind": "image", "title": "New result",
+                            "file": "assets/external/v1/source.png", "version": 1,
+                            "prompt": title, "removed": False, "history": []})
+    manifest.write_text(json.dumps(edited, indent=2), encoding="utf-8")
+    edited_bytes = manifest.read_bytes()
+    (output / "demo.html").write_text("<html>agent changed the layout</html>", encoding="utf-8")
+    rebuilt = run("projects", "update", "demo", "--output-dir", str(output),
+                  "--if-revision", str(edited["revision"]))
+    assert rebuilt["updated"] is True
+    assert Path(rebuilt["project"]["index_path"]) == output / "demo.html"
+    assert manifest.read_bytes() == edited_bytes
+    assert page_data()["title"] == edited["title"] and page_data()["items"] == edited["items"]
+    assert title not in (output / "demo.html").read_text(encoding="utf-8")
+    assert external.read_bytes() == png.read_bytes()
+    assert not (directory / "index.html").exists()
+    assert "only review-page source file" in (directory / "PROJECT.md").read_text(encoding="utf-8")
+    valid_page = (output / "demo.html").read_bytes()
+    run("projects", "update", "demo", "--if-revision", str(edited["revision"] - 1), code=7)
+    edited["items"][-1]["file"] = "../outside.png"
+    manifest.write_text(json.dumps(edited), encoding="utf-8")
+    run("projects", "update", "demo", code=2)
+    assert (output / "demo.html").read_bytes() == valid_page
+    manifest.write_bytes(edited_bytes)
+    # A later registration automatically refreshes the page after JSON editing.
+    run("projects", "update", "demo", "external", "--title", "Registered update")
+    assert page_data()["items"][-1]["title"] == "Registered update"
+
     # Dry runs resolve project paths but cannot create files or modify metadata.
     before = (directory / "project.json").read_bytes()
     plan = run("generate", "image", "--project", "demo", "--prompt", "test", "--dry-run")["plans"][0]
@@ -138,11 +190,14 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert (directory / "project.json").read_bytes() == before
     (output / "demo.html").unlink()
     missing_index = run("projects", "open", "demo", code=3)
-    assert "projects render demo" in json.dumps(missing_index)
+    assert "projects update demo" in json.dumps(missing_index)
     assert not (output / "demo.html").exists()
-    run("projects", "render", "demo")
+    run("projects", "update", "demo")
     assert (output / "demo.html").is_file()
     assert (directory / "project.json").read_bytes() == before
+    rebuilt_page = (output / "demo.html").read_bytes()
+    run("projects", "render", "demo")
+    assert (output / "demo.html").read_bytes() == rebuilt_page
 
     # Exercise the desktop launcher without opening a real browser.
     if os.name != "nt":
@@ -181,13 +236,16 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
         (output / "demo.html").symlink_to(outside / "index.html")
         run("projects", "open", "demo", code=2)
         run("projects", "render", "demo", code=2)
+        run("projects", "update", "demo", code=2)
         assert (outside / "index.html").read_text() == "outside project"
 
     help_text = run("help", "projects")["options"]
     assert "naming" in help_text and "--preview" in help_text
     assert "projects open NAME" in help_text
+    assert "projects update NAME" in help_text
     assert "projects" in run("capabilities")["data"]
     assert run("capabilities")["data"]["projects"]["open"] == "slopfab projects open NAME"
+    assert run("capabilities")["data"]["projects"]["update"] == "slopfab projects update NAME"
     assert "project" in run("schema")["data"]["properties"]
 
 print("PASS: projects, safe paths, versions, clip edits, naming contract, HTML embedding and generation planning")

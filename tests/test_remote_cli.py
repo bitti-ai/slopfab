@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -154,6 +155,9 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     assert Path(generated["artifacts"][0]["local"]).parent == Path(generated["artifacts"][1]["local"]).parent
     assert len(generated["project_items"]) == 2
     assert Path(generated["index_path"]).is_file()
+    page = Path(generated["index_path"]).read_text(encoding="utf-8")
+    embedded = json.loads(re.search(r'<script id="project-data" type="application/json">(.*?)</script>', page, re.S)[1])
+    assert len(embedded["items"]) == 2  # Imports rebuild the page without a separate update call.
     assert len(json.loads(receipt.read_text())["project_items"]) == 2
     run("fetch", str(receipt))
     project = run("projects", "show", "demo")["project"]

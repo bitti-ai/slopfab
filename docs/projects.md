@@ -8,19 +8,33 @@ favicon and links into the project folder. The CLI embeds the
 executable is installed by itself. No server, CDN, account or browser-to-agent
 connection is required.
 
+**For page content, the agent edits only `output/NAME/project.json`.** The HTML,
+its layout/template and `PROJECT.md` are generated files, not editing surfaces.
+Run `slopfab projects update NAME` after each JSON edit to build `output/NAME.html`
+from the data and the executable's bundled template. Each build replaces the
+whole page, so hand-edited HTML/layout changes are discarded. The page embeds
+the JSON and works offline without fetching a separate file.
+
+Rebuild whenever new generated media or a browser preview is ready to show the
+user. Generation with `--project NAME`, media registration, item updates and
+remote project imports already do this automatically. For externally generated
+media, register it with `projects add`/`projects update NAME ITEM_ID`, or add its
+data to `project.json` and run `projects update NAME` before sharing the page.
+
 ```sh
 slopfab projects create launch-film --title "Launch film"
 slopfab image generate --project launch-film --prompt "A quiet city at dusk"
 slopfab video generate --project launch-film --prompt "A slow camera move over the city"
 slopfab audio generate --project launch-film --prompt "Warm ambient synths" --duration 10
 slopfab projects show launch-film
+slopfab projects update launch-film
 slopfab projects open launch-film
 ```
 
 Use `slopfab projects open NAME` to open `NAME.html` in the default browser,
 or open the returned `index_path` yourself. The command supports `--output-dir`
 and the configured output directory. If the page is missing, rebuild it with
-`slopfab projects render NAME`. The page shows images, video and
+`slopfab projects update NAME` (`projects render NAME` remains an alias). The page shows images, video and
 music with custom playback controls, filters, a clip sequence and generation
 details. The Clips and Generation prompts sections span the page width.
 Select an item and choose Edit, Regenerate or Remove. Edit starts with an empty
@@ -44,18 +58,58 @@ even when an older item receives a replacement. Videos with registered clips
 take priority over standalone library videos. Older manifests without this field
 fall back to registration order; every item uses its current registered version.
 
-The **Generation prompts** panel beneath the preview shows the selected item's
+The **Generation prompts** panel beneath Project library shows the selected item's
 prompt, negative prompt when supplied, and music lyrics. Copy each input directly
 or select an earlier version to inspect its saved text; the media preview and edit
 actions continue to target the current item. New generations save resolved text
 in `generation.prompts`, including prompt files and request/music settings. Older
 items fall back to their recorded prompt and saved request, labeled accordingly.
 Missing text is never reconstructed from a file that may have changed. Rebuild
-existing pages with `slopfab projects render NAME` to use the updated view.
+existing pages with `slopfab projects update NAME` to use the updated view.
 
 Use `--agent` for JSON responses and generation progress. Project management
 does not require model weights or a GPU. The DLL and generation engine have no
 project dependency.
+
+## Editing page data
+
+`project.json` contains `schema_version: 1`, a positive integer `revision`, the
+project `name`, display `title`, and an `items` array. For example:
+
+```json
+{
+  "schema_version": 1,
+  "revision": 2,
+  "name": "launch-film",
+  "title": "Launch film",
+  "items": [
+    {
+      "id": "cover",
+      "kind": "image",
+      "title": "City at dusk",
+      "file": "assets/cover/v1/source.png",
+      "prompt": "A quiet city at dusk",
+      "version": 1,
+      "removed": false,
+      "history": []
+    }
+  ]
+}
+```
+
+Read the existing file and preserve its other items, IDs, recipes and history.
+Increment `revision` after a direct edit. `file` and optional `preview` are exact
+paths inside the project folder. Item kinds are `image`, `video`, `music` or
+`clip`; clips also need a parent video ID and may specify `position`, `start`
+and `end`. Keep replaced versions in `history`; mark a changed clip's parent
+`needs_rebuild: true` until its assembled video is replaced. The registration
+commands manage revisions, history and these flags for you.
+
+`projects update NAME [--output-dir DIR] [--if-revision N]` validates the JSON
+and rebuilds the page and generated guide without changing `project.json` or
+media files. Invalid data leaves the previous page intact. No item ID is needed
+to rebuild; `projects update NAME ITEM_ID [options]` still edits an individual
+item and then rebuilds automatically.
 
 ## Output directory and filenames
 
@@ -90,7 +144,7 @@ on every platform.
   `projects update`. Their `--file` and `--preview` arguments are relative to
   the command's working directory. The CLI copies them into the naming layout;
   files already at the exact canonical destination are registered in place.
-- Registration refreshes `NAME.html` and `PROJECT.md`. Use `projects render`
+- Registration refreshes `NAME.html` and `PROJECT.md`. Use `projects update NAME`
   to recover/rebuild the page without modifying the manifest.
 - Always copy the final generation result directly into the configured output
   folder as `NAME.EXT`, using the project name and appropriate media extension

@@ -1,4 +1,4 @@
-11
+12
 
 # Slopfab media generation
 
@@ -81,16 +81,22 @@ OUTPUT/
   PROJECT.html               previews and copyable edit prompts (embedded favicon)
   PROJECT.EXT                final generation result (e.g. PROJECT.mp4)
   PROJECT/
-    PROJECT.md               workflow and filename rules
-    project.json             exact paths, IDs, recipes and history
+    PROJECT.md               generated workflow and filename rules (read only)
+    project.json             sole editable page data: paths, IDs, recipes and history
     assets/ITEM_ID/vVERSION/
       source.EXT
       preview.EXT             optional browser preview
 ```
 
 Call `slopfab projects open NAME` for the project once, to open OUTPUT/NAME.html in the browser.
-Keep the original .html template, do not rewrite it, only add data to it.
-Read the project instructions and current manifest before edits. Keep working files
+For review-page content, edit only OUTPUT/NAME/project.json. Never modify the
+generated .html file, its layout/template, or PROJECT.md. Read the project
+instructions and JSON before editing; increment revision after a direct JSON edit.
+Run `slopfab projects update NAME` to construct OUTPUT/NAME.html from that JSON
+using the bundled template. Do this every time new generated media or a preview
+is ready to show the user, and after every direct JSON edit. Generation with
+--project and media registration rebuild the page automatically.
+Keep working files
 and versioned assets inside the project folder.
 Always copy the final generation result directly into the configured output folder,
 using the project name and the appropriate media extension: OUTPUT/NAME.mp4,
@@ -101,10 +107,10 @@ too. The page uses exact manifest paths, not a folder scan. Preserve stable IDs,
 previous versions, unrelated items and saved latents needed for continuation.
 Use external FFmpeg for browser-friendly previews of native Y4M/PPM, keeping
 video soundtracks synchronized. After clip changes, rebuild and register the
-parent video and refresh the page.
+parent video and run `slopfab projects update NAME` before showing the page.
 
-Keep the page's main player
-defaulted to the latest full assembled video, with FULL VIDEO first in the clip
+The generated template defaults the main player
+to the latest full assembled video, with FULL VIDEO first in the clip
 list and clip selections playing in that main view. Clip cards show a single
 frame decoded by the browser from their video, without pregenerated thumbnail
 images. Other library assets open in a popup over the page.

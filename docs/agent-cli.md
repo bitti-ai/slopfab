@@ -79,6 +79,10 @@ For generation requests, start with `slopfab projects create NAME` and pass
 `--project NAME` to generation. Projects provide an offline review page with
 copyable agent edit prompts, saved recipes, clip relationships and explicit
 filename rules. See [projects](projects.md) or `slopfab help projects`.
+For review-page content, edit only the project's `project.json`, then run
+`slopfab projects update NAME` to build `output/NAME.html` from the bundled
+template. Never edit the generated HTML or its layout. Project generation and
+media registration rebuild the page automatically whenever new results are added.
 
 Before writing prompts, retrieve the matching [model prompting guide](prompting.md)
 with `slopfab prompts list` and `slopfab prompts get MODEL USE_CASE`.
