@@ -10,7 +10,7 @@ exe = str(Path(sys.argv[1]).resolve())
 
 
 def run(*args, success=True):
-    result = subprocess.run([exe, 'generate', '--transformer', 'missing-lcs-test.safetensors',
+    result = subprocess.run([exe, 'requests', 'run', '--transformer', 'missing-lcs-test.safetensors',
                              '--dry-run', *map(str, args)], capture_output=True, text=True)
     assert (result.returncode == 0) == success, (args, result.stdout, result.stderr)
 

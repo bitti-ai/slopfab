@@ -12,7 +12,7 @@ exe = str(Path(sys.argv[1]).resolve())
 
 def run(*args, success=True):
     result = subprocess.run(
-        [exe, "generate", "--prompt", "test", "--transformer", "missing-lock-fixture.safetensors",
+        [exe, 'requests', 'run', "--prompt", "test", "--transformer", "missing-lock-fixture.safetensors",
          "--frames", "17", "--dry-run", *map(str, args)], capture_output=True, text=True)
     if (result.returncode == 0) != success:
         raise AssertionError((args, result.returncode, result.stdout, result.stderr))

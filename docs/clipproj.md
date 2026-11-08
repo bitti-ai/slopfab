@@ -58,7 +58,7 @@ projection layout and encoder dimensions without loading GPU weights.
 To encode once and reuse the result:
 
 ```sh
-slopfab encode-text --prompt "A red ball on a wooden table." \
+slopfab conditioning encode-text --prompt "A red ball on a wooden table." \
   --text-encoder /models/qwen3vl_4b_int8_convrot.safetensors \
   --clip-projection /models/mmh3-4b-ClipProj-v3.1.safetensors \
   --output ball-prompt.safetensors

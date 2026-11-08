@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory() as directory:
         return subprocess.run([exe, *args], cwd=root, capture_output=True,
                               encoding="utf-8", timeout=20)
 
-    help_result = run("help", "transcribe")
+    help_result = run("help", 'audio', 'transcribe')
     assert help_result.returncode == 0, help_result.stderr
     assert "--word-timestamps" in help_result.stdout
     assert "docs/" not in help_result.stdout
@@ -22,14 +22,14 @@ with tempfile.TemporaryDirectory() as directory:
         wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         wav.writeframes(bytes(3200))
     (root / "model.safetensors").write_bytes(b"invalid checkpoint")
-    base = ["transcribe", "audio.wav", "--model", "model.safetensors"]
+    base = ['audio', 'transcribe', "audio.wav", "--model", "model.safetensors"]
     for args, message in [
-        (["transcribe"], "use transcribe"),
+        (['audio', 'transcribe'], "use transcribe"),
         (base + ["--beam-size", "0"], "beam size"),
         (base + ["--backend", "invalid"], "backend must"),
         (base + ["--format", "invalid"], "format must"),
         (base + ["--out", "audio.wav"], "must differ"),
-        (["transcribe", "audio.wav", "--model", ".", "--out", "model.safetensors"], "must differ"),
+        (['audio', 'transcribe', "audio.wav", "--model", ".", "--out", "model.safetensors"], "must differ"),
         (base + ["--out"], "missing value"),
         (base + ["--unknown"], "unknown transcribe option"),
     ]:
@@ -39,9 +39,9 @@ with tempfile.TemporaryDirectory() as directory:
     result = run(*base, "--out", "existing.txt")
     assert result.returncode != 0
     assert (root / "existing.txt").read_text() == "keep this"
-    result = run("--agent", "transcribe", "missing.wav", "--model", "missing.safetensors")
+    result = run("--agent", 'audio', 'transcribe', "missing.wav", "--model", "missing.safetensors")
     events = [json.loads(line) for line in result.stdout.splitlines()]
     assert result.returncode != 0 and events[-1]["type"] == "error", result.stdout
-    result = run("--agent", "capabilities")
+    result = run("--agent", 'system', 'capabilities')
     assert result.returncode == 0 and '"transcription"' in result.stdout, result.stderr
 print("Whisper CLI help, validation, output protection and agent errors passed")

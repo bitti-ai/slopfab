@@ -14,7 +14,7 @@ checkpoint has a different timestep/AdaLN contract.
 Add these options to a normal generation command:
 
 ```powershell
-slopfab generate --prompt "A person walking through a sunlit garden" `
+slopfab requests run --prompt "A person walking through a sunlit garden" `
   --refmod references/person.safetensors --refmod-strength 1 --refmod-copies 2 `
   --refmod references/style.safetensors --refmod-strength 0.7
 ```
@@ -70,15 +70,15 @@ for (const auto& mod : slopfab::RefModBundle::load("hero.safetensors").members)
 transformer. Supply images, video files, audio files, or a mixture:
 
 ```powershell
-slopfab encode-refmod --reference-image portrait.png `
+slopfab conditioning encode-refmod --reference-image portrait.png `
   --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors `
   --output portrait.safetensors
 
-slopfab encode-refmod --reference-audio voice.wav `
+slopfab conditioning encode-refmod --reference-audio voice.wav `
   --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors `
   --output voice.safetensors
 
-slopfab encode-refmod --reference-image portrait.png --reference-video motion.mp4 `
+slopfab conditioning encode-refmod --reference-image portrait.png --reference-video motion.mp4 `
   --reference-audio voice.wav --name character --description "Appearance, motion and voice" `
   --output character.safetensors
 ```
@@ -177,7 +177,7 @@ Package pre-encoded image, video and audio references into one upstream-compatib
 version-5 file. This operation uses no model weights or GPU:
 
 ```powershell
-slopfab bundle-refmods --refmod face.safetensors --refmod motion.safetensors `
+slopfab conditioning bundle-refmods --refmod face.safetensors --refmod motion.safetensors `
   --refmod voice.safetensors --name hero --description "Appearance, motion and voice" `
   --output hero.safetensors
 ```
@@ -214,11 +214,11 @@ Encode text once and save its complete H3 conditioning without loading a
 diffusion transformer or either VAE:
 
 ```powershell
-slopfab encode-text --prompt "A red bird lands on a branch." `
+slopfab conditioning encode-text --prompt "A red bird lands on a branch." `
   --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors `
   --output prompt.safetensors
 
-slopfab generate --prompt-embedding prompt.safetensors --refmod hero.safetensors
+slopfab requests run --prompt-embedding prompt.safetensors --refmod hero.safetensors
 ```
 
 `--prompt-file` reads a UTF-8 file instead of `--prompt` (an initial BOM is

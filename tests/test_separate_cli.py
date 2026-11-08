@@ -109,13 +109,13 @@ with tempfile.TemporaryDirectory(prefix="slopfab-separate-") as directory:
         assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
         return result
 
-    assert "--two-stems" in run("help", "separate").stdout
-    assert '"separation"' in run("--agent", "capabilities").stdout
+    assert "--two-stems" in run("help", 'audio', 'separate').stdout
+    assert '"separation"' in run("--agent", 'system', 'capabilities').stdout
     audio = [1.3 * math.sin(t * 0.07 + c) for t in range(3501) for c in range(2)]
     audio = list(struct.unpack("<" + "f"*len(audio), struct.pack("<" + "f"*len(audio), *audio)))
     wav(root / "song.wav", audio)
     checkpoint(root / "model.safetensors")
-    base = ["separate", "song.wav", "--model", "model.safetensors", "--segment", "0.05"]
+    base = ['audio', 'separate', "song.wav", "--model", "model.safetensors", "--segment", "0.05"]
     result = run("--agent", *base, "--out", "four")
     events = [json.loads(line) for line in result.stdout.splitlines()]
     assert events[-1]["ok"] and len(events[-1]["artifacts"]) == 4
@@ -145,13 +145,13 @@ with tempfile.TemporaryDirectory(prefix="slopfab-separate-") as directory:
         run(*base, *extra, ok=False)
     for value in ("0", "8", "-2", "nan", "inf", "0.2junk"):
         run(*base[:-2], "--segment", value, ok=False)
-    run("separate", ok=False)
-    run("--agent", "separate", "missing.wav", "--model", "missing.safetensors", ok=False)
+    run("audio", "separate", ok=False)
+    run("--agent", 'audio', 'separate', "missing.wav", "--model", "missing.safetensors", ok=False)
     wav(root / "vocals.wav", audio)
-    result = run("separate", "vocals.wav", "--model", "model.safetensors", "--out", ".", "--overwrite", ok=False)
+    result = run("audio", "separate", "vocals.wav", "--model", "model.safetensors", "--out", ".", "--overwrite", ok=False)
     assert "must differ" in result.stderr
     checkpoint(root / "bad.safetensors", mutate=lambda tensors: tensors.pop("encoder.0.conv.weight"))
-    run("separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False)
+    run("audio", "separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False)
     assert not list((root / "bad").glob("*.wav"))
     assert not list(root.rglob("*.tmp")) and not list(root.rglob("*.slopfab-reserved"))
     for mutation, message in [
@@ -160,27 +160,27 @@ with tempfile.TemporaryDirectory(prefix="slopfab-separate-") as directory:
         (lambda t: t.update({"tdecoder.3.conv_tr.bias": ([8], [float("nan")]*8)}), "non-finite tensor"),
     ]:
         checkpoint(root / "bad.safetensors", mutate=mutation)
-        result = run("separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False)
+        result = run("audio", "separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False)
         assert message in result.stderr, result.stderr
     checkpoint(root / "bad.safetensors", metadata={"sources": "vocals,other,bass,drums"})
-    assert "incompatible metadata" in run("separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False).stderr
+    assert "incompatible metadata" in run("audio", "separate", "song.wav", "--model", "bad.safetensors", "--out", "bad", ok=False).stderr
     # Silence, a single mono sample, and non-finite input must all terminate safely.
     wav(root / "silence.wav", [0.] * 16, channels=1)
-    run("separate", "silence.wav", "--model", "model.safetensors", "--out", "silence")
+    run("audio", "separate", "silence.wav", "--model", "model.safetensors", "--out", "silence")
     assert all(v == 0 for v in read_wav(root / "silence/vocals.wav"))
     wav(root / "one.wav", [0.25], channels=1)
-    run("separate", "one.wav", "--model", "model.safetensors", "--segment", "0.05", "--out", "one")
+    run("audio", "separate", "one.wav", "--model", "model.safetensors", "--segment", "0.05", "--out", "one")
     assert len(read_wav(root / "one/vocals.wav")) == 2
     wav(root / "nan.wav", [float("nan"), 0.])
-    run("separate", "nan.wav", "--model", "model.safetensors", ok=False)
+    run("audio", "separate", "nan.wav", "--model", "model.safetensors", ok=False)
     wav(root / "rate.wav", [0.1 * math.sin(t * 0.1) for t in range(960)], channels=1, rate=48000)
-    run("separate", "rate.wav", "--model", "model.safetensors", "--ffmpeg", "missing-ffmpeg", ok=False)
+    run("audio", "separate", "rate.wav", "--model", "model.safetensors", "--ffmpeg", "missing-ffmpeg", ok=False)
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg:
         subprocess.run([ffmpeg, "-nostdin", "-v", "error", "-i", str(root / "rate.wav"),
                         str(root / "compressed.flac")], check=True, timeout=20)
         for source in ("rate.wav", "compressed.flac"):
-            run("separate", source, "--model", "model.safetensors", "--segment", "0.05",
+            run("audio", "separate", source, "--model", "model.safetensors", "--segment", "0.05",
                 "--out", source + "-stems", "--ffmpeg", ffmpeg)
             assert len(read_wav(root / (source + "-stems") / "vocals.wav")) == 882 * 2
     assert not list(root.rglob("*.tmp")) and not list(root.rglob("*.slopfab-reserved"))

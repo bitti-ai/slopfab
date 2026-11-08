@@ -10,7 +10,7 @@ Everything here is grounded in:
 - `D:\Projects\slopfab\ref\FL2VA\video_vae\source\config.json` — **the constructor config that actually built the checkpoint**
 - `D:\Projects\slopfab\ref\FL2VA\video_vae\config.json` — the wrapper/runtime config
 - `D:\Projects\slopfab\ref\vae\config.json` — a *re-expressed* config for the diffusers-native `AutoencoderKLMiniMaxH3` port (different module names, same model)
-- the checkpoint itself, enumerated with `slopfab.exe inspect`
+- the checkpoint itself, enumerated with `slopfab.exe models inspect`
 
 > **Read this first.** The `ref/vae/config.json` names quoted in the task brief
 > (`block_out_channels`, `spatial_downsample_factors`, `layers_per_block`,

@@ -44,26 +44,26 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     run("remote", "update", "gpu")
     assert not any(e["type"] == "remote_update" for e in run.events)
     prompt = "Quotes ' \" $(echo bad) `bad` & | ; \u00e5\n--host"
-    dry = run("generate", "--host", "gpu", "image", "--prompt", prompt, "--dry-run")
+    dry = run("requests", "run", "--host", "gpu", "image", "--prompt", prompt, "--dry-run")
     assert dry["ok"] and dry["artifacts"] == []
-    assert dry["arguments"][3] == prompt
+    assert dry["arguments"][4] == prompt
     grouped = run("image", "generate", "--host", "gpu", "--prompt", prompt, "--dry-run")
     assert grouped["ok"] and grouped["arguments"][3] == prompt
     assert dry["remote_result"]["type"] == "result"
-    version = run("version", "--remote", "gpu")
+    version = run("system", "version", "--remote", "gpu")
     assert version["remote_result"]["version"]
-    assert run("help", "generate", "--host", "gpu")["remote_result"]["type"] == "help"
-    assert "models" in run("capabilities", "--host", "gpu")["remote_result"]["data"]
+    assert run("help", 'requests', 'run', "--host", "gpu")["remote_result"]["type"] == "help"
+    assert "models" in run("system", "capabilities", "--host", "gpu")["remote_result"]["data"]
     run("projects", "create", "remote-project", "--host", "gpu")
     assert run("projects", "show", "remote-project", "--host", "gpu")["remote_result"]["project"]["name"] == "remote-project"
     assert run("projects", "show", "remote-project", "--host", "gpu")["artifacts"] == []
     run("settings", "get", "--host", "gpu")
     job_options = ["--host", "gpu", "--jobs-dir", "test-jobs"]
-    submitted = run("submit", "image", "--prompt", "test", "--dry-run", *job_options)
+    submitted = run("jobs", "submit", "image", "--prompt", "test", "--dry-run", *job_options)
     job_id = submitted["job"]["job_id"]
-    assert run("wait", job_id, "--timeout", "15", *job_options)["job"]["state"] == "succeeded"
-    assert run("status", job_id, *job_options)["job"]["state"] == "succeeded"
-    assert run("cancel", job_id, *job_options)["job"]["state"] == "succeeded"
+    assert run("jobs", "wait", job_id, "--timeout", "15", *job_options)["job"]["state"] == "succeeded"
+    assert run("jobs", "status", job_id, *job_options)["job"]["state"] == "succeeded"
+    assert run("jobs", "cancel", job_id, *job_options)["job"]["state"] == "succeeded"
     # Stop the detached worker and wait for its lock before removing the fixture.
     job_store = remote / "test-jobs"
     (job_store / "stop").touch()
@@ -81,25 +81,25 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
             time.sleep(.1)
     else:
         raise AssertionError("remote worker did not stop")
-    run("version", "--host", "missing", code=3)
+    run("system", "version", "--host", "missing", code=3)
     run("remote", "generate", code=2)
     run("projects", "open", "remote-project", "--host", "gpu", code=2)
     run("remote", "setup", "bad", "--host", "-oProxyCommand=bad", "--directory", str(remote), code=2)
     run("remote", "setup", "bad", "--platform", "invalid", "--directory", str(remote), code=2)
-    run("generate", "--host", "gpu", "--unknown-option", code=2)
-    run("version", "--host", "gpu", code=255, extra_env={"SLOPFAB_TEST_SSH_FAIL": "1"})
+    run("requests", "run", "--host", "gpu", "--unknown-option", code=2)
+    run("system", "version", "--host", "gpu", code=255, extra_env={"SLOPFAB_TEST_SSH_FAIL": "1"})
 
     # A changed bundle is installed automatically, without replacing a running
     # version. Appending data preserves the native executable's loadability.
     with bundled.open("ab") as stream:
         stream.write(b"remote update fixture")
-    run("version", "--host", "gpu")
+    run("system", "version", "--host", "gpu")
     assert any(e["type"] == "remote_update" for e in run.events)
     updated_hash = hashlib.sha256(bundled.read_bytes()).hexdigest()
     updated = remote / ".slopfab/bin" / updated_hash / original.name
     assert updated.read_bytes() == bundled.read_bytes() and installed.exists()
     updated.write_bytes(b"corrupt executable")
-    run("version", "--host", "gpu")
+    run("system", "version", "--host", "gpu")
     assert updated.read_bytes() == bundled.read_bytes()
 
     # General commands run in the remote project; explicit result descriptors
@@ -112,14 +112,14 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     assert Path(scripted["data"]["output"]).read_text() == "remote data"
     assert scripted["remote_result"]["data"]["output"] == "script-result.txt"
     assert run("run", "--host", "gpu", "--eval", "export default () => 'metadata only'")["artifacts"] == []
-    explicit = run("version", "--host", "gpu", "--download", "script-result.txt")
+    explicit = run("system", "version", "--host", "gpu", "--download", "script-result.txt")
     assert len(explicit["artifacts"]) == 1
     frame = remote / "frame.y4m"
     frame.write_bytes(b"YUV4MPEG2 W2 H2 F24:1 Ip A1:1 C420jpeg\nFRAME\n" + bytes([100]*4 + [128,128]))
     extracted = run("video", "frames", str(frame), "--out", "frame.png", "--host", "gpu")
     assert len(extracted["artifacts"]) == 1
     assert (Path(extracted["receipt"]).parent / extracted["artifacts"][0]["local"]).read_bytes().startswith(b"\x89PNG")
-    options = ["generate", "--host", "gpu"]
+    options = ['requests', 'run', "--host", "gpu"]
     # Every possible byte, including CR/LF, NUL, Ctrl-Z and invalid UTF-8. The
     # actual native worker and Windows PowerShell launch must preserve them.
     video = remote / "scene å & '.y4m"
@@ -159,10 +159,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     embedded = json.loads(re.search(r'<script id="project-data" type="application/json">(.*?)</script>', page, re.S)[1])
     assert len(embedded["items"]) == 2  # Imports rebuild the page without a separate update call.
     assert len(json.loads(receipt.read_text())["project_items"]) == 2
-    run("fetch", str(receipt))
+    run("remote", "fetch", str(receipt))
     project = run("projects", "show", "demo")["project"]
     assert len(project["items"]) == 2  # Idempotent project registration.
-    assert project["items"][0]["generation"]["arguments"][3] == prompt
+    assert project["items"][0]["generation"]["arguments"][4] == prompt
     assert len(project["items"][0]["generation"]["artifacts"]) == 2
     assert len(project["items"][1]["generation"]["artifacts"]) == 1
 
@@ -173,18 +173,18 @@ with tempfile.TemporaryDirectory(prefix="slopfab-remote-") as temporary:
     failed_receipt = next(downloads.glob("*/remote.json"))
     assert not list(failed_receipt.parent.rglob("*.tmp"))
     assert not list(failed_receipt.parent.rglob("*.y4m"))
-    resumed = run("fetch", str(failed_receipt))
+    resumed = run("remote", "fetch", str(failed_receipt))
     assert all(a["downloaded"] for a in resumed["artifacts"])
     local = failed_receipt.parent / resumed["artifacts"][0]["local"]
     local.write_bytes(b"x" * local.stat().st_size)
-    run("fetch", str(failed_receipt), code=6)
+    run("remote", "fetch", str(failed_receipt), code=6)
     assert local.read_bytes().startswith(b"xxx")
 
     # A receipt is not allowed to write outside its run directory.
     malicious = json.loads(failed_receipt.read_text())
     malicious["artifacts"][0]["local"] = "../../outside.png"
     failed_receipt.write_text(json.dumps(malicious))
-    run("fetch", str(failed_receipt), code=6)
+    run("remote", "fetch", str(failed_receipt), code=6)
     assert not (root / "outside.png").exists()
     write_reply([dict(artifacts[0], path="C:/output/NUL.png")])
     run(*options, "video", code=6, extra_env={"SLOPFAB_TEST_REPLY": str(reply)})

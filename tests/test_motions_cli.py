@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix='slopfab-motions-') as temp:
         frame:({width,height,progress})=>m.svg(width,height,
           m.element('rect',{x:8+Math.round(progress*24),y:8,width:16,height:16,fill:'#ff0000','fill-opacity':0.5}))};
     """,encoding='utf-8')
-    assert run('capabilities')['data']['motions']['cli_only']
+    assert run('system', 'capabilities')['data']['motions']['cli_only']
     assert run('motions','--help')['type']=='help'
     (root/'ünicode').mkdir()
     result=motion('frame','ünicode/frame.png','--ffmpeg','missing-ffmpeg')['data']

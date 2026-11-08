@@ -58,7 +58,7 @@ author: Example studio
 1. Ask the user which product to depict and where to save the image if unspecified.
 2. Run `slopfab models list` and select an available image model.
 3. Describe the product on a plain background with soft studio lighting.
-4. Use `slopfab help generate` to check options, then generate a PNG image.
+4. Use `slopfab help requests run` to check options, then generate a PNG image.
 5. Return the output path and the prompt used.
 
 When calling slopfab from an agent, add its global `--agent` parameter.

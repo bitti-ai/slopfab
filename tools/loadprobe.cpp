@@ -536,7 +536,7 @@ int main(int argc, char** argv) {
   std::printf("== %s ==\n", path.c_str());
 
   // Evict and exit. This is how a *different* process gets a cold cache to
-  // measure against — `slopfab generate --bench-load` cannot drop its own file
+  // measure against — `slopfab requests run --bench-load` cannot drop its own file
   // and should not learn how. Reports the before and after rate so the run it
   // precedes can be called cold on evidence rather than on intent.
   if (mode == "evict") {

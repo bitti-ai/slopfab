@@ -115,7 +115,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-prompts-") as temporary:
         run("prompts", "select", *args, code=2)
     run("prompts", "list", "--model", "unknown", code=2)
     run("prompts", "get", "krea2", "fl2va", code=2)
-    assert run("capabilities")["data"]["prompting"]["offline"]
+    assert run("system", "capabilities")["data"]["prompting"]["offline"]
     # Help is available without any models or the original catalog file nearby.
     result = subprocess.run([exe, "--agent", "--config", str(config), "help", "prompts"],
                             cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30)

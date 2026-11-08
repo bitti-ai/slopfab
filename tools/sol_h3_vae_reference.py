@@ -51,7 +51,7 @@ def main():
     for t, h, w in cases:
         name = f"t{t}-h{h}-w{w}"
         native = output / f"{name}-native-{args.backend}.safetensors"
-        subprocess.run([args.cli, "decode", "--vae", args.weights, "--inference-backend", args.backend,
+        subprocess.run([args.cli, 'video', 'decode', "--vae", args.weights, "--inference-backend", args.backend,
                         "--vulkan-arithmetic", "portable",
                         "--latent", str(output / f"{name}-latent.safetensors"),
                         "--dump", str(native), "--out", str(output / f"{name}.y4m")], check=True)

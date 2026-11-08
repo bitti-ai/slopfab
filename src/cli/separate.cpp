@@ -113,7 +113,7 @@ int separate_command(const std::vector<std::string>& args) {
   }
   if (input.empty() || options.model.empty())
     throw CliError("INVALID_REQUEST",
-                   "use separate FILE --model MODEL.safetensors; see slopfab help separate");
+                   "use separate FILE --model MODEL.safetensors; see slopfab help audio separate");
   if (backend != "auto" && backend != "cpu")
     throw CliError("INVALID_REQUEST", "Demucs currently supports --backend cpu or auto (CPU)");
   const std::vector<std::string> sources{"drums", "bass", "other", "vocals"};

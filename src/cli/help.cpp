@@ -71,6 +71,16 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"jobs", "slopfab jobs COMMAND [options]", "Submit and manage persistent generation jobs.",
+     "  submit  queue generation\n  status  inspect a job\n  wait    wait for completion\n  cancel  cancel a job\n  worker  process the queue\n"},
+    {"models", "slopfab models COMMAND [options]", "List, inspect, compare and prepare model files.",
+     "  list          installed files and aliases\n  inspect       checkpoint tensors\n  compare       compare checkpoints\n  prepare-lora  prepare an adapter\n"},
+    {"conditioning", "slopfab conditioning COMMAND [options]", "Prepare text and multimedia conditioning.",
+     "  tokenize\n  encode-text\n  encode-refmod\n  bundle-refmods\n"},
+    {"system", "slopfab system COMMAND", "Inspect hardware, capabilities and executable information.",
+     "  doctor\n  devices\n  capabilities\n  version\n"},
+    {"requests", "slopfab requests COMMAND [options]", "Run and validate shared generation requests.",
+     "  run       generate from arguments or JSON\n  validate  validate without inference\n  schema    generation JSON schema\n"},
     {"update", "slopfab update [--check]", "Download and install the latest GitHub release.",
      "  --check  report the latest stable version without downloading or installing\n"
      "Verifies GitHub's package SHA256; replaces executables and bundled download/licenses mods.\n"
@@ -88,7 +98,7 @@ const CommandHelp kCommands[] = {
     {"image", "slopfab image COMMAND [options]", "Generate, edit and restore still images.",
      "  generate  generate or edit an image\n  upscale   restore an image\n"
      "Use slopfab help image COMMAND for options.\n"},
-    {"syncnet", "slopfab syncnet VIDEO --model syncnet_v2.model --face-model sfd_face.pth [options]",
+    {"syncnet", "slopfab video syncnet VIDEO --model syncnet_v2.model --face-model sfd_face.pth [options]",
      "Measure lip synchronization per face track using native SyncNet and S3FD.",
      "  --model FILE          only SHA256 961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442\n"
      "  --face-model FILE     pinned upstream S3FD .pth or standard FP32 S3FD safetensors\n"
@@ -117,13 +127,13 @@ const CommandHelp kCommands[] = {
      "  update NAME                 verify/upload the current bundled executable\n"
      "  remove NAME                 forget a connection; retain remote files\n"
      "Execute regular commands with --host NAME (alias --remote NAME), for example:\n"
-     "  slopfab generate --host gpu image --prompt \"A red apple\"\n"
-     "  slopfab devices --host gpu\n"
+     "  slopfab requests run --host gpu image --prompt \"A red apple\"\n"
+     "  slopfab system devices --host gpu\n"
      "Each invocation verifies the remote binary checksum and installs an update when needed.\n"
      "Models, sources and inputs stay remote. See docs/remote.md for setup and packaging.\n"},
-    {"fetch", "slopfab fetch PATH/remote.json", "Retry result downloads without rerunning the remote command.",
+    {"fetch", "slopfab remote fetch PATH/remote.json", "Retry result downloads without rerunning the remote command.",
      "Uses the saved SSH connection and checksums. Verified local files are skipped.\n"},
-    {"separate", "slopfab separate FILE --model MODEL.safetensors [options]",
+    {"separate", "slopfab audio separate FILE --model MODEL.safetensors [options]",
      "Separate vocals or four stems with native HTDemucs from safetensors weights.",
      "  --model FILE                standard HTDemucs state_dict safetensors (or model folder)\n"
      "  --out DIRECTORY             default output/<input-name>-stems\n"
@@ -136,7 +146,7 @@ const CommandHelp kCommands[] = {
      "  --overwrite                 replace existing stems\n"
      "Outputs are stereo 44.1kHz float32 WAV, without clipping or per-stem normalization.\n"
      "Two-stem accompaniment is the input minus the selected stem. See docs/separation.md.\n"},
-    {"transcribe", "slopfab transcribe FILE --model MODEL.safetensors [options]",
+    {"transcribe", "slopfab audio transcribe FILE --model MODEL.safetensors [options]",
      "Transcribe speech or song vocals locally with native Whisper and embedded model assets.",
      "  --model FILE                standard Hugging Face Whisper safetensors (or model folder)\n"
      "  --variant NAME              auto; use large-v1 or large-v2 for their ambiguous shapes\n"
@@ -152,7 +162,7 @@ const CommandHelp kCommands[] = {
      "Models: tiny/base/small/medium (including .en), large-v1/v2/v3 and large-v3-turbo.\n"
      "Only weights are needed; tokenizer, mel filters and standard profiles are embedded.\n"
      "Songs use the same recognizer; no vocal separation is applied. Word timing is approximate.\n"},
-    {"frames", "slopfab frames VIDEO --out IMAGE.png [options]",
+    {"frames", "slopfab video frames VIDEO --out IMAGE.png [options]",
      "Extract a video frame or a downscaled contact sheet; capture generation samples in RAM.",
      "  VIDEO --out IMAGE.png        extract frame zero by default\n"
      "  --frame N | --time SECONDS   zero-based frame index or nearest timestamp\n"
@@ -255,14 +265,14 @@ const CommandHelp kCommands[] = {
      "After clip edits, rebuild the parent video externally and register it with projects update --file.\n"
      "For Y4M/PPM, create a browser preview with external FFmpeg and register --preview.\n"
      "Open NAME.html locally: actions generate prompts to paste into an agent; the page executes no commands.\n"},
-    {"upscale-latents", "slopfab upscale-latents --input FILE --out FILE [options]",
+    {"upscale-latents", "slopfab video upscale-latents --input FILE --out FILE [options]",
      "upscale an existing H3 latent archive without diffusion or decoding",
      "  --model FILE               H3 3D conv v1 checkpoint (default under weights/)\n"
      "  --scale N                  1..4, default 2; dimensions round to multiples of 32\n"
      "  --inference-backend NAME   cuda or vulkan\n"
      "  --no-chunking              process all latent frames together\n"
      "Output is a new H3 latent archive with resized video and unchanged audio.\n"},
-    {"upscale", "slopfab upscale --input FILE --out FILE --upscale-method NAME [options]",
+    {"upscale", "slopfab video upscale --input FILE --out FILE --upscale-method NAME [options]",
      "restore native images or Y4M video with Real-ESRGAN or SeedVR2",
      "  --upscale-method NAME       realesrgan (default), seedvr2 (CUDA/Vulkan)\n"
      "  --upscale-model FILE        checkpoint; default path depends on method\n"
@@ -282,12 +292,12 @@ const CommandHelp kCommands[] = {
      "Output: .png/.ppm for images; .y4m for video. Convert compressed media externally.\n"
      "Video input: BT.709 limited-range progressive Y4M, 8-bit 4:2:0.\n"
      "Decoded input is limited to 2 GiB; use short clips. Audio remains a separate WAV.\n"},
-    {"prepare-lora", "slopfab prepare-lora --adapter FILE --width N",
+    {"prepare-lora", "slopfab models prepare-lora --adapter FILE --width N",
      "prepare an adapter's AdaLN grid outside inference",
      "  --adapter FILE             adapter to update atomically\n"
      "  --width N                  base transformer hidden width\n"
      "  Requires an embedded grid or a local companion file.\n"},
-    {"generate", "slopfab generate [video|image|music] --prompt TEXT [options]",
+    {"generate", "slopfab requests run [video|image|music] --prompt TEXT [options]",
      "text to image, video and audio",
      "  --request FILE|-            versioned JSON request; excludes generation flags\n"
      "  --agent                     NDJSON progress and final result; logs on stderr\n"
@@ -527,11 +537,11 @@ const CommandHelp kCommands[] = {
      "the sequencing costs nothing measurable and is what makes every mixture of\n"
      "the four safe. Expect the first output well after the progress line starts\n"
      "moving.\n"},
-    {"inspect", "slopfab inspect <file.safetensors> [options]", "summarise a checkpoint's tensors",
+    {"inspect", "slopfab models inspect <file.safetensors> [options]", "summarise a checkpoint's tensors",
      "  --list                       print every tensor, not just a summary\n"
      "  --prefix <str>               only tensors whose name starts with <str>\n"
      "  --limit <n>                  cap listed tensors (default 40, 0 = all)\n"},
-    {"compare", "slopfab compare <reference> <actual> [options]",
+    {"compare", "slopfab models compare <reference> <actual> [options]",
      "diff two checkpoints tensor by tensor",
      "  --abs-tol <x>                absolute tolerance (default 1e-3)\n"
      "  --rel-tol <x>                relative tolerance (default 1e-2)\n"
@@ -559,11 +569,11 @@ const CommandHelp kCommands[] = {
      "both sides are finite. Matching global statistics with falling\n"
      "correlation is this project's signature of a different sample rather\n"
      "than a degraded one -- see the README.\n"},
-    {"compare-y4m", "slopfab compare-y4m <expected.y4m> <actual.y4m>",
+    {"compare-y4m", "slopfab video compare <expected.y4m> <actual.y4m>",
      "byte-compare deterministic raw video outputs",
      "Reports both headers, sizes, and the first differing byte. The command\n"
      "streams its inputs and returns non-zero for any difference.\n"},
-    {"decode", "slopfab decode --vae <f> [--latent <f>] [options]", "run the video VAE decoder",
+    {"decode", "slopfab video decode --vae <f> [--latent <f>] [options]", "run the video VAE decoder",
      "  --inference-backend cuda|vulkan  decoder backend\n"
      "  --vulkan-arithmetic portable|exact  device-feature or qualified arithmetic\n"
      "  --vae <f>                    video VAE checkpoint\n"
@@ -573,11 +583,11 @@ const CommandHelp kCommands[] = {
      "  --out <f>                    .y4m output\n"
      "  --ppm <f>                    also write frame 0 as a PPM\n"
      "  --dump <f>                   raw fp32 pixels as safetensors\n"},
-    {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>", "encode text and round-trip it",
+    {"tokenize", "slopfab conditioning tokenize [--tokenizer <f>] <text>", "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --qwen                      use base Qwen vocabulary without H3 special tokens\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
-    {"encode-refmod", "slopfab encode-refmod --reference-image <file> --output <file> [options]",
+    {"encode-refmod", "slopfab conditioning encode-refmod --reference-image <file> --output <file> [options]",
      "encode raw images, video and audio into reusable RefMods",
      "  --reference-image FILE     image input; repeatable\n"
      "  --reference-video FILE     video and optional soundtrack; repeatable\n"
@@ -592,7 +602,7 @@ const CommandHelp kCommands[] = {
      "  --output FILE              one member: v4; multiple: mixed v5 bundle\n"
      "  Video/audio input: 2..15 seconds; use native Y4M or WAV.\n"
      "  Loads only VAEs; no text encoder or diffusion transformer.\n"},
-    {"encode-text", "slopfab encode-text --prompt <text> --output <file> [options]",
+    {"encode-text", "slopfab conditioning encode-text --prompt <text> --output <file> [options]",
      "save standalone H3 prompt conditioning without loading a transformer or VAE",
      "  --prompt-file <file>         UTF-8 prompt instead of --prompt\n"
      "  --text-encoder <file>        checkpoint (otherwise discover weights/text_encoder)\n"
@@ -605,7 +615,7 @@ const CommandHelp kCommands[] = {
      "Load the resulting file using generate --prompt-embedding. It replaces the\n"
      "whole prompt conditioning; it is not an upstream text-kind RefMod.\n"},
     {"bundle-refmods",
-     "slopfab bundle-refmods --refmod <file> [--refmod <file> ...] --output <file>",
+     "slopfab conditioning bundle-refmods --refmod <file> [--refmod <file> ...] --output <file>",
      "pack existing image/video/audio RefMods into a version-5 mixed bundle",
      "  --name <text>               display name (input bundle name or output stem)\n"
      "  --description <text>        associated text metadata; not added to prompts\n"
@@ -636,33 +646,33 @@ const CommandHelp kCommands[] = {
      "Writable keys: weight_paths, models, presets; dotted keys access nested fields.\n"
      "Paths may name directories or checkpoint files. Relative paths are saved as absolute paths.\n"
      "Use --config FILE to select another settings file. GPU and model files are not required.\n"},
-    {"capabilities", "slopfab capabilities",
+    {"capabilities", "slopfab system capabilities",
      "Discover tasks, model families, backends and native formats.",
      "No weights or GPU initialization. Next: models list, doctor, schema.\n"},
-    {"schema", "slopfab schema", "Get the version-1 generation request JSON Schema.",
+    {"schema", "slopfab requests schema", "Get the version-1 generation request JSON Schema.",
      "Pass a request with generate --request FILE or --request - for stdin.\n"},
-    {"models", "slopfab models list", "List installed model files, configured aliases and presets.",
+    {"model-list", "slopfab models list", "List installed model files, configured aliases and presets.",
      "Use --config FILE or SLOPFAB_CONFIG to select config. Paths in config are relative to that file.\n"},
-    {"doctor", "slopfab doctor", "Check available GPUs and report configuration paths.",
+    {"doctor", "slopfab system doctor", "Check available GPUs and report configuration paths.",
      "No inference. Next: validate --request FILE --check-ready.\n"},
-    {"validate", "slopfab validate --request FILE",
+    {"validate", "slopfab requests validate --request FILE",
      "Resolve and validate a generation without loading GPU weights.",
      "--check-ready also checks required model files. Validation does not guarantee available VRAM.\nSee schema and generate --help for request fields and options.\n"},
-    {"submit", "slopfab submit --request FILE --idempotency-key KEY",
+    {"submit", "slopfab jobs submit --request FILE --idempotency-key KEY",
      "Queue a persistent generation and start a local worker.",
      "Same requests as generate. Queue capacity: 32. Retrying a key returns its existing job; changed requests fail.\nUse status JOB_ID, wait JOB_ID --timeout 60, or cancel JOB_ID. --jobs-dir selects a store.\n"},
-    {"status", "slopfab status JOB_ID", "Read persistent job state, result and event-file path.",
+    {"status", "slopfab jobs status JOB_ID", "Read persistent job state, result and event-file path.",
      "States: queued, running, succeeded, failed, cancelled, interrupted.\n"},
-    {"wait", "slopfab wait JOB_ID --timeout 60", "Wait for a terminal job state.",
+    {"wait", "slopfab jobs wait JOB_ID --timeout 60", "Wait for a terminal job state.",
      "Timeout returns exit 8 with timed_out=true. Waiting does not cancel the job.\n"},
-    {"cancel", "slopfab cancel JOB_ID",
+    {"cancel", "slopfab jobs cancel JOB_ID",
      "Request cooperative cancellation of a queued or running job.",
      "A running GPU operation may finish before cancellation takes effect. Inspect status afterward.\n"},
-    {"worker", "slopfab worker --idle-seconds 60",
+    {"worker", "slopfab jobs worker --idle-seconds 60",
      "Process the local queue serially and reuse generation sessions.",
      "Submit starts this automatically. One worker per store. Exits after idle timeout.\nOn restart, abandoned running jobs become interrupted and are never automatically rerun.\n"},
-    {"devices", "slopfab devices", "list CUDA and Vulkan compute devices", ""},
-    {"version", "slopfab version", "print the version and exit", ""},
+    {"devices", "slopfab system devices", "list CUDA and Vulkan compute devices", ""},
+    {"version", "slopfab system version", "print the version and exit", ""},
 };
 
 const CommandHelp* find_command(std::string_view name) {
@@ -750,7 +760,7 @@ int print_command_help(const CommandHelp& c) {
       "Remote execution: --host NAME (or --remote NAME) uses a saved SSH host. "
       "--download-dir DIR chooses local results; --download PATH collects an extra remote output. "
       "--local-project NAME imports generation results locally. See slopfab help remote.\n"
-      "Add --agent for NDJSON responses and generation progress. Use schema for JSON requests; capabilities for supported tasks; doctor for setup checks.";
+      "Add --agent for NDJSON responses and generation progress. Use requests schema for JSON requests; system capabilities for supported tasks; system doctor for setup checks.";
   if (agent().enabled) {
     emit({{"type", str("help")},
           {"command", str(c.name)},

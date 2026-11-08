@@ -46,7 +46,7 @@ same object. Named exports include `fs`, `path`, `http`, `exec`, `spawn`, `cli`,
 renders SVG artwork and JavaScript animations using the CLI's embedded ThorVG.
 The [frames API](video_frames.md) extracts stills and contact sheets from video files,
 packed RGB buffers, or live generation samples in RAM.
-`slopfab capabilities` advertises the
+`slopfab system capabilities` advertises the
 engine version, API version, supported facilities and installed mod commands.
 
 | Member | Behavior |

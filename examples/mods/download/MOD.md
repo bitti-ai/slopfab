@@ -24,7 +24,7 @@ video/audio shifts are applied separately. `requires` identifies recipe companio
 Downloads do not apply these settings; legacy `stepOverride`/`samplingPreset`
 fields are retained for older consumers and are not Slopfab CLI arguments.
 
-Before selecting downloads, run `slopfab devices` and check the current GPU's
+Before selecting downloads, run `slopfab system devices` and check the current GPU's
 available VRAM. Choose compatible model variants and companion files that fit,
 leaving headroom for inference. Use catalog `minVramGb` values as per-file guidance,
 not a guarantee that the full pipeline fits; missing values mean unknown.

@@ -189,7 +189,7 @@ They are recognized when present in the prompt; registration does not insert
 them automatically. Both embedded and external tokenizer files use this H3
 profile. Conflicting token spellings or reserved IDs in an external file are
 rejected. Generic Qwen and music tokenizer loading remains unchanged.
-`slopfab tokenize` uses H3 by default; `--qwen` selects the base vocabulary.
+`slopfab conditioning tokenize` uses H3 by default; `--qwen` selects the base vocabulary.
 
 Previously exported prompt embeddings containing these markers must be
 regenerated to benefit from the fix. New exports record

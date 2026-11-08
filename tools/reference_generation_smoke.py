@@ -34,7 +34,7 @@ error = bind("slopfab_last_error", [], C.c_char_p)
 
 def check(status):
     if status:
-        raise RuntimeError(f"slopfab status {status}: {error().decode()}")
+        raise RuntimeError(f"slopfab jobs status {status}: {error().decode()}")
 
 
 create = bind("slopfab_request_create", [], handle)

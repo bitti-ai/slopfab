@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-mods-") as directory:
     assert "No active mods" in run("mods", machine=False)
     assert run("help", "mods")["command"] == "mods"
     assert run("mods", "--help")["command"] == "mods"
-    assert run("capabilities")["data"]["mods"]["index_command"] == "slopfab mods list"
+    assert run("system", "capabilities")["data"]["mods"]["index_command"] == "slopfab mods list"
 
     prompt = "# Product shot\n\nRead ./camera.md.\nGenerate an image of cafÃ© lighting.\n---\nDo not lose this divider.\n"
     product = write("product", "name: product\ndescription: >-\n  Create a product shot\n  with soft lighting.\nauthor: 'Sam''s studio'\nversion: \"1.0\"", prompt)

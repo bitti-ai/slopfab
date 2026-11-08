@@ -337,7 +337,7 @@ int cmd_decode(int argc, char** argv) {
     }
 
     if (!dump_path.empty()) {
-      // Raw fp32 pixels, so two runs can be diffed with `slopfab compare` at
+      // Raw fp32 pixels, so two runs can be diffed with `slopfab models compare` at
       // float precision rather than after 8-bit quantisation. The copy into the
       // writer's own vector type is what this diagnostic path already did.
       slopfab::write_safetensors(dump_path,

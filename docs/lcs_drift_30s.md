@@ -44,7 +44,7 @@ From the repository root, using a fresh output directory:
 $model = 'D:/Projects/weights/fcffec69b0bbb0c9-Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors'
 $run = 'output/lcs-drift-30s-new'
 New-Item -ItemType Directory -Force $run
-build/Release/slopfab.exe encode-text --prompt-file tests/data/lcs_drift_prompt.txt `
+build/Release/slopfab.exe conditioning encode-text --prompt-file tests/data/lcs_drift_prompt.txt `
   --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors `
   --output "$run/prompt.safetensors"
 python tools/lcs_drift.py generate --transformer $model --embedding "$run/prompt.safetensors" `

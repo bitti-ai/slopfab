@@ -28,17 +28,17 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
 
     fresh = root / "fresh å"
     fresh.mkdir()
-    run(fresh, "version")
+    run(fresh, 'system', 'version')
     assert not (fresh / "AGENTS.md").exists(), "human-mode invocation wrote instructions"
-    events = run(fresh, "--agent", "version")
+    events = run(fresh, "--agent", 'system', 'version')
     assert len(events) == 1 and events[0]["version"]
     context = events[0]["agent_context"]
     assert Path(context["path"]) == fresh / "AGENTS.md"
     assert context["instructions"] == expected
     assert (fresh / "AGENTS.md").read_bytes() == expected.encode("utf-8")
     original_time = (fresh / "AGENTS.md").stat().st_mtime_ns
-    for command in ("version", "help", "capabilities"):
-        assert all("agent_context" not in event for event in run(fresh, "--agent", command))
+    for command in (("system", "version"), ("help",), ("system", "capabilities")):
+        assert all("agent_context" not in event for event in run(fresh, "--agent", *command))
     assert (fresh / "AGENTS.md").stat().st_mtime_ns == original_time
 
     # Older and unversioned files are replaced, including legacy generated files.
@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
         existing = root / f"existing-{n}"
         existing.mkdir()
         (existing / "AGENTS.md").write_bytes(content)
-        run(existing, "version")
+        run(existing, 'system', 'version')
         assert (existing / "AGENTS.md").read_bytes() == content, "non-agent launch upgraded instructions"
         events = run(existing, "--agent", "help")
         assert events[0]["agent_context"]["instructions"] == expected
@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
     assert events[0]["type"] == "error" and events[0]["agent_context"]["instructions"] == expected
     planned = root / "planned"
     planned.mkdir()
-    events = run(planned, "--agent", "validate", "image", "--prompt", "test")
+    events = run(planned, "--agent", 'requests', 'validate', "image", "--prompt", "test")
     assert sum("agent_context" in event for event in events) == 1
     assert events[-1]["ok"] and (planned / "AGENTS.md").exists()
 
@@ -85,12 +85,12 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
     simultaneous = root / "concurrent"
     simultaneous.mkdir()
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        responses = list(pool.map(lambda _: run(simultaneous, "--agent", "version"), range(6)))
+        responses = list(pool.map(lambda _: run(simultaneous, "--agent", 'system', 'version'), range(6)))
     assert sum("agent_context" in event for events in responses for event in events) == 1
     assert (simultaneous / "AGENTS.md").read_bytes() == expected.encode("utf-8")
     (simultaneous / "AGENTS.md").write_text(f"{version - 1}\nOld instructions\n", encoding="utf-8")
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        responses = list(pool.map(lambda _: run(simultaneous, "--agent", "version"), range(6)))
+        responses = list(pool.map(lambda _: run(simultaneous, "--agent", 'system', 'version'), range(6)))
     assert sum("agent_context" in event for events in responses for event in events) == 1
     assert (simultaneous / "AGENTS.md").read_bytes() == expected.encode("utf-8")
     assert not list(simultaneous.glob("AGENTS.md.*.tmp"))
@@ -104,10 +104,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-instructions-") as temporary:
     except OSError:
         pass
     else:
-        assert all("agent_context" not in event for event in run(linked, "--agent", "version"))
+        assert all("agent_context" not in event for event in run(linked, "--agent", 'system', 'version'))
         assert not target.exists()
         target.write_text("0\nKeep the linked file.\n", encoding="utf-8")
-        assert all("agent_context" not in event for event in run(linked, "--agent", "version"))
+        assert all("agent_context" not in event for event in run(linked, "--agent", 'system', 'version'))
         assert target.read_text(encoding="utf-8") == "0\nKeep the linked file.\n"
         assert (linked / "AGENTS.md").is_symlink()
 

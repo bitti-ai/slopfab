@@ -35,7 +35,7 @@ def main():
     for i,text in enumerate(corpus):
         source=out/"text.txt";source.write_text(text,encoding="utf-8",newline="")
         dest=out/"tokens.safetensors"
-        subprocess.run([a.probe,"tokenize",a.model,str(source),str(dest)],check=True)
+        subprocess.run([a.probe,'conditioning', 'tokenize',a.model,str(source),str(dest)],check=True)
         actual=load_file(str(dest))["output"].int().tolist();expected=encode(text)
         assert actual==expected,(i,text,actual,expected)
     print(f"YuE2 tokenizer: {len(corpus)} published-rank comparisons passed")

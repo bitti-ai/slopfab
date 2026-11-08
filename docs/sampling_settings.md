@@ -14,7 +14,7 @@ For example, save this as `sampling.json`:
 ```
 
 ```sh
-slopfab generate --prompt "A moonlit forest" --sampling-settings sampling.json --dry-run
+slopfab requests run --prompt "A moonlit forest" --sampling-settings sampling.json --dry-run
 ```
 
 The example specifies four evaluations. It illustrates the format; choose values appropriate to the model's training recipe. `base_sigmas` contains **unshifted** sigma points, including terminal zero. Each modality applies its shift as `shift * base / (1 + (shift - 1) * base)` in float32. Do not put already-shifted sigmas here.
@@ -28,8 +28,8 @@ CLI, C++ and C API now inherit the same recipe defaults: ordinarily 50 updates, 
 ## ER-SDE and beta
 
 ```sh
-slopfab generate --model krea2 --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple.ppm
-slopfab generate --model krea2 --inference-backend vulkan --vulkan-arithmetic portable --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple-vulkan.ppm
+slopfab requests run --model krea2 --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple.ppm
+slopfab requests run --model krea2 --inference-backend vulkan --vulkan-arithmetic portable --sampler er_sde --schedule beta --steps 8 --prompt "A red apple" --out apple-vulkan.ppm
 ```
 
 `--scheduler` is an alias for `--schedule`. ER-SDE and beta are independent:
@@ -80,7 +80,7 @@ Use `--audio-steps` to give audio its own step count, for example when a LoRA
 uses a short video schedule:
 
 ```sh
-slopfab generate --prompt "A person playing a piano" --steps 4 --audio-steps 25 --out piano.mp4
+slopfab requests run --prompt "A person playing a piano" --steps 4 --audio-steps 25 --out piano.mp4
 ```
 
 Like `--steps`, this counts denoising updates: the example

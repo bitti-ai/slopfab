@@ -148,11 +148,11 @@ try:
         finish(recovery)
         exe = a.library.resolve().with_name("slopfab.exe" if a.library.suffix == ".dll" else "slopfab")
         cli = work / "cli.safetensors"
-        subprocess.run([str(exe), "upscale-latents", "--input", str(source), "--out", str(cli),
+        subprocess.run([str(exe), 'video', 'upscale-latents', "--input", str(source), "--out", str(cli),
                         "--model", model.decode(), "--scale", "2", "--inference-backend", a.backend], check=True)
         assert read_archive(cli)[1] == rows
         output = work / "decoded.y4m"
-        subprocess.run([str(exe), "decode", "--latent", str(cli), "--vae",
+        subprocess.run([str(exe), 'video', 'decode', "--latent", str(cli), "--vae",
                         str(a.video_vae or a.root.resolve() / "weights/vae/minimax_h3_video_vae_fp16.safetensors"),
                         "--inference-backend", a.backend, "--out", str(output)], check=True)
         assert b"W128 H64" in output.read_bytes().split(b"\n", 1)[0]

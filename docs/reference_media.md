@@ -72,7 +72,7 @@ The CLI reads native Y4M video and WAV audio. A separate audio reference remains
 independent of the video:
 
 ```text
-slopfab generate --prompt "A scene inspired by the references" --reference-video clip.y4m --reference-audio sound.wav
+slopfab requests run --prompt "A scene inspired by the references" --reference-video clip.y4m --reference-audio sound.wav
 ```
 
 To attach a soundtrack to the video itself, use `--driving-audio`. Exactly one
@@ -81,7 +81,7 @@ Use `--preserve-driving-audio` to pin the attached soundtrack as clean target
 audio throughout generation:
 
 ```sh
-slopfab --agent generate --prompt "A scene following the driving clip" --reference-video clip03.y4m --driving-audio clip03.wav --preserve-driving-audio --out output/clip03.y4m
+slopfab --agent requests run --prompt "A scene following the driving clip" --reference-video clip03.y4m --driving-audio clip03.wav --preserve-driving-audio --out output/clip03.y4m
 ```
 
 Supply the usual model and output options as needed. Select Vulkan with

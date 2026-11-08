@@ -119,7 +119,7 @@ int transcribe_command(const std::vector<std::string>& args) {
   }
   if (input.empty() || options.model.empty())
     throw CliError("INVALID_REQUEST",
-                   "use transcribe FILE --model MODEL.safetensors; see slopfab help transcribe");
+                   "use transcribe FILE --model MODEL.safetensors; see slopfab help audio transcribe");
   if (options.beam_size < 1 || options.beam_size > 10)
     throw CliError("INVALID_REQUEST", "beam size must be 1..10");
   if (options.backend != "auto" && options.backend != "cuda" && options.backend != "vulkan" &&

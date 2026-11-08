@@ -17,7 +17,7 @@ Everything here is grounded in:
   the diffusers-native `AutoencoderKLMiniMaxH3Audio` port (same model)
 - `D:\Projects\slopfab\ref\diffusers\modular\decoders.py:123-198` and
   `packing.py:315-328` — how `decode` is called from the pipeline
-- the checkpoint itself, enumerated with `slopfab.exe inspect --list`
+- the checkpoint itself, enumerated with `slopfab.exe models inspect --list`
 
 > **Read §2 and §6 first.** Two things in this model produce output that is
 > bounded, audible and completely wrong if taken the obvious way: the Snake
@@ -633,7 +633,7 @@ the decoder, so a magnitude bug does not get rescaled away — it compounds.
 | | **encoder path (rows 11-16)** | **136** | **281.13 MiB** | **not loaded** |
 | | **total** | **917** | **577.12 MiB** | |
 
-`2 + 779 + 136 = 917`. Verified against `slopfab.exe inspect --list --limit 1000`
+`2 + 779 + 136 = 917`. Verified against `slopfab.exe models inspect --list --limit 1000`
 by classifying every name; the classifier has no "other" bucket.
 
 Row-5 arithmetic: 21 blocks x 2 conv lists x 3 dilations x {weight,bias} = 252.

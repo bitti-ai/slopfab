@@ -28,18 +28,23 @@ or `slopfab help image`, then `slopfab help video syncnet`, for example.
 | Group | Commands |
 | --- | --- |
 | `video` | `generate`, `frames`, `syncnet`, `upscale`, `upscale-latents`, `decode`, `compare` |
-| `audio` | `generate` (music), `transcribe`, `separate` |
-| `image` | `generate` (including edits), `upscale` |
-| `motions` | `render` (animation/overlays), `frame` (PNG/SVG stills) |
+| `audio` | `generate`, `transcribe`, `separate` |
+| `image` | `generate`, `upscale` |
+| `motions` | `render`, `frame` |
+| `jobs` | `submit`, `status`, `wait`, `cancel`, `worker` |
+| `models` | `list`, `inspect`, `compare`, `prepare-lora` |
+| `conditioning` | `tokenize`, `encode-text`, `encode-refmod`, `bundle-refmods` |
+| `system` | `doctor`, `devices`, `capabilities`, `version` |
+| `requests` | `run`, `validate`, `schema` |
+| `remote` | Host management and `fetch` |
 
-Shared generation requests, validation, jobs, projects, prompts, settings, model
-inspection, tensor comparison, text/reference encoding, mods and remote tools
-remain at the root. Existing root spellings remain compatibility aliases, but
-media-specific aliases are omitted from root help. `generate --request FILE`
-still accepts all tasks; grouped generation checks that the request's task agrees
-with the group (`audio` uses the existing JSON task `music`).
+Old root spellings are no longer accepted.
 
-`video compare` replaces the public spelling `compare-y4m`. Image and video
+Use `requests run --request FILE` for shared generation requests. Media-specific
+commands such as `image generate` still enforce their task. Update existing scripts
+and saved command recipes to use these spellings.
+
+Image and video
 upscaling share the same implementation. The root `motions` command renders both
 animations (`render`) and stills (`frame`). See [SyncNet](syncnet.md) for automatic
 face tracking and lip synchronization analysis.
@@ -92,10 +97,10 @@ weights or a GPU. They return templates, examples, local limits and source links
 generation continues to use exactly the prompt supplied by the caller.
 
 ```sh
-slopfab capabilities
+slopfab system capabilities
 slopfab models list
-slopfab doctor
-slopfab schema
+slopfab system doctor
+slopfab requests schema
 slopfab image generate --prompt "A red apple" --seed 42 --out apple.png
 slopfab video generate --prompt "A cat playing piano" --duration 5 --out cat.y4m
 slopfab audio generate --prompt "Gentle piano" --duration 10 --out piano.wav
@@ -105,7 +110,7 @@ Image defaults to Krea 2, video to H3, and music to YuE2. `--model` selects a
 family or configured alias. H3 also supports `image generate --model h3`.
 Models still require compatible local weights and a supported GPU. No command
 downloads weights automatically; an installed [executable mod](mods.md#executable-commands)
-can provide a download command. `capabilities` reports compiled support; `doctor` probes
+can provide a download command. `system capabilities` reports compiled support; `system doctor` probes
 available devices. `models list` reports files, which does not prove checkpoint
 compatibility or that inference fits in memory.
 
@@ -151,9 +156,9 @@ formats and dependencies. ThorVG is linked only into the executable.
 ```
 
 ```sh
-slopfab validate --request request.json
-slopfab validate --request request.json --check-ready
-slopfab generate --request request.json
+slopfab requests validate --request request.json
+slopfab requests validate --request request.json --check-ready
+slopfab requests run --request request.json
 ```
 
 `--request -` reads one UTF-8 JSON object from stdin (maximum 16 MiB). Prompts
@@ -173,7 +178,7 @@ behavior; incompatible controls such as duration and frame count are rejected.
 `options` holds advanced generate flags without the `--` prefix. Use booleans
 for switches, numbers/strings for values, arrays for repeatable options, and
 objects for inline JSON settings. Top-level fields cannot be overridden through
-`options`. `generate --help` lists the supported advanced controls. For ordered
+`options`. `requests run --help` lists the supported advanced controls. For ordered
 reference/adapter settings, prefer these explicit lists:
 
 ```json
@@ -201,7 +206,7 @@ line independently; do not parse diagnostic text. Each generation or ordinary co
 one terminal `result`, `error`, or `help` event. Generation may first emit
 `started`, `progress`, and `artifact` events. Every event has `schema_version: 1`.
 Older inspection/conversion commands wrap their textual result in `text`.
-A foreground `worker --agent` streams multiple jobs; each job has its own
+A foreground `jobs worker --agent` streams multiple jobs; each job has its own
 terminal event and `job_id`. Worker diagnostics are saved in `worker.log`.
 
 Progress contains a stage, completed/total counts when known, and elapsed
@@ -216,7 +221,7 @@ Errors contain `code`, `message`, `field` when known, and `retryable`.
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | Command succeeded; inspect job state for `status`/`wait` |
+| 0 | Command succeeded; inspect job state for `jobs status`/`jobs wait` |
 | 1 | Generation, worker, or other runtime failure |
 | 2 | Invalid request or idempotency conflict |
 | 3 | Missing/ambiguous model or missing input |
@@ -224,13 +229,13 @@ Errors contain `code`, `message`, `field` when known, and `retryable`.
 | 5 | Out of memory |
 | 6 | Output failure/collision |
 | 7 | Busy GPU/store or full queue; retry later |
-| 8 | `wait` timed out; the job continues |
+| 8 | `jobs wait` timed out; the job continues |
 | 124 | Generation deadline exceeded |
 | 130 | Cancelled |
 
 Ctrl+C and `--deadline SECONDS` request cooperative cancellation. Cancellation
 is checked at runner callbacks; it cannot interrupt an executing GPU kernel.
-It may also be delayed during model loading or media writing. `cancel JOB_ID`
+It may also be delayed during model loading or media writing. `jobs cancel JOB_ID`
 does not kill a process. Poll status until terminal. Retries do not automatically
 reduce quality, change backends, or resume partial diffusion.
 
@@ -260,12 +265,12 @@ reference audio is mono/stereo PCM16/24/32 or float32 WAV. Convert compressed
 inputs externally. Y4M has no soundtrack; pass audio separately when supported.
 Native reference durations retain the existing 2–15 second limit. Decoded video
 input is bounded at 2 GiB; WAV chunks at 256 MiB. Windows uses WIC for still
-images; Linux uses libpng/libjpeg. `upscale` accepts native images/Y4M and writes
+images; Linux uses libpng/libjpeg. `video upscale` accepts native images/Y4M and writes
 PNG/PPM/Y4M; its native video reader currently buffers the clip within that bound.
 
 ## Configuration
 
-Use `--config FILE`, `SLOPFAB_CONFIG`, or the path shown by `doctor`.
+Use `--config FILE`, `SLOPFAB_CONFIG`, or the path shown by `system doctor`.
 Defaults are `%LOCALAPPDATA%/slopfab/config.json` on Windows and
 `$XDG_CONFIG_HOME/slopfab/config.json` (otherwise `~/.config/slopfab/config.json`)
 on Linux. The CLI creates this file automatically with `schema_version: 1` and
@@ -339,12 +344,12 @@ sharing guide](mods.md) for setup, activation and error handling.
 ## Persistent jobs
 
 ```sh
-slopfab submit --request request.json --idempotency-key scene-17
-slopfab status JOB_ID
-slopfab wait JOB_ID --timeout 60
-slopfab cancel JOB_ID
-slopfab worker --idle-seconds 60
-slopfab worker --stop
+slopfab jobs submit --request request.json --idempotency-key scene-17
+slopfab jobs status JOB_ID
+slopfab jobs wait JOB_ID --timeout 60
+slopfab jobs cancel JOB_ID
+slopfab jobs worker --idle-seconds 60
+slopfab jobs worker --stop
 ```
 
 Submit starts a hidden local worker. One worker owns each store, executes jobs
@@ -363,6 +368,6 @@ Keep referenced files and configuration stable until execution completes.
 States are `queued`, `running`, `succeeded`, `failed`, `cancelled`, and
 `interrupted`. Restarting a worker marks abandoned running jobs interrupted;
 it does not rerun them, since some output may already exist. Queued jobs survive
-restarts. `worker --stop` exits after the current job; a new submit starts service
+restarts. `jobs worker --stop` exits after the current job; a new submit starts service
 again. The worker normally exits after 60 idle seconds. This is a local queue,
 not a network service, and does not expose an HTTP endpoint.

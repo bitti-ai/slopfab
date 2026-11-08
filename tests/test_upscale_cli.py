@@ -16,9 +16,9 @@ def run(args, expected=0):
 with tempfile.TemporaryDirectory() as directory:
     source = pathlib.Path(directory) / 'input with spaces.mp4'
     source.touch()  # dry-run must not decode media or load models
-    standalone = ['upscale', '--input', str(source), '--out', str(source.with_name('out.y4m')),
+    standalone = ['video', 'upscale', '--input', str(source), '--out', str(source.with_name('out.y4m')),
                   '--inference-backend', 'cuda', '--dry-run']
-    generate = ['generate', '--prompt', 'test', '--resolution', '32x32', '--frames', '22',
+    generate = ['requests', 'run', '--prompt', 'test', '--resolution', '32x32', '--frames', '22',
                 '--inference-backend', 'cuda', '--dry-run']
     for command in [standalone, generate]:
         for method in ['realesrgan', 'seedvr2']:
@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory() as directory:
     custom = ['--upscale-method', 'seedvr2', '--upscale-resolution', '320x192', '--upscale-tile', '0']
     assert '320x192' in run(generate + custom)
     assert '128x128' in run(generate + ['--upscale-method', 'realesrgan'])
-    assert run(['upscale', '--help']).count('usage:') == 1
+    assert run(['video', 'upscale', '--help']).count('usage:') == 1
     assert '64x64' in run(generate + ['--latent-upscale'])
     assert '96x96' in run(generate + ['--latent-upscale-scale', '3'])
     assert '256x256' in run(generate + ['--latent-upscale', '--upscale-method', 'realesrgan'])

@@ -7,7 +7,7 @@ exe = str(Path(sys.argv[1]).resolve())
 
 
 def run(*args, success=True):
-    result = subprocess.run([exe, "generate", "--dry-run", "--vulkan-arithmetic", "portable", *args], capture_output=True, text=True)
+    result = subprocess.run([exe, 'requests', 'run', "--dry-run", "--vulkan-arithmetic", "portable", *args], capture_output=True, text=True)
     assert (result.returncode == 0) == success, (args, result.stdout, result.stderr)
     return result.stdout + result.stderr
 

@@ -173,6 +173,6 @@ std::string startup_instructions(const StartupDependencies& dependencies, bool h
   return "slopfab generates videos, images and music.\n"
          "When running inside agent, add --agent parameter\n"
          "For generation requests, use projects: slopfab projects create NAME; slopfab help projects\n"
-         "More: slopfab help; slopfab help COMMAND; slopfab schema; slopfab prompts list; slopfab mods list\n";
+         "More: slopfab help; slopfab help COMMAND; slopfab requests schema; slopfab prompts list; slopfab mods list\n";
 }
 }

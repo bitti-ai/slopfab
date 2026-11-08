@@ -23,19 +23,19 @@ with tempfile.TemporaryDirectory(prefix="slopfab-clipproj-") as directory:
         assert len(events) == 1, events
         return events[0]
 
-    plan = run("generate", "video", "--model", "small-h3", "--prompt", "red ball", "--dry-run")["plans"][0]
+    plan = run("requests", "run", "video", "--model", "small-h3", "--prompt", "red ball", "--dry-run")["plans"][0]
     assert Path(plan["clip_projection"]) == root / "projection.safetensors"
     assert Path(plan["text_encoder"]) == root / "small.safetensors"
     request = {"schema_version": 1, "task": "video", "prompt": "red ball",
                "options": {"clip-projection": "small-projection.safetensors",
                            "text-encoder": "encoder.safetensors"}}
-    result = run("validate", "--request", "-", payload=request)
+    result = run("requests", "validate", "--request", "-", payload=request)
     assert result["plans"][0]["clip_projection"] == "small-projection.safetensors"
-    for command in ("generate", "encode-text"):
-        assert "--clip-projection" in run("help", command)["options"]
-    assert run("generate", "image", "--prompt", "red", "--clip-projection", "p", "--dry-run", code=2)["error"]["code"] == "INVALID_REQUEST"
-    assert run("generate", "video", "--prompt", "red", "--clip-projection", "p", "--prompt-embedding", "e", "--dry-run", code=2)["error"]["code"] == "INVALID_REQUEST"
-    assert run("generate", "video", "--prompt", "red", "--clip-projection", "p", "--dry-run", "--check-ready", code=3)["error"]["code"] == "MODEL_MISSING"
+    for command in (("requests", "run"), ("conditioning", "encode-text")):
+        assert "--clip-projection" in run("help", *command)["options"]
+    assert run("requests", "run", "image", "--prompt", "red", "--clip-projection", "p", "--dry-run", code=2)["error"]["code"] == "INVALID_REQUEST"
+    assert run("requests", "run", "video", "--prompt", "red", "--clip-projection", "p", "--prompt-embedding", "e", "--dry-run", code=2)["error"]["code"] == "INVALID_REQUEST"
+    assert run("requests", "run", "video", "--prompt", "red", "--clip-projection", "p", "--dry-run", "--check-ready", code=3)["error"]["code"] == "MODEL_MISSING"
 
     # Text export must not discover unrelated transformers or VAEs. A malformed
     # explicit encoder should report that encoder, despite ambiguous H3 files.
@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-clipproj-") as directory:
     run("settings", "set", "weight_paths", str(weights))
     malformed = root / "bad.safetensors"
     malformed.write_text("invalid")
-    failure = run("encode-text", "--text-encoder", str(malformed), "--clip-projection", "p",
+    failure = run("conditioning", "encode-text", "--text-encoder", str(malformed), "--clip-projection", "p",
                   "--prompt", "red ball", "--output", "out.safetensors", code=1)
     assert failure["error"]["code"] != "MODEL_AMBIGUOUS"
 

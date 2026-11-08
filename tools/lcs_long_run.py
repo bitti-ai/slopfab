@@ -4,7 +4,7 @@ Each window completes sampling, output LCS, joining and atomic archive saving.
 The progress callback then cancels at the VIDEO_DECODE boundary to defer decoding.
 Only that specific cancellation, with a validated archive and exact retained
 prefixes, counts as a completed latent window. This changes no sampling settings.
-Decode saved milestones/final archives with the normal `slopfab decode` command.
+Decode saved milestones/final archives with the normal `slopfab video decode` command.
 Requires numpy (archive validation), and the local lcs_drift helper.
 """
 import argparse
@@ -213,7 +213,7 @@ def main():
             for label in ('baseline','corrected'):
                 archive=sources[label]
                 output=archive.with_suffix('.y4m')
-                command=[str(a.exe.resolve()),'decode','--vae',str(a.vae.resolve()),
+                command=[str(a.exe.resolve()),'video', 'decode','--vae',str(a.vae.resolve()),
                          '--latent',str(archive.resolve()),'--out',str(output.resolve())]
                 print(f'Decoding {label} milestone {index+1}/{a.pairs}',flush=True)
                 with archive.with_suffix('.decode.log').open('w') as log:

@@ -332,7 +332,7 @@ Value collect(const Value& receipt, const fs::path& directory, bool provisioned 
       if (status || double(fs::file_size(temporary)) != entry.at("bytes").as_number() ||
           remote_digest(temporary) != entry.at("sha256").as_string())
         throw CliError("TRANSFER_FAILED",
-                       "SSH download failed; retry with slopfab fetch " +
+                       "SSH download failed; retry with slopfab remote fetch " +
                            (directory / "remote.json").u8string(),
                        6, {}, true);
       // Hard-link publication is atomic and fails if another writer claimed the
@@ -444,7 +444,7 @@ int remote_fetch(const std::vector<std::string>& args) {
     emit(collect(value, receipt.parent_path()).as_object(), true);
     return 0;
   }
-  throw CliError("INVALID_REQUEST", "use slopfab fetch PATH/remote.json");
+  throw CliError("INVALID_REQUEST", "use slopfab remote fetch PATH/remote.json");
 }
 
 int remote_execute(const std::string& host, const std::vector<std::string>& args,
@@ -452,7 +452,7 @@ int remote_execute(const std::string& host, const std::vector<std::string>& args
                    const std::vector<std::string>& downloads) {
   start_request();
   if (args.empty() || args[0] == "remote" || args[0] == "fetch" || args[0].rfind("_ssh-", 0) == 0 ||
-      args[0] == "worker")
+      (args.size() > 1 && args[0] == "jobs" && args[1] == "worker"))
     throw CliError("INVALID_REQUEST", "select a regular command for remote execution");
   if (args.size() > 1 && args[0] == "projects" && args[1] == "open")
     throw CliError(
@@ -462,7 +462,8 @@ int remote_execute(const std::string& host, const std::vector<std::string>& args
   if (!local_project.empty()) {
     const bool media_generate = args.size() > 1 && args[1] == "generate" &&
                                (args[0] == "video" || args[0] == "image" || args[0] == "audio");
-    if (args[0] != "generate" && args[0] != "wait" && args[0] != "status" && !media_generate)
+    if (!(args.size() > 1 && ((args[0] == "requests" && args[1] == "run") ||
+        (args[0] == "jobs" && (args[1] == "wait" || args[1] == "status")))) && !media_generate)
       throw CliError("INVALID_REQUEST", "--local-project applies to generation results");
     project = project_directory(local_project);
     read_json(project / "project.json");
@@ -627,7 +628,7 @@ int remote_worker(const std::string& executable, bool fetch) {
       arguments.push_back(value.as_string());
     }
     if (arguments.empty() || arguments[0] == "remote" || arguments[0] == "fetch" ||
-        arguments[0] == "worker" || arguments[0].rfind("_ssh-", 0) == 0)
+        (arguments.size() > 1 && arguments[0] == "jobs" && arguments[1] == "worker") || arguments[0].rfind("_ssh-", 0) == 0)
       throw CliError("INVALID_REQUEST", "invalid remote command");
     std::vector<std::string> child{executable, "--agent"};
     child.insert(child.end(), arguments.begin(), arguments.end());

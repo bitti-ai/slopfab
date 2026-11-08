@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-js-") as directory:
         const a=sf.spawn([sf.executable,'--config',sf.config,'run','child.js','--',...args],opts);
         const b=sf.spawn([sf.executable,'--config',sf.config,'run','child.js','--','second'],opts);
         const first=a.wait(), second=b.wait();
-        const cli=sf.cli(['version']);
+        const cli=sf.cli(['system', 'version']);
         return {first:JSON.parse(first.stdout).data, stderr:first.stderr.length,
           second:JSON.parse(second.stdout).data.args, version:cli.result.version, done:a.poll().done};
       };
@@ -105,13 +105,13 @@ with tempfile.TemporaryDirectory(prefix="slopfab-js-") as directory:
     js("slopfab.exec([slopfab.executable,'run','child.js'],{stdoutFile:'out.txt',stderrFile:'err.txt',maxOutputBytes:1});")
     assert (root/"out.txt").stat().st_size > 150000 and (root/"err.txt").stat().st_size >= 150000
     # A queued worker survives the script that submitted it.
-    submitted=js("""export default () => slopfab.cli(['submit','--request','-','--dry-run'], {
+    submitted=js("""export default () => slopfab.cli(['jobs', 'submit','--request','-','--dry-run'], {
       stdin:JSON.stringify({schema_version:1,task:'image',model:'h3',prompt:'test',output:{path:'queued.png'}})
     }).result.job.job_id;""")["data"]
     try:
-        assert run('wait',submitted,'--timeout','10')['job']['state']=='succeeded'
+        assert run('jobs', 'wait',submitted,'--timeout','10')['job']['state']=='succeeded'
     finally:
-        run('worker','--stop')
+        run('jobs', 'worker','--stop')
 
     payload=bytes(range(256))*1024
     class Server(http.server.BaseHTTPRequestHandler):
@@ -160,7 +160,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-js-") as directory:
     download=mod('model-download','download')
     assert run('mods','list')['mods'][0]['command']=='download'
     assert any(c['command']=='download' for c in run('help')['commands'])
-    assert any(c['command']=='download' for c in run('capabilities')['data']['mod_commands'])
+    assert any(c['command']=='download' for c in run('system', 'capabilities')['data']['mod_commands'])
     run('help','download'); run('download','--help'); run('mods','load','model-download')
     assert not (root/'ran.txt').exists()
     assert run('download','minimaxh3')['data']['args']==['minimaxh3']

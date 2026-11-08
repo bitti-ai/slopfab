@@ -506,7 +506,7 @@ Value capabilities() {
       {"remote", Value(Object{{"command", str("slopfab COMMAND --host NAME")},
           {"setup", str("slopfab remote setup NAME --directory PATH")}, {"automatic_binary_update", Value(true)}, {"transport", str("OpenSSH")}, {"platforms", Value(Array{str("linux"), str("windows")})},
           {"transfer", str("result artifacts only; no project or model synchronization")},
-          {"retry", str("slopfab fetch PATH/remote.json")}, {"cli_only", Value(true)}})},
+          {"retry", str("slopfab remote fetch PATH/remote.json")}, {"cli_only", Value(true)}})},
       {"driving_audio", Value(Object{
           {"option", str("--driving-audio FILE.wav")}, {"request_field", str("driving_audio")},
           {"video_format", str("Y4M")}, {"audio_format", str("mono/stereo PCM16/24/32 or float32 WAV")},
@@ -575,12 +575,12 @@ Value capabilities() {
            {"update", str("slopfab projects update NAME")},
            {"editable_page_source", str("project.json only; HTML and PROJECT.md are generated")},
            {"automatic_page_update", Value(true)},
-           {"generate", str("generate --project NAME; --project-item ID replaces an item")},
+           {"generate", str("requests run --project NAME; --project-item ID replaces an item")},
            {"manifest", str("project.json")},
            {"preview", str("NAME.html: offline media review and copyable agent prompts")},
            {"naming",
             str("PROJECT.md and projects show describe exact manifest paths and naming rules")}})},
-      {"schema_command", str("slopfab schema")}});
+      {"schema_command", str("slopfab requests schema")}});
 }
 
 int discovery_command(const std::string& command, const std::vector<std::string>& args) {

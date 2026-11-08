@@ -173,20 +173,20 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
 
     # Dry runs resolve project paths but cannot create files or modify metadata.
     before = (directory / "project.json").read_bytes()
-    plan = run("generate", "image", "--project", "demo", "--prompt", "test", "--dry-run")["plans"][0]
+    plan = run("requests", "run", "image", "--project", "demo", "--prompt", "test", "--dry-run")["plans"][0]
     assert Path(plan["output"]).is_relative_to(directory / "assets")
     assert not Path(plan["output"]).exists()
-    plan = run("generate", "image", "--project", "demo", "--project-item", "cover", "--prompt", "new", "--dry-run")["plans"][0]
+    plan = run("requests", "run", "image", "--project", "demo", "--project-item", "cover", "--prompt", "new", "--dry-run")["plans"][0]
     assert Path(plan["output"]) == directory / "assets/cover/v3/source.png"
-    run("generate", "video", "--project", "demo", "--project-item", "cover", "--prompt", "new", "--dry-run", code=2)
-    run("generate", "image", "--project", "demo", "--project-item", "cover", "--count", "2", "--prompt", "new", "--dry-run", code=2)
-    run("generate", "image", "--project", "demo", "--out", "../escape.png", "--prompt", "new", "--dry-run", code=2)
-    run("generate", "image", "--project", "demo", "--overwrite", "--prompt", "new", "--dry-run", code=2)
-    run("generate", "image", "--project-item", "cover", "--prompt", "new", "--dry-run", code=2)
+    run("requests", "run", "video", "--project", "demo", "--project-item", "cover", "--prompt", "new", "--dry-run", code=2)
+    run("requests", "run", "image", "--project", "demo", "--project-item", "cover", "--count", "2", "--prompt", "new", "--dry-run", code=2)
+    run("requests", "run", "image", "--project", "demo", "--out", "../escape.png", "--prompt", "new", "--dry-run", code=2)
+    run("requests", "run", "image", "--project", "demo", "--overwrite", "--prompt", "new", "--dry-run", code=2)
+    run("requests", "run", "image", "--project-item", "cover", "--prompt", "new", "--dry-run", code=2)
     payload = {"schema_version": 1, "task": "image", "project": "demo", "project_item": "cover", "prompt": "new", "output_directory": str(output)}
-    plan = run("validate", "--request", "-", payload=payload)["plans"][0]
+    plan = run("requests", "validate", "--request", "-", payload=payload)["plans"][0]
     assert Path(plan["output"]) == directory / "assets/cover/v3/source.png"
-    run("generate", "image", "--project", "demo", "--count", "2", "--prompt", "new", "--dry-run")
+    run("requests", "run", "image", "--project", "demo", "--count", "2", "--prompt", "new", "--dry-run")
     assert (directory / "project.json").read_bytes() == before
     (output / "demo.html").unlink()
     missing_index = run("projects", "open", "demo", code=3)
@@ -229,7 +229,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     else:
         run("projects", "create", "escaped", code=2)
         (directory / "escape").symlink_to(outside, target_is_directory=True)
-        run("generate", "image", "--project", "demo", "--out", "escape/out.png", "--prompt", "new", "--dry-run", code=2)
+        run("requests", "run", "image", "--project", "demo", "--out", "escape/out.png", "--prompt", "new", "--dry-run", code=2)
         assert not list(outside.iterdir())
         (outside / "index.html").write_text("outside project")
         (output / "demo.html").unlink()
@@ -243,9 +243,9 @@ with tempfile.TemporaryDirectory(prefix="slopfab-projects-") as temporary:
     assert "naming" in help_text and "--preview" in help_text
     assert "projects open NAME" in help_text
     assert "projects update NAME" in help_text
-    assert "projects" in run("capabilities")["data"]
-    assert run("capabilities")["data"]["projects"]["open"] == "slopfab projects open NAME"
-    assert run("capabilities")["data"]["projects"]["update"] == "slopfab projects update NAME"
-    assert "project" in run("schema")["data"]["properties"]
+    assert "projects" in run("system", "capabilities")["data"]
+    assert run("system", "capabilities")["data"]["projects"]["open"] == "slopfab projects open NAME"
+    assert run("system", "capabilities")["data"]["projects"]["update"] == "slopfab projects update NAME"
+    assert "project" in run("requests", "schema")["data"]["properties"]
 
 print("PASS: projects, safe paths, versions, clip edits, naming contract, HTML embedding and generation planning")

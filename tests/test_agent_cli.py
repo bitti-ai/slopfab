@@ -42,16 +42,16 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
         command_help=run(command["command"], "--help")
         assert command_help["type"] == "help"
         assert "--agent" not in command_help["usage"]
-    assert "png" in run("capabilities")["data"]["output_formats"]
-    assert run("schema")["data"]["additionalProperties"] is False
+    assert "png" in run("system", "capabilities")["data"]["output_formats"]
+    assert run("requests", "schema")["data"]["additionalProperties"] is False
     assert run("models", "list")["data"]["models"]
-    assert run("doctor")["data"]["ffmpeg_required"] is False
+    assert run("system", "doctor")["data"]["ffmpeg_required"] is False
 
     request = {"schema_version": 1, "task": "image", "model": "krea2",
         "prompt": 'Snow, "light", and music\n日本語', "seed": "18446744073709551615",
         "resolution": {"width": 512, "height": 512}, "output": {"path": "apple.png", "format": "png"}}
     def validate(value, code=0, *flags):
-        return run("validate", "--request", "-", *flags, input=json.dumps(value), code=code)
+        return run("requests", "validate", "--request", "-", *flags, input=json.dumps(value), code=code)
     result = validate(request)
     assert result["plans"][0]["seed"] == request["seed"]
     assert result["plans"][0]["width"] == 512
@@ -63,16 +63,16 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
                     {"seed": "18446744073709551616"}, {"count": 1.5}):
         assert validate(dict(request, **changes), 2)["error"]["code"] == "INVALID_REQUEST"
     assert validate(dict(request, output={"path": "wrong.mp4"}), 2)["error"]["code"] == "INVALID_REQUEST"
-    assert run("validate", "--request", "-", input="{", code=2)["type"] == "error"
-    assert run("validate", "--request", "-", input='{"schema_version":1,"task":"image","task":"music"}', code=2)["error"]["code"] == "INVALID_REQUEST"
+    assert run("requests", "validate", "--request", "-", input="{", code=2)["type"] == "error"
+    assert run("requests", "validate", "--request", "-", input='{"schema_version":1,"task":"image","task":"music"}', code=2)["error"]["code"] == "INVALID_REQUEST"
     for changes in ({"prompt": 3}, {"output": []}, {"references": [{"type": "image"}]},
                     {"resolution": {"width": "512", "height": 512}}, {"prompt": "a\0b"}):
         assert validate(dict(request, **changes), 2)["error"]["code"] == "INVALID_REQUEST"
-    assert run("validate", "--request", "-", "--steps", "3", input=json.dumps(request), code=2)["type"] == "error"
+    assert run("requests", "validate", "--request", "-", "--steps", "3", input=json.dumps(request), code=2)["type"] == "error"
     # Values which resemble options must remain data.
     for prompt in ("--agent", "--request", "help", "--help", "--idempotency-key"):
-        assert run("validate", "image", "--prompt", prompt, "--seed", "42")["ok"]
-    assert run("validate", "video", "--model", "krea2", "--prompt", "test", code=4)["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+        assert run("requests", "validate", "image", "--prompt", prompt, "--seed", "42")["ok"]
+    assert run("requests", "validate", "video", "--model", "krea2", "--prompt", "test", code=4)["error"]["code"] == "UNSUPPORTED_CAPABILITY"
     video = {"schema_version": 1, "task": "video", "prompt": "test", "duration_seconds": 2,
              "resolution": {"width": 32, "height": 32}}
     planned = validate(video)["plans"][0]
@@ -82,39 +82,39 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
     assert validate(music)["plans"][0]["model"] == "yue2"
 
     # Persist stdin requests, start a worker, and inspect the durable result.
-    submitted = run("submit", "--request", "-", "--dry-run", "--idempotency-key", "same",
+    submitted = run("jobs", "submit", "--request", "-", "--dry-run", "--idempotency-key", "same",
                     input=json.dumps(request))["job"]
     job_id = submitted["job_id"]
-    again = run("submit", "--request", "-", "--dry-run", "--idempotency-key", "same",
+    again = run("jobs", "submit", "--request", "-", "--dry-run", "--idempotency-key", "same",
                 input=json.dumps(request))["job"]
     assert again["job_id"] == job_id
-    assert run("submit", "--request", "-", "--dry-run", "--idempotency-key", "same",
+    assert run("jobs", "submit", "--request", "-", "--dry-run", "--idempotency-key", "same",
                input=json.dumps(dict(request, prompt="changed")), code=2)["error"]["code"] == "IDEMPOTENCY_CONFLICT"
-    done = run("wait", job_id, "--timeout", "15")["job"]
+    done = run("jobs", "wait", job_id, "--timeout", "15")["job"]
     assert done["state"] == "succeeded", done
     assert done["result"]["plans"][0]["seed"] == request["seed"]
     assert Path(done["events_path"]).exists()
-    assert run("cancel", job_id)["job"]["state"] == "succeeded"
-    assert run("status", "../bad", code=2)["type"] == "error"
+    assert run("jobs", "cancel", job_id)["job"]["state"] == "succeeded"
+    assert run("jobs", "status", "../bad", code=2)["type"] == "error"
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        ids=list(pool.map(lambda _: run("submit", "--request", "-", "--dry-run",
+        ids=list(pool.map(lambda _: run("jobs", "submit", "--request", "-", "--dry-run",
             "--idempotency-key", "concurrent", input=json.dumps(request))["job"]["job_id"], range(4)))
     assert len(set(ids))==1
-    assert run("wait",ids[0],"--timeout","15")["job"]["state"]=="succeeded"
+    assert run("jobs", "wait",ids[0],"--timeout","15")["job"]["state"]=="succeeded"
 
     # A failed job must have a terminal structured error and not get retried.
-    failed = run("submit", "--request", "-", "--dry-run", "--check-ready",
+    failed = run("jobs", "submit", "--request", "-", "--dry-run", "--check-ready",
                  input=json.dumps(request))["job"]["job_id"]
-    done = run("wait", failed, "--timeout", "15")["job"]
+    done = run("jobs", "wait", failed, "--timeout", "15")["job"]
     assert done["state"] == "failed" and done["result"]["error"]["code"] == "MODEL_MISSING", done
 
     # Project controls must survive submit's normalized argument serialization.
     run("projects", "create", "queued-project")
     project_request = dict(request, project="queued-project")
     project_request.pop("output", None)
-    queued = run("submit", "--request", "-", "--dry-run", input=json.dumps(project_request))["job"]
+    queued = run("jobs", "submit", "--request", "-", "--dry-run", input=json.dumps(project_request))["job"]
     assert "--project" in queued["arguments"] and "--output-dir" in queued["arguments"]
-    done = run("wait", queued["job_id"], "--timeout", "15")["job"]
+    done = run("jobs", "wait", queued["job_id"], "--timeout", "15")["job"]
     assert done["state"] == "succeeded", done
     directory = Path(run("projects", "show", "queued-project")["project"]["directory"])
     assert Path(done["result"]["plans"][0]["output"]).is_relative_to(directory)
@@ -148,10 +148,10 @@ with tempfile.TemporaryDirectory(prefix="slopfab-agent-") as temp:
         directory.mkdir()
         record=dict(submitted,job_id=identity,state=state,idempotency_key="")
         (directory/"job.json").write_text(json.dumps(record))
-    assert run("status",interrupted_id)["job"]["state"]=="interrupted"
-    timed=run("wait",queued_id,"--timeout","0",code=8)
+    assert run("jobs", "status",interrupted_id)["job"]["state"]=="interrupted"
+    timed=run("jobs", "wait",queued_id,"--timeout","0",code=8)
     assert timed["timed_out"] and timed["job"]["state"]=="queued"
-    assert run("cancel",queued_id)["job"]["state"]=="cancelled"
-    assert run("worker","--idle-seconds","1")["worker_finished"]
+    assert run("jobs", "cancel",queued_id)["job"]["state"]=="cancelled"
+    assert run("jobs", "worker","--idle-seconds","1")["worker_finished"]
 
 print("PASS: agent help, discovery, JSON validation, protocol isolation and persistent jobs")

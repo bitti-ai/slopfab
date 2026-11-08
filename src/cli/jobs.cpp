@@ -58,7 +58,7 @@ std::vector<std::pair<std::filesystem::path, Value>> jobs() {
 void launch_worker() {
   const auto exe = std::filesystem::absolute(std::filesystem::u8path(agent().executable));
   const std::vector<std::string> args = {
-      exe.u8string(), "worker",
+      exe.u8string(), "jobs", "worker",
       "--jobs-dir",   std::filesystem::absolute(jobs_path()).u8string(),
       "--config",     std::filesystem::absolute(config_path()).u8string()};
   std::filesystem::create_directories(jobs_path());
@@ -101,7 +101,7 @@ void launch_worker() {
         CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != 0;
   }
   if (!launched)
-    throw CliError("WORKER_START_FAILED", "cannot start local worker; run slopfab worker manually",
+    throw CliError("WORKER_START_FAILED", "cannot start local worker; run slopfab jobs worker manually",
                    1);
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);

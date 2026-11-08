@@ -66,7 +66,7 @@ def generate(a):
     commands = []
     for i in range(a.windows):
         stem = a.output / f'{a.name}-{i:02d}'
-        command = [a.exe, 'generate', '--transformer', a.transformer, '--vae', a.vae,
+        command = [a.exe, 'requests', 'run', '--transformer', a.transformer, '--vae', a.vae,
                    '--audio-vae', a.audio_vae, '--prompt-embedding', a.embedding,
                    '--resolution', a.resolution, '--frames', str(a.new_frames if previous else a.first_frames),
                    '--steps', str(a.steps), '--attention', 'flash2', '--seed', str(a.seed+i),

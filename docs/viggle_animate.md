@@ -14,7 +14,7 @@ Automatic H3 checkpoint discovery continues to select the general-purpose
 FL2VA/Ref2VA models.
 
 ```sh
-slopfab inspect weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors
+slopfab models inspect weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors
 ```
 
 The model is identified from `source=Viggle/Viggle-Animate` metadata, so

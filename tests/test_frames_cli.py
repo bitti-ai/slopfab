@@ -44,9 +44,9 @@ with tempfile.TemporaryDirectory(prefix='slopfab-frames-') as temp:
         file.write(b'YUV4MPEG2 W8 H4 F4:1 Ip A1:1 C420jpeg\n')
         for y in (16, 71, 126, 180, 235):
             file.write(b'FRAME Xsample=1\n' + bytes([y])*32 + bytes([128])*16)
-    assert run('capabilities')['data']['video_frames']['generation_ram_capture']
+    assert run('system', 'capabilities')['data']['video_frames']['generation_ram_capture']
     assert run('video', 'frames', '--help')['type'] == 'help'
-    assert run('frames', code=2)['type'] == 'error', 'old root command is still exposed'
+    assert run('video', 'frames', code=2)['type'] == 'error', 'old root command is still exposed'
     result = capture('--ffmpeg', 'missing-tool')['data']
     assert result['cells'] == [{'frame':0,'time':0,'x':0,'y':0}]
     assert png(root/'out.png') == (8,4,bytes(8*4*3))

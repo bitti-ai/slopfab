@@ -11,6 +11,16 @@ struct Route {
 };
 
 const Route routes[] = {
+    {"jobs submit", "submit", ""}, {"jobs status", "status", ""},
+    {"jobs wait", "wait", ""}, {"jobs cancel", "cancel", ""}, {"jobs worker", "worker", ""},
+    {"models list", "model-list", ""}, {"models inspect", "inspect", ""},
+    {"models compare", "compare", ""}, {"models prepare-lora", "prepare-lora", ""},
+    {"conditioning tokenize", "tokenize", ""}, {"conditioning encode-text", "encode-text", ""},
+    {"conditioning encode-refmod", "encode-refmod", ""}, {"conditioning bundle-refmods", "bundle-refmods", ""},
+    {"system doctor", "doctor", ""}, {"system devices", "devices", ""},
+    {"system capabilities", "capabilities", ""}, {"system version", "version", ""},
+    {"requests run", "generate", ""}, {"requests validate", "validate", ""},
+    {"requests schema", "schema", ""}, {"remote fetch", "fetch", ""},
     {"video generate", "generate", "video"}, {"audio generate", "generate", "music"},
     {"image generate", "generate", "image"}, {"video frames", "frames", ""},
     {"video syncnet", "syncnet", ""},        {"video upscale", "upscale", ""},
@@ -20,7 +30,8 @@ const Route routes[] = {
 };
 
 bool group(std::string_view s) {
-  return s == "video" || s == "audio" || s == "image";
+  return s == "video" || s == "audio" || s == "image" || s == "jobs" ||
+         s == "models" || s == "conditioning" || s == "system" || s == "requests" || s == "remote";
 }
 
 const Route* route(std::string_view s) {
@@ -35,7 +46,7 @@ bool hidden_media_alias(std::string_view name) {
   if (name.find(' ') != std::string_view::npos)
     return true;
   for (const auto& r : routes)
-    if (name == r.target && name != "generate")
+    if (name == r.target)
       return true;
   return false;
 }
@@ -58,6 +69,13 @@ const CommandHelp* media_command_help(std::string_view name) {
   title = r->name;
   usage = base->usage;
   auto prefix = std::string("slopfab ") + r->target;
+  for (const auto& candidate : routes) {
+    const auto candidate_prefix = std::string("slopfab ") + candidate.name;
+    if (std::string_view(candidate.target) == r->target && usage.rfind(candidate_prefix, 0) == 0) {
+      prefix = candidate_prefix;
+      break;
+    }
+  }
   if (usage.rfind(prefix, 0) == 0)
     usage.replace(0, prefix.size(), "slopfab " + title);
   detail = base->detail;
@@ -81,8 +99,15 @@ std::string route_media_command(std::vector<std::string>& args) {
     args = {"help", args[1] + " " + args[2]};
     return {};
   }
-  if (!group(args[0]))
+  if (args[0] == "help" && args.size() == 2 && hidden_media_alias(args[1]))
+    throw CliError("INVALID_REQUEST", "command moved to a group; run slopfab help");
+  if (!group(args[0])) {
+    if (hidden_media_alias(args[0]))
+      throw CliError("INVALID_REQUEST", "command moved to a group; run slopfab help");
     return {};
+  }
+  if (args[0] == "remote" && (args.size() < 2 ||
+      (args[1] != "fetch" && args[1] != "help"))) return {};
   const auto kind = args[0];
   if (args.size() == 1 || args[1] == "--help" || args[1] == "-h") {
     args = {"help", kind};

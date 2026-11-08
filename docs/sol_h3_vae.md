@@ -18,7 +18,7 @@ For generation, keep the original video VAE available for encoding reference
 images, video and image ending anchors, and override only the decoder:
 
 ```sh
-slopfab generate --prompt "A continuous tracking shot" --resolution 768x1280 --frames 124 --vae weights/vae/minimax_h3_video_vae_fp16.safetensors --video-decoder C:/Users/NN/Downloads/sol_h3_vae.safetensors --out clip.mp4
+slopfab requests run --prompt "A continuous tracking shot" --resolution 768x1280 --frames 124 --vae weights/vae/minimax_h3_video_vae_fp16.safetensors --video-decoder C:/Users/NN/Downloads/sol_h3_vae.safetensors --out clip.mp4
 ```
 
 In the DLL, use the existing model-path setter with the new selector:

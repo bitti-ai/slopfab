@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-assets-cli-") as directory:
         payloads.append(write(path, shape, dtype, kind))
     bundle = root / "mixed.safetensors"
     input_args = [arg for path in inputs for arg in ("--refmod", path)]
-    run("bundle-refmods", *input_args, "--output", bundle, "--name", "hero",
+    run("conditioning", "bundle-refmods", *input_args, "--output", bundle, "--name", "hero",
         "--description", "appearance and voice")
     header, data = read(bundle)
     meta = json.loads(header["__metadata__"]["refmod_meta"])
@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-assets-cli-") as directory:
         begin, end = header[f"ref_{i}"]["data_offsets"]
         assert data[begin:end] == expected, "repacking must preserve latent bytes"
 
-    common = ["generate", "--dry-run", "--prompt", "test", "--resolution", "32x32",
+    common = ['requests', 'run', "--dry-run", "--prompt", "test", "--resolution", "32x32",
               "--frames", "22", "--steps", "2"]
     combined = run(*common, "--refmod", bundle, "--refmod-strength", ".25", "--refmod-copies", "2")
     separate_args = [arg for path in inputs for arg in
@@ -80,30 +80,30 @@ with tempfile.TemporaryDirectory(prefix="slopfab-assets-cli-") as directory:
     assert packed(disabled) == packed(run(*common))
 
     # Flatten an existing bundle and safely replace that same path.
-    run("bundle-refmods", "--refmod", bundle, "--refmod", inputs[0], "--output", bundle)
+    run("conditioning", "bundle-refmods", "--refmod", bundle, "--refmod", inputs[0], "--output", bundle)
     header, _ = read(bundle)
     assert len(json.loads(header["__metadata__"]["refmod_meta"])["members"]) == 4
     before = bundle.read_bytes()
-    run("bundle-refmods", "--refmod", inputs[0], "--refmod", root / "missing.safetensors",
+    run("conditioning", "bundle-refmods", "--refmod", inputs[0], "--refmod", root / "missing.safetensors",
         "--output", bundle, success=False)
     assert bundle.read_bytes() == before
-    run("bundle-refmods", "--output", bundle, success=False)
-    run("bundle-refmods", "--refmod", success=False)
-    run("encode-text", "--prompt", "test", "--prompt-file", inputs[0], "--output", bundle,
+    run("conditioning", "bundle-refmods", "--output", bundle, success=False)
+    run("conditioning", "bundle-refmods", "--refmod", success=False)
+    run("conditioning", "encode-text", "--prompt", "test", "--prompt-file", inputs[0], "--output", bundle,
         success=False)
-    run("encode-text", "--inference-backend", "invalid", success=False)
-    run("encode-text", "--prompt", success=False)
-    run("encode-refmod", "--output", bundle, success=False)
-    run("encode-refmod", "--reference-image", success=False)
-    run("encode-refmod", "--reference-image", "missing.png", "--output", bundle,
+    run("conditioning", "encode-text", "--inference-backend", "invalid", success=False)
+    run("conditioning", "encode-text", "--prompt", success=False)
+    run("conditioning", "encode-refmod", "--output", bundle, success=False)
+    run("conditioning", "encode-refmod", "--reference-image", success=False)
+    run("conditioning", "encode-refmod", "--reference-image", "missing.png", "--output", bundle,
         "--short-edge", "33", success=False)
-    run("encode-refmod", "--short-edge", "32junk", success=False)
-    run("encode-refmod", "--inference-backend", "cpu", success=False)
-    run("encode-refmod", "--vulkan-arithmetic", "invalid", success=False)
+    run("conditioning", "encode-refmod", "--short-edge", "32junk", success=False)
+    run("conditioning", "encode-refmod", "--inference-backend", "cpu", success=False)
+    run("conditioning", "encode-refmod", "--vulkan-arithmetic", "invalid", success=False)
     assert bundle.read_bytes() == before
-    assert "encode-text" in run("--help")
-    assert "bundle-refmods" in run("--help")
-    assert "encode-refmod" in run("--help")
-    assert "--reference-audio" in run("encode-refmod", "--help")
+    assert "encode-text" in run("conditioning", "--help")
+    assert "bundle-refmods" in run("conditioning", "--help")
+    assert "encode-refmod" in run("conditioning", "--help")
+    assert "--reference-audio" in run("conditioning", "encode-refmod", "--help")
 
 print("PASS: mixed bundle format, byte preservation, flattening, option scoping and CLI failures")

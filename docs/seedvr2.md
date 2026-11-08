@@ -108,7 +108,7 @@ Without `--upscale-resolution`, SeedVR2 defaults to 4x input dimensions.
 Generation uses the same selector and options:
 
 ```sh
-slopfab generate --prompt "A cat" --resolution 320x192 --upscale-method seedvr2 --upscale-resolution 1280x768 --upscale-tile 256 --out restored.y4m
+slopfab requests run --prompt "A cat" --resolution 320x192 --upscale-method seedvr2 --upscale-resolution 1280x768 --upscale-tile 256 --out restored.y4m
 ```
 
 Selecting a method enables upscaling and chooses its default model path;

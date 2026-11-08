@@ -3,10 +3,10 @@
 Use the regular command with `--host NAME` or its alias `--remote NAME`:
 
 ```sh
-slopfab generate --host gpu video --prompt "A cat playing a piano" --frames 22
-slopfab generate --remote gpu image --model krea2 --prompt "A red apple"
-slopfab devices --host gpu
-slopfab inspect weights/transformer/model.safetensors --host gpu
+slopfab requests run --host gpu video --prompt "A cat playing a piano" --frames 22
+slopfab requests run --remote gpu image --model krea2 --prompt "A red apple"
+slopfab system devices --host gpu
+slopfab models inspect weights/transformer/model.safetensors --host gpu
 ```
 
 `slopfab remote` manages the connection and the remote installation. It does not
@@ -93,18 +93,18 @@ configured working directory where applicable.
 file and its adjacent host profiles; the remote uses its own settings.
 
 ```sh
-slopfab generate --host gpu music --prompt "Warm ambient synths" --duration 10
-slopfab generate --host gpu image --prompt "Connection check" --dry-run
-slopfab generate --host gpu --request settings/request.json
+slopfab requests run --host gpu music --prompt "Warm ambient synths" --duration 10
+slopfab requests run --host gpu image --prompt "Connection check" --dry-run
+slopfab requests run --host gpu --request settings/request.json
 slopfab audio transcribe interview.wav --model whisper-small.safetensors --out transcript.srt --host gpu
 slopfab video frames output/scene.y4m --out contact.png --grid 4x3 --host gpu
 slopfab settings set weight_paths /models/weights --host gpu
 slopfab projects create film --host gpu
 slopfab run workflows/render.js --host gpu -- workflow-arguments
-slopfab submit image --prompt "A red apple" --host gpu
-slopfab status JOB_ID --host gpu
-slopfab wait JOB_ID --host gpu
-slopfab cancel JOB_ID --host gpu
+slopfab jobs submit image --prompt "A red apple" --host gpu
+slopfab jobs status JOB_ID --host gpu
+slopfab jobs wait JOB_ID --host gpu
+slopfab jobs cancel JOB_ID --host gpu
 ```
 
 Place remote flags before a command's `--` argument separator. Arguments after
@@ -144,7 +144,7 @@ links (for example NTFS or ext4). Remote outputs are retained.
 A failed download can be retried without rerunning the command:
 
 ```sh
-slopfab fetch output/remote/RUN_ID/remote.json
+slopfab remote fetch output/remote/RUN_ID/remote.json
 ```
 
 Verified files are checked and skipped; incomplete files restart from the
@@ -168,7 +168,7 @@ Create a local project and a remote project, then use both project flags:
 ```sh
 slopfab projects create film
 slopfab projects create film --host gpu
-slopfab generate --host gpu video --project film --local-project film --prompt "A city at sunrise"
+slopfab requests run --host gpu video --project film --local-project film --prompt "A city at sunrise"
 slopfab projects open film
 ```
 

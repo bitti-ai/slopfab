@@ -64,8 +64,8 @@ cmake -S . -B build/linux-vulkan -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DSLOPFAB_ENABLE_CUDA=OFF -DSLOPFAB_ENABLE_VULKAN=ON
 cmake --build build/linux-vulkan --parallel 2
-build/linux-vulkan/slopfab devices
-build/linux-vulkan/slopfab generate --inference-backend vulkan \
+build/linux-vulkan/slopfab system devices
+build/linux-vulkan/slopfab requests run --inference-backend vulkan \
   --prompt "A cat playing a piano" --frames 22 --resolution 512x512 --raw
 ```
 
@@ -108,7 +108,7 @@ cmake -S . -B build/linux-both -G Ninja \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
   -DSLOPFAB_ENABLE_CUDA=ON -DSLOPFAB_ENABLE_VULKAN=ON
 cmake --build build/linux-both --parallel 2
-build/linux-both/slopfab generate --inference-backend cuda \
+build/linux-both/slopfab requests run --inference-backend cuda \
   --prompt "A cat playing a piano" --frames 22 --resolution 512x512 --raw
 ```
 
@@ -133,7 +133,7 @@ the executable after configuring either backend:
 cmake --build build/linux-vulkan --target slopfab --parallel 2
 build/linux-vulkan/slopfab settings set weight_paths /path/to/weights
 build/linux-vulkan/slopfab mods list --agent
-build/linux-vulkan/slopfab help generate
+build/linux-vulkan/slopfab help requests run
 ```
 
 Global settings default to `$XDG_CONFIG_HOME/slopfab/config.json`, falling back
@@ -274,7 +274,7 @@ dependencies are copied.
 Use a build directory on the Linux filesystem, such as
 `-B /tmp/slopfab-linux-vulkan`, when the source checkout is on a Windows drive;
 CMake may be unable to set generated-file permissions on that mounted drive.
-Check GPU availability inside WSL using `slopfab devices`; CUDA availability
+Check GPU availability inside WSL using `slopfab system devices`; CUDA availability
 does not imply that a usable Vulkan device is exposed. Use the toolkit installed
 inside the Linux distribution for compilation and the WSL-compatible Windows
 NVIDIA driver for CUDA device access.

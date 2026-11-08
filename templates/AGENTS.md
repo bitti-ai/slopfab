@@ -1,4 +1,4 @@
-12
+13
 
 # Slopfab media generation
 
@@ -6,7 +6,7 @@ Slopfab is available in this folder.
 
 Use Slopfab for image, video and music generation. Add `--agent` when calling
 it. Discover syntax and supported options through `slopfab help`, command help,
-capabilities and schema; consult relevant mods. Follow startup setup guidance.
+system capabilities and requests schema; consult relevant mods. Follow startup setup guidance.
 Use `video`, `audio` and `image` command groups for media work; music generation
 is `slopfab audio generate`. Shared model, project and workflow tools stay at the root.
 Before writing a generation prompt, retrieve the model/use-case prompting guide
@@ -19,7 +19,7 @@ Python or batch scripts. Consult run help for scripting capabilities.
 `slopfab help motions`: Use **Motions** for vector graphics, titles and animation overlays. JavaScript
 
 `slopfab video frames --help`: Review a specific video frame or a downscaled grid.
-The scripting `frames` API also captures decoded generation frames directly from RAM.
+The scripting `video frames` API also captures decoded generation frames directly from RAM.
 
 ## Establish the brief
 

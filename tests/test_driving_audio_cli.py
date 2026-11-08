@@ -31,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-driving-audio-") as directory:
         assert events and events[-1]["type"] == ("result" if ok else "error"), events
         return events[-1]
 
-    base = ["generate", "--prompt", "test", "--transformer", "missing-h3.safetensors",
+    base = ['requests', 'run', "--prompt", "test", "--transformer", "missing-h3.safetensors",
             "--resolution", "32x32", "--frames", "56", "--dry-run"]
     video = ["--reference-video", movie]
     attached = [*video, "--driving-audio", sound]
@@ -80,28 +80,28 @@ with tempfile.TemporaryDirectory(prefix="slopfab-driving-audio-") as directory:
                "options": {"transformer": "missing-h3.safetensors", "frames": 56,
                            "preserve-driving-audio": True,
                            "conditioning-settings": {"version": 1, "include_reference_audio": False}}}
-    result = run("validate", "--request", "-", request=request)
+    result = run("requests", "validate", "--request", "-", request=request)
     assert result["plans"][0]["reference_attachments"][0]["source_end_seconds"] == 2
     request["options"]["conditioning-settings"]["include_reference_audio"] = True
-    assert "include_reference_audio=true" in run("validate", "--request", "-", request=request, ok=False)["error"]["message"]
+    assert "include_reference_audio=true" in run("requests", "validate", "--request", "-", request=request, ok=False)["error"]["message"]
     request["options"].pop("conditioning-settings")
     request["options"]["driving-audio"] = request.pop("driving_audio")
-    assert run("validate", "--request", "-", request=request)["plans"][0]["conditioning"]["pin_target_audio"]
+    assert run("requests", "validate", "--request", "-", request=request)["plans"][0]["conditioning"]["pin_target_audio"]
     request["driving_audio"] = str(sound)
-    run("validate", "--request", "-", request=request, ok=False)
+    run("requests", "validate", "--request", "-", request=request, ok=False)
     request["options"].pop("driving-audio")
     for bad in (None, [], 3, ""):
-        run("validate", "--request", "-", request={**request, "driving_audio": bad}, ok=False)
+        run("requests", "validate", "--request", "-", request={**request, "driving_audio": bad}, ok=False)
     request["references"].append({"type": "video", "path": str(movie)})
-    assert "exactly one" in run("validate", "--request", "-", request=request, ok=False)["error"]["message"]
+    assert "exactly one" in run("requests", "validate", "--request", "-", request=request, ok=False)["error"]["message"]
     for invalid in (movie, root / "missing.wav"):
         run(*base, *video, "--driving-audio", invalid, ok=False)
     (root / "truncated.wav").write_bytes(b"RIFF")
     run(*base, *video, "--driving-audio", root / "truncated.wav", ok=False)
-    caps = run("capabilities")["data"]["driving_audio"]
+    caps = run("system", "capabilities")["data"]["driving_audio"]
     assert caps["video_references"] == 1 and caps["duration_policy"] == "trim_end_or_pad_silence"
-    assert run("schema")["data"]["properties"]["driving_audio"]["type"] == "string"
-    help_result = subprocess.run([exe, "help", "generate"], cwd=root, capture_output=True, text=True)
+    assert run("requests", "schema")["data"]["properties"]["driving_audio"]["type"] == "string"
+    help_result = subprocess.run([exe, "help", "requests", "run"], cwd=root, capture_output=True, text=True)
     assert "--driving-audio" in help_result.stdout and "include_reference_audio=false" in help_result.stdout
     # Invoke the whole adapter via the embedded JavaScript API. A subsequent
     # request without attachment must not inherit provenance from the first.

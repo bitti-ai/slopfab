@@ -11,7 +11,7 @@ exe = str(Path(sys.argv[1]).resolve())
 
 def run(*args, success=True):
     result = subprocess.run(
-        [exe, "generate", "--prompt", "test", "--transformer",
+        [exe, 'requests', 'run', "--prompt", "test", "--transformer",
          "missing-audio-steps-fixture.safetensors", "--steps", "3", "--dry-run", *map(str, args)],
         capture_output=True, text=True)
     if (result.returncode == 0) != success:

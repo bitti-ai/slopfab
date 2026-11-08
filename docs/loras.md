@@ -67,7 +67,7 @@ To embed a local companion for later use without that file, prepare the adapter
 explicitly:
 
 ```sh
-slopfab prepare-lora --adapter adapter.safetensors --width 2688
+slopfab models prepare-lora --adapter adapter.safetensors --width 2688
 ```
 
 Preparation requires write access to the LoRA and enough space beside it for a

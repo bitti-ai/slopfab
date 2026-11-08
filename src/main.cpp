@@ -133,6 +133,10 @@ int cli_main(int argc, char** argv) {
     }
     if (const auto* help = find_command(command); help && wants_help(ac, av.data(), command))
       return print_command_help(*help);
+    if (command == "model-list") {
+      if (!args.empty()) throw CliError("INVALID_REQUEST", "models list takes no arguments");
+      return discovery_command("models", {"list"});
+    }
     if (command == "mods")
       return mods_command(args);
     if (command == "update")

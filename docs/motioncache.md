@@ -5,7 +5,7 @@ video/audio residual when estimated changes are small. It is approximate and
 disabled by default. Enable it with ordinary Euler sampling on CUDA or Vulkan:
 
 ```sh
-slopfab generate --prompt "A cat playing a piano" --frames 22 --resolution 512x512 --seed 11 --motion-cache --out cached.mp4
+slopfab requests run --prompt "A cat playing a piano" --frames 22 --resolution 512x512 --seed 11 --motion-cache --out cached.mp4
 ```
 
 Compare with the same request without `--motion-cache`, especially for faces,
