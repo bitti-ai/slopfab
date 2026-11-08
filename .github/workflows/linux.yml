@@ -51,7 +51,7 @@ jobs:
           "$RUNNER_TEMP/slopfab/bin/slopfab" --help
           "$RUNNER_TEMP/slopfab/bin/slopfab" settings get --agent
           "$RUNNER_TEMP/slopfab/bin/slopfab" mods list --agent
-          (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/slopfab/bin/slopfab" tokenize hello)
+          (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/slopfab/bin/slopfab" conditioning tokenize hello)
           test -f "$RUNNER_TEMP/slopfab/share/licenses/slopfab/LICENSE"
           if [[ '${{ matrix.backend }}' == vulkan ]]; then
             test -f "$RUNNER_TEMP/slopfab/include/slopfab/capi.h"
