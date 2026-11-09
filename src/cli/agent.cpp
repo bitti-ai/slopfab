@@ -426,6 +426,7 @@ Value plan_json(const GenerateRequest& r, const GeneratePlan& p) {
       {"model", str(request_model_family(r))},
       {"steps", num(p.num_inference_steps)},
       {"remake_mode", str(r.remake_mode)},
+      {"regenerate_mode", str(r.regenerate.mode)},
       {"sampler",
        str(p.music_flow_sampler.empty() ? sampler::sampler_name(p.sampler) : p.music_flow_sampler)},
       {"sampling_sources", Value(sources)},

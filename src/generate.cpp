@@ -389,7 +389,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
             : plan.conditioning.reference_options(plan.canvas_width, plan.canvas_height);
     prepared_media.push_back(prepare_reference_condition(*media, double(plan.sampling_frames) / 24,
                                                          !cached_media, reference_options));
-    if (plan.conditioning.pin_target_audio) {
+    if (plan.conditioning.pin_target_audio && request.regenerate.mode.empty()) {
       auto& prepared = prepared_media.back();
       prepared.plan.audio_samples =
           static_cast<int>(std::floor(double(plan.sampling_frames + 1) / 24 * 32000 + .5));
@@ -432,6 +432,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // a wrong shape fails in a second rather than after 25 GB of conditioner.
   std::vector<float> init_video;
   std::vector<float> init_audio;
+  if (!request.regenerate.mode.empty()) {
+    init_audio = regenerate_silence(request.regenerate.silence_path);
+    if (init_audio.size() != size_t(layout.num_audio_rows) * 32)
+      throw std::invalid_argument("Regenerate target audio geometry does not match the 124-frame silence latent");
+  }
   std::shared_ptr<InpaintConstraint> inpaint;
   std::shared_ptr<ContinuationConstraint> continuation_constraint;
   if (request.bridge)
@@ -762,8 +767,37 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
             condition_audio_rows, plan.conditioning.include_reference_audio);
         reference_geometry.push_back(clean_media[i].geometry);
       }
-      if (plan.conditioning.pin_target_audio)
+      if (plan.conditioning.pin_target_audio && request.regenerate.mode.empty())
         init_audio = target_audio_rows(clean_media.front().audio_rows, layout.num_audio_latents);
+      if (!request.regenerate.mode.empty() && request.regenerate.mode != "hf8") {
+        const auto& draft = clean_media.front();
+        const auto& p = prepared_media.front().plan;
+        dit::SequenceLayout source;
+        source.num_latent_frames = layout.num_latent_frames;
+        source.latent_height = p.height / 16;
+        source.latent_width = p.width / 16;
+        source.num_video_rows = source.num_latent_frames * source.rows_per_frame();
+        if (draft.video_rows.size() != size_t(source.num_video_rows) * 96)
+          throw std::invalid_argument("Regenerate draft must encode to the target's 37 latent frames");
+        std::vector<float> volume(draft.video_rows.size());
+        dit::unpatchify_video(draft.video_rows.data(), source, volume.data());
+        LatentUpscaleOptions upscale;
+        upscale.temporal_chunking = false;
+        upscale.target_width = plan.canvas_width;
+        upscale.target_height = plan.canvas_height;
+        volume = upscale_latents(volume, source.num_latent_frames, source.latent_height,
+                                 source.latent_width, request.regenerate.upsampler_path,
+                                 options.inference_backend, upscale, [&](int step, int total) {
+                                   return notify(RunStage::kReferences, step, total);
+                                 });
+        const auto noise = sampler::video_noise(request.seed, layout.num_latent_frames,
+                                                layout.latent_height, layout.latent_width);
+        const float sigma = plan.video_sigmas.front();
+        for (size_t i = 0; i < volume.size(); ++i)
+          volume[i] = (1 - sigma) * volume[i] + sigma * noise[i];
+        init_video.resize(volume.size());
+        dit::patchify_video(volume.data(), layout, init_video.data());
+      }
       if (cached_media && options.verbose)
         std::printf("references  reusing %zu encoded media references (host cache)\n",
                     clean_media.size());
@@ -951,7 +985,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         in.init_video_rows = &init_video;
         in.init_audio_rows = &init_audio;
       }
-      if (request.continuation_source_noise > 0)
+      if (request.continuation_source_noise > 0 || (!request.regenerate.mode.empty() && !init_video.empty()))
         in.init_video_rows = &init_video;
       if (plan.conditioning.pin_target_audio) {
         in.init_audio_rows = &init_audio;
@@ -1156,7 +1190,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       }
       if (plan.conditioning.pin_target_audio)
         initial_audio = init_audio;
-      if (request.continuation_source_noise > 0)
+      if (request.continuation_source_noise > 0 || (!request.regenerate.mode.empty() && !init_video.empty()))
         initial_video = init_video;
       if (plan.model.pdd_steps > 1) {
         if (init_video.empty())

@@ -49,6 +49,11 @@ std::vector<float> values(const TensorView& tensor) {
 } // namespace
 
 void validate_lora_base(const SafeTensors& adapter, const SafeTensors& base) {
+  const auto target = adapter.metadata().find("target");
+  if (target != adapter.metadata().end() &&
+      target->second == "MiniMaxAI/MiniMax-H3 transformer_ref (Ref2VA transformer)" &&
+      !dit::resolve_model_descriptor(base).supports_references)
+    throw std::invalid_argument("Regenerate IC LoRA requires an H3 Ref2VA transformer");
   const auto version = adapter.metadata().find("ss_base_model_version");
   if (version != adapter.metadata().end() && version->second == "minimax_h3_ref2va" &&
       !dit::resolve_model_descriptor(base).supports_references)

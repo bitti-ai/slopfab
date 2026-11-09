@@ -15,6 +15,9 @@ struct LatentUpscaleOptions {
   // Upstream's 32-frame segments with replicated context and overlap blending.
   // GroupNorm makes chunked inference an approximation to whole-clip inference.
   bool temporal_chunking = true;
+  // Exact decoded pixel dimensions; both zero retains scale-based sizing.
+  int target_width = 0;
+  int target_height = 0;
 };
 
 inline constexpr const char* kDefaultLatentUpscaleModel =

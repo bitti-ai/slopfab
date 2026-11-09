@@ -112,7 +112,7 @@ try {
             '--target', 'slopfab', 'slopfab_c', 'slopfab_capi_tests', 'slopfab_embedded_tokenizer_tests', 'slopfab_startup_tests', 'slopfab_whisper_tests', 'slopfab_demucs_tests', 'slopfab_syncnet_tests', 'slopfab_reference_decode_tests', 'slopfab_remote_ssh_fixture', 'slopfab_update_fixture',
             '--parallel', "$Jobs")
         Invoke-Checked 'ctest' @('--test-dir', $WindowsBuildDir, '-C', 'Release',
-            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|download_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli|demucs|syncnet|syncnet_cli|media_commands_cli|separate_cli|reference_decode|driving_audio_cli|remake_cli|remote_cli|update_cli|package_bundle)$')
+            '--output-on-failure', '-R', '^(capi|embedded_tokenizer|agent_cli|agent_instructions_cli|prompting_cli|settings_cli|mods_cli|scripting_cli|download_cli|motions_cli|frames_cli|clipproj_cli|projects_cli|cli_startup|whisper|transcribe_cli|demucs|syncnet|syncnet_cli|media_commands_cli|separate_cli|reference_decode|driving_audio_cli|remake_cli|regenerate_cli|remote_cli|update_cli|package_bundle)$')
 
         $destination = Join-Path $root 'dist\windows'
         New-Item -ItemType Directory -Path $destination -Force | Out-Null

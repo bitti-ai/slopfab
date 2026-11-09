@@ -61,6 +61,12 @@ bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions&
   auto& reference_conditioning_ids = inputs.reference_conditioning_ids;
   auto& media_qwen_pairs = inputs.media_qwen_pairs;
   auto& conditioning_tokenizer = inputs.tokenizer;
+  const std::string effective_prompt = request.regenerate.mode.empty()
+      ? request.prompt : regenerate_prompt(request.prompt);
+  if (!request.regenerate.mode.empty() && !options.prompt_embedding_path.empty() &&
+      std::find(inputs.fixed_prompt.modality_tags.begin(), inputs.fixed_prompt.modality_tags.end(), 0) ==
+          inputs.fixed_prompt.modality_tags.end())
+    throw std::invalid_argument("Regenerate captured embeddings must include draft-video vision conditioning");
   if (!request.remake_mode.empty()) {
     if (options.prompt_embedding_path.empty()) {
       for (const auto& segment : remake_prompt_segments(request.num_frames, reference_images.size(), request.prompt)) {
@@ -95,7 +101,7 @@ bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions&
           throw std::overflow_error("reference conditioning token overflow");
         nonvision_tokens += labels.back().size();
       }
-      const std::vector<int32_t> prompt_ids = tokenizer.encode(request.prompt);
+      const std::vector<int32_t> prompt_ids = tokenizer.encode(effective_prompt);
       if (prompt_ids.size() > std::numeric_limits<size_t>::max() - nonvision_tokens)
         throw std::overflow_error("reference conditioning token overflow");
       nonvision_tokens += prompt_ids.size();
@@ -120,7 +126,7 @@ bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions&
 
   if (!prepared_media.empty() && options.prompt_embedding_path.empty()) {
     auto& tokenizer = conditioning_tokenizer();
-    const auto prompt_ids = tokenizer.encode(request.prompt);
+    const auto prompt_ids = tokenizer.encode(effective_prompt);
     if (!reference_images.empty())
       reference_conditioning_ids.resize(reference_conditioning_ids.size() - prompt_ids.size());
     auto emit_text = [&](const std::string& value) {

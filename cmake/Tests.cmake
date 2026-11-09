@@ -49,6 +49,9 @@ if(SLOPFAB_BUILD_TESTS)
     add_test(NAME remake_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remake_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(remake_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+    add_test(NAME regenerate_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_regenerate_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(regenerate_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     set_tests_properties(driving_audio_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME separate_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_separate_cli.py" "$<TARGET_FILE:slopfab>")
@@ -244,6 +247,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_audio_steps.cpp
     tests/test_conditioning_settings.cpp
     tests/test_remake.cpp
+    tests/test_regenerate.cpp
     tests/test_sampling_plan.cpp
     tests/test_step_cache.cpp
     tests/test_motion_cache.cpp

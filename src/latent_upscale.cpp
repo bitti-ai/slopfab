@@ -186,7 +186,10 @@ std::vector<float> upscale_latents(const std::vector<float>& input, int frames, 
       uint64_t(frames) > std::numeric_limits<size_t>::max() / (24 * sizeof(float)) / oh / ow)
     throw std::length_error(
         "latent upscale: activation or output dimensions exceed indexing limits");
-  Network network(checkpoint, backend, options.scale, segments, progress);
+  const float scale = options.target_width
+      ? .5f * (float(options.target_width) / (w * 16) + float(options.target_height) / (h * 16))
+      : options.scale;
+  Network network(checkpoint, backend, scale, segments, progress);
   // The companion node applies these statistics to already-normalized H3
   // sampler latents, then reverses them on output. Preserve that extra affine
   // transform: feeding sampler latents straight into the network corrupts them.

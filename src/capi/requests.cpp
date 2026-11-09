@@ -564,6 +564,24 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake(slopfab_request* reque
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_regenerate_2k(
+    slopfab_request* request, const char* mode, const char* silence_path, const char* upsampler_path) {
+  if (!request || !mode)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_regenerate_2k: null request or mode");
+  return guarded([&] {
+    slopfab::RegenerateSettings next{mode, silence_path ? silence_path : "", upsampler_path ? upsampler_path : ""};
+    if (!next.mode.empty()) {
+      (void)slopfab::regenerate_steps(next.mode);
+      if (next.silence_path.empty() || (next.mode != "hf8" && next.upsampler_path.empty()))
+        return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_regenerate_2k: silence and up3/up4 upsampler paths required");
+    } else {
+      next = {};
+    }
+    request->request.regenerate = std::move(next);
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* request, int32_t enable,
                                                            int32_t preserve_driving_audio) {
   if (!request)

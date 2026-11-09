@@ -28,6 +28,7 @@ constexpr int kMinFrames = 22;
 
 void append_media_identity(std::string& key, const GenerateRequest& request) {
   key += ":remake:" + request.remake_mode;
+  key += ":regenerate:" + request.regenerate.mode;
   key += ":end-anchor:" + std::to_string(!request.end_anchor_path.empty());
   if (!request.end_anchor_path.empty()) {
     const auto plan = resolve_plan(request);
@@ -87,6 +88,7 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
   validate_remake_request(request);
+  validate_regenerate_request(request);
   request.context_noise.validate();
   if (request.context_noise.strength > 0 &&
       (request_model_family(request) != "h3" || request.still_image || request.bridge ||
@@ -224,6 +226,9 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     dit::validate_canvas_size(request.canvas_height, request.canvas_width, plan.geometry);
     plan.canvas_height = request.canvas_height;
     plan.canvas_width = request.canvas_width;
+  } else if (!request.regenerate.mode.empty()) {
+    plan.canvas_height = 1440;
+    plan.canvas_width = 2560;
   } else if (request.end_anchor_latents) {
     plan.canvas_height = request.end_anchor_latents->height;
     plan.canvas_width = request.end_anchor_latents->width;
@@ -685,7 +690,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     description += "  prompt              fixed " +
                    std::to_string(plan.conditioning.fixed_prompt_tokens) + "-token embedding\n";
   if (plan.conditioning.pin_target_audio)
-    description += "  target audio        pinned driving soundtrack (clean t=1)\n";
+    description += request.regenerate.mode.empty()
+        ? "  target audio        pinned driving soundtrack (clean t=1)\n"
+        : "  target audio        published silence latent (clean t=1)\n";
   if (request.video_transition)
     description += std::string("  video transition    ") +
                    (request.video_transition == 1 ? "extend" : "bridge") +

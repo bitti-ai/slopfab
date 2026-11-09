@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 51
+#define SLOPFAB_CAPI_VERSION_MINOR 52
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
@@ -757,6 +757,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* requ
  * transformer needs no LoRA; a pruned FL2VA base needs the matching mode LoRA.
  * References set appearance; upstream optional timeline pins are not exposed. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake(slopfab_request* request, const char* mode);
+
+/* Since 1.52. Open-H3-Regenerate-2K-IC: "up3", "up4", "hf8", or "" to disable.
+ * Pass the published silence latent and (for up3/up4) H3 latent upscaler paths.
+ * Add the IC and HyperFlow LoRAs separately with add_lora; use a Ref2VA base,
+ * one 124-frame draft video, and a multimodal Qwen encoder. Default: 2560x1440.
+ * No weight discovery occurs in the C API. Strings are copied. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_regenerate_2k(
+    slopfab_request* request, const char* mode, const char* silence_path, const char* upsampler_path);
 
 /* Since 1.13. Synchronously prepare an adapter's AdaLN grid outside inference.
  * adapter_path is a nonempty UTF-8 path; width is the positive base transformer

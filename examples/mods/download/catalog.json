@@ -848,5 +848,112 @@
         }
       }
     ]
+  },
+  "h3-regenerate-2k": {
+    "name": "Open H3 Regenerate 2K IC",
+    "source": "https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K-IC",
+    "note": "Ref2VA draft refinement, 124 frames at 24 fps; up3/up4/hf8. Download files only; HyperFlow needs its prepared Ref2VA companion.",
+    "files": [
+      {
+        "id": "ic-lora",
+        "role": "lora",
+        "name": "Open H3 Regenerate 2K IC rank 384",
+        "url": "https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K-IC/resolve/main/lora/open_h3_regenerate_2k_ic_lora.safetensors",
+        "recommendedSampling": {
+          "steps": 3,
+          "baseModel": "H3 Ref2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K-IC/blob/main/config.json"
+          ],
+          "requires": [
+            "HyperFlow 8-step LoRA and prepared Ref2VA companion",
+            "silence_audio_124f.safetensors",
+            "H3 latent upscaler (up3/up4)"
+          ],
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.931506,
+              0.839236,
+              0.703462,
+              0.5,
+              0.296538,
+              0.160764,
+              0.068494,
+              0
+            ]
+          },
+          "modes": {
+            "up3": {
+              "steps": 3,
+              "firstVideoSigma": 0.834942
+            },
+            "up4": {
+              "steps": 4,
+              "firstVideoSigma": 0.923077
+            },
+            "hf8": {
+              "steps": 8,
+              "firstVideoSigma": 1
+            }
+          },
+          "note": "Use --regenerate-2k to select initialization and the corresponding tail of this full grid. Native implementation defaults to LMS Sharp off and the standard H3 VAE."
+        }
+      },
+      {
+        "id": "silence-124f",
+        "role": "conditioning",
+        "name": "Fixed 124-frame silence latent",
+        "url": "https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K-IC/resolve/main/assets/silence_audio_124f.safetensors",
+        "minVramGb": 0
+      },
+      {
+        "id": "hyperflow-8step",
+        "role": "lora",
+        "name": "HyperFlow 8-step companion LoRA",
+        "url": "https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K-IC/resolve/main/lora/minimax_h3_hyperflow_8step_v1.0.safetensors",
+        "recommendedSampling": {
+          "steps": 8,
+          "baseModel": "H3 FL2VA or Ref2VA",
+          "loraStrength": 1,
+          "cfg": 1,
+          "settings": {
+            "version": 1,
+            "sampler": "euler",
+            "video_sigma_shift": 12,
+            "audio_sigma_shift": 3,
+            "base_sigmas": [
+              1,
+              0.931506,
+              0.839236,
+              0.703462,
+              0.5,
+              0.296538,
+              0.160764,
+              0.068494,
+              0
+            ]
+          },
+          "basis": "upstream",
+          "sources": [
+            "https://huggingface.co/VideoRebirthAI/hyperflow"
+          ],
+          "note": "Fixed grid and shifts from the released V1.0 file metadata. Slopfab selects them automatically; omit step/schedule overrides. Pruned bases require the matching Hyperflow companion."
+        }
+      },
+      {
+        "id": "latent-upsampler-bf16",
+        "role": "upscaler",
+        "name": "H3 3D latent upscaler BF16",
+        "url": "https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K-IC/resolve/main/latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors"
+      }
+    ]
   }
 }

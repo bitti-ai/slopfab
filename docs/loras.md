@@ -1,5 +1,8 @@
 # H3 LoRA adapters
 
+[Open-H3-Regenerate-2K-IC](regenerate_2k.md) has a dedicated
+`video generate --regenerate-2k up3|up4|hf8` workflow for draft refinement.
+
 `generate` accepts local safetensors adapters on CUDA and Vulkan. Each
 `--lora-strength` applies to the preceding `--lora`; the default is 1.0.
 Repeat the pair to combine adapters. Zero disables an adapter and negative

@@ -1,4 +1,4 @@
-15
+16
 
 # Slopfab media generation
 
@@ -47,6 +47,11 @@ If the user delegates choices, state reasonable defaults and proceed.
   sound in a short or smaller draft before an expensive full generation.
 
 ## Match the method to the scene
+
+- **Refine an H3 draft to 2K:** use `video generate --regenerate-2k up3` with
+  the IC LoRA, HyperFlow, Ref2VA, full multimodal Qwen and one 124-frame draft
+  at 24 fps. Keep its original caption. Default output is 2560x1440; mux the
+  original soundtrack back afterward. Consult `docs/regenerate_2k.md`.
 
 - **Remake existing footage:** use Viggle Remake (`--remake swap` for characters,
   `--remake edit` for scene changes), a 24 fps source, one to four painted

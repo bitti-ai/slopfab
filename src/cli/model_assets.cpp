@@ -185,6 +185,32 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   }
   if (text_only)
     return;
+  if (!req.regenerate.mode.empty()) {
+    auto has_adapter = [&](bool ic) {
+      for (const auto& spec : req.loras) {
+        if (spec.strength == 0 || !std::filesystem::exists(spec.path)) continue;
+        SafeTensors f;
+        f.open(spec.path);
+        if (ic ? is_regenerate_lora(f) : f.metadata().count("hyperflow") != 0)
+          return true;
+      }
+      return false;
+    };
+    if (!has_adapter(true)) {
+      auto path = find_weight(weights, {"", "loras"}, "open_h3_regenerate_2k_ic_lora.safetensors", true);
+      if (!path.empty()) req.loras.push_back({path, 1});
+    }
+    if (!has_adapter(false)) {
+      auto path = find_weight(weights, {"loras", ""}, "minimax_h3_hyperflow_8step_v1.0.safetensors", true);
+      if (!path.empty()) req.loras.push_back({path, 1});
+    }
+    if (req.regenerate.silence_path.empty())
+      req.regenerate.silence_path = find_weight(weights, {"", "loras"}, "silence_audio_124f.safetensors", true);
+    if (req.regenerate.upsampler_path.empty() && req.regenerate.mode != "hf8")
+      req.regenerate.upsampler_path = find_weight(weights, {"", "upscale", "latent_upsampler"}, "minimax_h3_latent_upscaler_3d_conv_v1_fp16.safetensors", true);
+    if (req.regenerate.upsampler_path.empty() && req.regenerate.mode != "hf8")
+      req.regenerate.upsampler_path = find_weight(weights, {"", "upscale", "latent_upsampler"}, "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors", true);
+  }
   if (req.transformer_path.empty()) {
     const std::string architecture = !req.remake_mode.empty()
                                   ? "viggle_remake_" + req.remake_mode + "_pruned_"

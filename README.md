@@ -26,6 +26,7 @@ with `slopfab update --check`. Your weights, projects and settings are preserved
 | [YuE2 / MiniMax Music3](docs/music-models.md) | Generates stereo songs from style descriptions and lyrics, or instrumental music. |
 | [RealESRGAN x4plus](docs/upscaling.md) / [SeedVR2 3B](docs/seedvr2.md) | Image/video upscaling; SeedVR2 restores video in temporal segments. |
 | [H3 latent upscaler](docs/latent_upscaling.md) | Enlarges H3 video before decoding, preserving frame count and audio. |
+| [H3 Regenerate 2K](docs/regenerate_2k.md) | Refines a draft at up to 2560x1440 using the IC LoRA, Ref2VA and HyperFlow; 3, 4 or 8 steps. |
 | [Sol-H3-VAE](docs/sol_h3_vae.md) / [TAEH3](docs/generation_previews.md) | Alternative H3 video decoding / lightweight generation previews. |
 | Whisper (tiny through large, including large-v3-turbo) | Transcribes speech or song vocals, with subtitle export and optional word timestamps. |
 | [HTDemucs](docs/separation.md) | Separates drums, bass, other instruments and vocals, or vocals and an instrumental track. |

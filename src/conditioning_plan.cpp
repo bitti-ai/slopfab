@@ -95,6 +95,23 @@ ResolvedConditioning resolve_conditioning_settings(const GenerateRequest& reques
     out.require_euler = true;
     out.allow_caches = false;
   }
+  if (!request.regenerate.mode.empty()) {
+    if (out.require_prompt_embedding || out.fixed_prompt_tokens ||
+        request.conditioning.include_reference_audio.value_or(false) ||
+        (request.conditioning.pin_target_audio && !*request.conditioning.pin_target_audio))
+      throw std::invalid_argument("Regenerate requires multimodal prompt conditioning and fixed silence audio");
+    const auto& frame = request.reference_media.front()->frames().front()->image;
+    out.media_short_edge = std::min(frame.width, frame.height);
+    out.media_max_pixels = frame.width * frame.height;
+    out.references_at_target_canvas = false;
+    out.canvas_from_reference_video = false;
+    out.include_reference_audio = false;
+    out.video_first = false;
+    out.pin_target_audio = true;
+    out.max_frames = 124;
+    out.require_euler = true;
+    out.allow_caches = false;
+  }
   if (request.preserve_driving_audio) {
     if (request.conditioning.include_reference_audio.value_or(false))
       throw std::invalid_argument(
@@ -146,7 +163,7 @@ void validate_conditioning_request(const GenerateRequest& r, const ResolvedCondi
   if (s.pin_target_audio &&
       (r.still_image || r.continuation || r.reference_media.size() != 1 ||
        !r.reference_media.front()->is_video() ||
-       (!r.reference_media.front()->soundtrack() && r.remake_mode.empty())))
+       (!r.reference_media.front()->soundtrack() && r.remake_mode.empty() && r.regenerate.mode.empty())))
     throw std::invalid_argument(
         "pin_target_audio requires one video with a soundtrack, without continuation or still-image mode");
 }

@@ -8,10 +8,19 @@ namespace slopfab {
 void validate_latent_upscale_options(const LatentUpscaleOptions& o) {
   if (!std::isfinite(o.scale) || o.scale < 1 || o.scale > 4)
     throw std::invalid_argument("latent upscale: scale must be finite and in [1,4]");
+  if ((o.target_width || o.target_height) &&
+      (o.target_width <= 0 || o.target_height <= 0 || o.target_width % 32 || o.target_height % 32))
+    throw std::invalid_argument("latent upscale: target axes must both be positive multiples of 32");
 }
 
 std::pair<int, int> latent_upscale_dimensions(int h, int w, const LatentUpscaleOptions& o) {
   validate_latent_upscale_options(o);
+  if (o.target_width) {
+    if (h <= 0 || w <= 0 || o.target_width / 16.0 < w || o.target_height / 16.0 < h ||
+        o.target_width / 16.0 > 4.0 * w || o.target_height / 16.0 > 4.0 * h)
+      throw std::invalid_argument("latent upscale: target axes must upscale by 1..4x");
+    return {o.target_height / 16, o.target_width / 16};
+  }
   auto axis = [&](int n) {
     if (n <= 0 || double(n) * o.scale > std::numeric_limits<int>::max() / 16.0 - 2)
       throw std::invalid_argument("latent upscale: invalid or excessive dimensions");

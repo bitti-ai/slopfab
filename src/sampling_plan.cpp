@@ -157,6 +157,8 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
   plan.hyperflow = hyperflow.has_value();
+  if (!request.regenerate.mode.empty() && !hyperflow)
+    throw std::invalid_argument("Regenerate requires the H3 HyperFlow 8-step LoRA and its prepared Ref2VA companion");
   if (hyperflow) {
     const auto& required = hyperflow->sampling;
     if (effective.base_sigmas != required.base_sigmas ||
@@ -164,7 +166,8 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
         effective.audio_sigma_shift != required.audio_sigma_shift || effective.audio_steps ||
         effective.sampler != sampler::SamplerKind::kEuler ||
         effective.scheduler == sampler::SigmaSchedule::kBeta ||
-        (request.num_inference_steps && request.num_inference_steps != 8) ||
+        (request.num_inference_steps && request.num_inference_steps !=
+          (request.regenerate.mode.empty() ? 8 : regenerate_steps(request.regenerate.mode))) ||
         request.animate || request.continuation || request.image_edit.image ||
         plan.fasth3_v2 || plan.model.pdd_steps > 1)
       throw std::invalid_argument("Hyperflow requires its trained eight intervals, shifts and Euler sampler; alternate schedules, Animate, continuation and image editing are unsupported");
@@ -285,6 +288,14 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
         tail.push_back(sigma);
     video.set_sigmas(tail);
     plan.num_inference_steps = static_cast<int>(video.num_steps());
+  }
+  if (!request.regenerate.mode.empty()) {
+    const int count = regenerate_steps(request.regenerate.mode);
+    const auto vs = video.sigmas(), as = audio.sigmas();
+    video.set_sigmas(std::vector<float>(vs.end() - count - 1, vs.end()));
+    audio.set_sigmas(std::vector<float>(as.end() - count - 1, as.end()));
+    plan.num_inference_steps = count;
+    plan.sampling_sources.push_back("Open-H3-Regenerate-2K-IC " + request.regenerate.mode);
   }
   plan.video_sigmas = video.sigmas();
   plan.audio_sigmas = audio.sigmas();

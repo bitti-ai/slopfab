@@ -1748,6 +1748,17 @@ SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
   CHECK(plan.num_model_evaluations == 50);
 }
 
+SLOPFAB_TEST(capi_regenerate_settings_validation) {
+  Request request;
+  CHECK(slopfab_request_set_regenerate_2k(nullptr, "up3", "silence", "up") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_regenerate_2k(request.handle, nullptr, "silence", "up") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_regenerate_2k(request.handle, "bad", "silence", "up") != SLOPFAB_OK);
+  CHECK(slopfab_request_set_regenerate_2k(request.handle, "up3", "silence", nullptr) != SLOPFAB_OK);
+  CHECK(slopfab_request_set_regenerate_2k(request.handle, "up3", "silence", "up") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_regenerate_2k(request.handle, "hf8", "silence", nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_regenerate_2k(request.handle, "", nullptr, nullptr) == SLOPFAB_OK);
+}
+
 SLOPFAB_TEST(capi_remake_plan_and_silent_source) {
   Request request;
   CHECK(slopfab_request_set_remake(nullptr, "swap") == SLOPFAB_ERR_INVALID_ARGUMENT);

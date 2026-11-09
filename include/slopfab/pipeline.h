@@ -38,6 +38,7 @@
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/model_geometry.h"
 #include "slopfab/music.h"
+#include "slopfab/regenerate.h"
 
 namespace slopfab {
 
@@ -56,6 +57,7 @@ constexpr float kAudioSigmaShift = 3.0f;
 constexpr float kViggleVideoSigmaShift = 3.0f;
 
 struct GenerateRequest {
+  RegenerateSettings regenerate;
   MusicSettings music;
   // Empty selects from checkpoint tensors, retaining H3 when no file exists.
   std::string model_family;

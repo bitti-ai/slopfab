@@ -11,6 +11,19 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  if (!r.regenerate.mode.empty()) {
+    require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(),
+            "Regenerate initializes its own latents; omit synthetic/init-latents options");
+    require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.latent_upscale_model_path.empty(),
+            "Regenerate does not combine with sampling effects, LCS or post-denoise latent upscaling");
+    (void)regenerate_silence(r.regenerate.silence_path);
+    if (r.regenerate.mode != "hf8") {
+      require(!r.regenerate.upsampler_path.empty(), "Regenerate up3/up4 requires --regenerate-upsampler FILE");
+      SafeTensors upsampler;
+      upsampler.open(r.regenerate.upsampler_path);
+      validate_latent_upscale_checkpoint(upsampler);
+    }
+  }
   require(r.clip_projection_path.empty() || o.prompt_embedding_path.empty(),
           "use either ClipProj or a precomputed prompt embedding, not both");
   if (!r.clip_projection_path.empty()) {

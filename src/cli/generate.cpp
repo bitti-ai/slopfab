@@ -608,6 +608,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         req.schedule = slopfab::sampler::ScheduleKind::kBeta;
       else
         throw std::runtime_error("--schedule wants default, beta, taomate-3step or dmad-4step");
+    } else if (arg == "--regenerate-2k") {
+      req.regenerate.mode = next("--regenerate-2k");
+      (void)regenerate_steps(req.regenerate.mode);
+    } else if (arg == "--regenerate-silence") {
+      req.regenerate.silence_path = next("--regenerate-silence");
+    } else if (arg == "--regenerate-upsampler") {
+      req.regenerate.upsampler_path = next("--regenerate-upsampler");
     } else if (arg == "--remake") {
       req.remake_mode = next("--remake");
       if (req.remake_mode != "swap" && req.remake_mode != "edit")
@@ -668,7 +675,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 
   // `--synthetic-latents --init-latents <f>` is the decode-an-existing-latent
   // path and needs no prompt; the seeded-noise form still does not either.
-  if (req.prompt.empty() && prompt_embedding.empty() && !dry_run && !synthetic) {
+  if (req.prompt.empty() && req.regenerate.mode.empty() && prompt_embedding.empty() && !dry_run && !synthetic) {
     cli_fail(2, "slopfab: generate needs --prompt \"...\" or --prompt-file <file>\n");
   }
   // Rejected rather than ranked. Silently letting one win would mean a run
@@ -822,7 +829,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     }
   }
   req.raw_output = true;
-  if ((agent().enabled || agent().worker) && req.prompt.empty() && prompt_embedding.empty() &&
+  if ((agent().enabled || agent().worker) && req.prompt.empty() && req.regenerate.mode.empty() && prompt_embedding.empty() &&
       !synthetic)
     throw CliError("INVALID_REQUEST", "provide prompt or options.prompt-embedding", 2, "prompt");
   prepare_project_generation(req, saw_out, count);

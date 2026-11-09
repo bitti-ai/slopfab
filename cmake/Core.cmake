@@ -38,6 +38,7 @@ add_library(slopfab_core STATIC
   src/core/conditioning_settings.cpp
   src/conditioning_plan.cpp
   src/core/remake.cpp
+  src/core/regenerate.cpp
   src/generation_validation.cpp
   src/dit/block_cache.cpp
   src/dit/chunking.cpp
