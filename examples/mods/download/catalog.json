@@ -857,6 +857,7 @@
       {
         "id": "ic-lora",
         "role": "lora",
+        "minVramGb": 8,
         "name": "Open H3 Regenerate 2K IC rank 384",
         "url": "https://huggingface.co/Efficient-Large-Model/Open-H3-Regenerate-2K-IC/resolve/main/lora/open_h3_regenerate_2k_ic_lora.safetensors",
         "recommendedSampling": {
