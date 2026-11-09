@@ -1,5 +1,10 @@
 # Test coverage
 
+P-H3 Image host contracts are selected with `SLOPFAB_TEST_FILTER=ph3_image`.
+Set `SLOPFAB_PH3_IMAGE_CHECKPOINT` to a completed transformer download to also
+validate its header and rank-16 timestep table. These tests do not establish
+GPU generation support; see [current implementation status](../docs/ph3_image.md).
+
 The large backend, transformer, and encoder suites are split by operator or
 stage. Shared implementation details live in `detail/*_fixture.h`; test cases
 remain registered exactly once. Keep fixture helpers private to their translation
