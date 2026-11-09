@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -124,6 +125,50 @@ SLOPFAB_TEST(adaln_interpolation_arithmetic) {
   st.close();
   std::error_code ec;
   std::filesystem::remove(path, ec);
+}
+
+SLOPFAB_TEST(adaln_ph3_rank16_interpolation) {
+  const auto path = std::filesystem::temp_directory_path() / "slopfab_ph3_table.safetensors";
+  std::vector<float> data(4097 * 16);
+  for (int row = 0; row < 4097; ++row)
+    for (int col = 0; col < 16; ++col)
+      data[row * 16 + col] = float(row * (col + 1));
+  slopfab::write_safetensors(path.string(), {{"adaln_t_table", {4097, 16}, data}});
+  slopfab::SafeTensors st;
+  st.open(path.string());
+  AdaLNTable table;
+  table.load(st);
+  CHECK(table.rows() == 4097 && table.rank() == 16);
+  for (int step = 0; step <= 8192; ++step) {
+    const float t = float(step) / 8192;
+    const auto code = table.lookup_code(t);
+    CHECK(code.size() == 16);
+    for (int col = 0; col < 16; ++col)
+      CHECK_NEAR(code[col], double(t) * 4096 * (col + 1), 0);
+  }
+  CHECK_NEAR(table.lookup_code(-1)[15], 0, 0);
+  CHECK_NEAR(table.lookup_code(2)[15], 65536, 0);
+  CHECK_NEAR(table.lookup_code(.5f / 4096, AdaLNLookup::kNearest)[15], 16, 0);
+  CHECK_NEAR(table.lookup_code(.25f, AdaLNLookup::kLinearReversed)[15], 49152, 0);
+  bool rejected = false;
+  try { (void)table.lookup(.5f); } catch (const std::exception&) { rejected = true; }
+  CHECK(rejected);
+  for (float t : {std::numeric_limits<float>::quiet_NaN(),
+                  std::numeric_limits<float>::infinity()}) {
+    rejected = false;
+    try { (void)table.lookup_code(t); } catch (const std::exception&) { rejected = true; }
+    CHECK(rejected);
+  }
+  st.close();
+  data[0] = std::numeric_limits<float>::quiet_NaN();
+  slopfab::write_safetensors(path.string(), {{"adaln_t_table", {4097, 16}, data}});
+  st.open(path.string());
+  rejected = false;
+  try { table.load(st); } catch (const std::exception&) { rejected = true; }
+  CHECK(rejected);
+  CHECK_NEAR(table.lookup_code(0)[0], 0, 0); // failed reload preserves the valid table
+  st.close();
+  std::filesystem::remove(path);
 }
 
 SLOPFAB_TEST(adaln_real_table) {

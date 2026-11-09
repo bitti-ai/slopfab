@@ -74,6 +74,8 @@ class AdaLNTable {
 public:
   static constexpr int kRows = 1025; // 2^10 + 1: a dyadic grid, endpoints included
   static constexpr int kRank = 8;
+  static constexpr int kPH3Rows = 4097;
+  static constexpr int kPH3Rank = 16;
 
   // Reads `adaln_t_table` and validates its shape and finiteness. Throws with
   // a specific message if the tensor is missing or the wrong shape.
@@ -89,11 +91,20 @@ public:
   // coefficient would hide it.
   std::array<float, kRank> lookup(float t, AdaLNLookup mode = AdaLNLookup::kLinear) const;
 
+  // Shape-aware lookup for P-H3 Image's rank-16 table. The legacy lookup
+  // rejects wider tables so existing rank-8 runners cannot truncate them.
+  std::vector<float> lookup_code(float t, AdaLNLookup mode = AdaLNLookup::kLinear) const;
+  int rows() const { return rows_; }
+  int rank() const { return rank_; }
+
   // Raw row access, for verification.
   const float* row(int index) const;
 
 private:
-  std::vector<float> data_; // [1025, 8] fp32
+  void lookup_into(float t, AdaLNLookup mode, float* out) const;
+  int rows_ = 0;
+  int rank_ = 0;
+  std::vector<float> data_;
 };
 
 // Conventional MiniMax-H3 timestep front end used by the unpruned Ref2VA

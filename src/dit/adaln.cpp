@@ -9,16 +9,14 @@
 namespace slopfab::dit {
 namespace {
 
-constexpr int kIntervals = AdaLNTable::kRows - 1; // 1024
-
 // Rounds half away from zero, matching what a `round(u)` in the quantiser
 // would have done. Only reachable from kNearest, which is not the default.
-int nearest_index(double u) {
+int nearest_index(double u, int intervals) {
   const int j = static_cast<int>(std::floor(u + 0.5));
   if (j < 0)
     return 0;
-  if (j > kIntervals)
-    return kIntervals;
+  if (j > intervals)
+    return intervals;
   return j;
 }
 
@@ -148,34 +146,54 @@ void AdaLNTable::load(const SafeTensors& checkpoint) {
         "carries time_embedder.* and a [96768, 2688] adaln_proj instead; that path is not "
         "implemented");
   }
-  if (view->shape.size() != 2 || view->shape[0] != kRows || view->shape[1] != kRank) {
-    throw std::runtime_error("adaln_t_table has shape " + std::to_string(view->shape.size()) +
-                             "-d, expected [1025, 8]");
+  if (view->shape != std::vector<int64_t>{kRows, kRank} &&
+      view->shape != std::vector<int64_t>{kPH3Rows, kPH3Rank}) {
+    throw std::runtime_error("adaln_t_table: expected [1025, 8] or [4097, 16]");
   }
 
-  to_f32(*view, data_);
-  if (data_.size() != static_cast<size_t>(kRows) * kRank) {
-    throw std::runtime_error("adaln_t_table did not widen to 1025*8 elements");
+  std::vector<float> data;
+  to_f32(*view, data);
+  if (data.size() != static_cast<size_t>(view->shape[0] * view->shape[1])) {
+    throw std::runtime_error("adaln_t_table: inconsistent element count");
   }
-  for (float v : data_) {
+  for (float v : data) {
     if (!std::isfinite(v)) {
       throw std::runtime_error("adaln_t_table contains a non-finite entry");
     }
   }
+  data_ = std::move(data);
+  rows_ = static_cast<int>(view->shape[0]);
+  rank_ = static_cast<int>(view->shape[1]);
 }
 
 const float* AdaLNTable::row(int index) const {
   if (!loaded())
     throw std::runtime_error("AdaLNTable::row: table not loaded");
-  if (index < 0 || index >= kRows) {
+  if (index < 0 || index >= rows_) {
     throw std::runtime_error("AdaLNTable::row: index " + std::to_string(index) + " out of range");
   }
-  return data_.data() + static_cast<size_t>(index) * kRank;
+  return data_.data() + static_cast<size_t>(index) * rank_;
 }
 
 std::array<float, AdaLNTable::kRank> AdaLNTable::lookup(float t, AdaLNLookup mode) const {
+  if (rank_ != kRank)
+    throw std::runtime_error("AdaLNTable::lookup requires a loaded rank-8 table; use lookup_code for rank 16");
+  std::array<float, kRank> out{};
+  lookup_into(t, mode, out.data());
+  return out;
+}
+
+std::vector<float> AdaLNTable::lookup_code(float t, AdaLNLookup mode) const {
+  std::vector<float> out(rank_);
+  lookup_into(t, mode, out.data());
+  return out;
+}
+
+void AdaLNTable::lookup_into(float t, AdaLNLookup mode, float* out) const {
   if (!loaded())
     throw std::runtime_error("AdaLNTable::lookup: table not loaded");
+  if (!std::isfinite(t))
+    throw std::invalid_argument("AdaLNTable::lookup: timestep must be finite");
 
   // Clamp rather than extrapolate. The schedule produces t in [0, 1] by
   // construction, so anything outside is an upstream bug worth surfacing as a
@@ -188,26 +206,26 @@ std::array<float, AdaLNTable::kRank> AdaLNTable::lookup(float t, AdaLNLookup mod
   if (x > 1.0)
     x = 1.0;
 
-  const double u = x * static_cast<double>(kIntervals);
-  std::array<float, kRank> out{};
+  const int intervals = rows_ - 1;
+  const double u = x * static_cast<double>(intervals);
 
   if (mode == AdaLNLookup::kNearest) {
-    const float* r = row(nearest_index(u));
-    for (int i = 0; i < kRank; ++i)
+    const float* r = row(nearest_index(u, intervals));
+    for (int i = 0; i < rank_; ++i)
       out[i] = r[i];
-    return out;
+    return;
   }
 
   int j = static_cast<int>(std::floor(u));
   if (j < 0)
     j = 0;
-  if (j > kIntervals - 1)
-    j = kIntervals - 1;
+  if (j > intervals - 1)
+    j = intervals - 1;
   const double f = u - static_cast<double>(j);
 
   const float* lo = row(j);
   const float* hi = row(j + 1);
-  for (int i = 0; i < kRank; ++i) {
+  for (int i = 0; i < rank_; ++i) {
     // Evaluated in double and rounded once. The coefficients are small and the
     // same c(t) feeds all 51 consumers at every step, so a rounding applied
     // here biases every block's modulation identically and accumulates
@@ -216,7 +234,6 @@ std::array<float, AdaLNTable::kRank> AdaLNTable::lookup(float t, AdaLNLookup mod
     out[i] =
         static_cast<float>((1.0 - f) * static_cast<double>(lo[i]) + f * static_cast<double>(hi[i]));
   }
-  return out;
 }
 
 } // namespace slopfab::dit
