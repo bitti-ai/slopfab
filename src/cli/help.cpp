@@ -88,11 +88,17 @@ const CommandHelp kCommands[] = {
      "Preserves weights, projects, settings and other mods. Windows installs after this process exits.\n"
      "Backups and installation status are saved beside the executable.\n"},
     {"video", "slopfab video COMMAND [options]", "Generate, inspect, restore and analyze video.",
-     "  generate         generate video with audio\n  frames           extract frames or contact sheets\n"
+     "  generate         generate video with audio\n  regenerate       refine an H3 draft up to 2K\n"
+     "  frames           extract frames or contact sheets\n"
      "  syncnet          measure lip synchronization with face detection/tracking\n"
      "  upscale          restore Y4M video\n"
      "  upscale-latents  enlarge H3 latent video\n  decode           decode video VAE latents\n"
      "  compare          compare two Y4M videos\nUse slopfab help video COMMAND for options.\n"},
+    {"regenerate", "slopfab video regenerate [--mode up3|up4|hf8] [options]",
+     "Refine a 124-frame H3 draft up to 2K with Open-H3-Regenerate-2K-IC.",
+     "Default mode: up3 (3 steps). Use --mode up4 for 4 steps or hf8 for 8 steps.\n"
+     "Requires --reference-video FILE, Ref2VA, the IC and HyperFlow LoRAs, and fixed silence latents.\n"
+     "Default output: 2560x1440, 124 frames at 24 fps. Shared generation options apply.\n"},
     {"audio", "slopfab audio COMMAND [options]", "Generate music, transcribe audio and separate stems.",
      "  generate    generate songs or instrumental music\n  transcribe  transcribe speech or vocals\n"
      "  separate    extract vocals or four stems\nUse slopfab help audio COMMAND for options.\n"},
@@ -454,7 +460,7 @@ const CommandHelp kCommands[] = {
      "  --bridge-right-margin <n>    replace right head, multiple of 17 (default 17).\n"
      "  --bridge-context <n>         locked context per side, 17*k+5 frames (default 22).\n"
      "  --remake swap|edit          Viggle Remake: source video + 1..4 painted frames, 6 steps\n"
-     "  --regenerate-2k up3|up4|hf8 Refine a 124-frame draft with Open-H3-Regenerate-2K-IC\n"
+     "  --mode up3|up4|hf8         Refinement mode for video regenerate (default up3)\n"
      "  --regenerate-silence FILE  Published silence_audio_124f.safetensors (auto-discovered)\n"
      "  --regenerate-upsampler F   H3 3D latent upscaler for up3/up4 (auto-discovered)\n"
      "  --preserve-driving-audio    pin attached driving soundtrack as clean target audio;\n"

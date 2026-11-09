@@ -28,7 +28,7 @@ bool is_regenerate_lora(const SafeTensors& f) {
 void validate_regenerate_request(const GenerateRequest& r) {
   if (r.regenerate.mode.empty()) {
     if (!r.regenerate.silence_path.empty() || !r.regenerate.upsampler_path.empty())
-      throw std::invalid_argument("Regenerate companion options require --regenerate-2k");
+      throw std::invalid_argument("Regenerate companion options require video regenerate or a request with options.mode");
     return;
   }
   const int steps = regenerate_steps(r.regenerate.mode);

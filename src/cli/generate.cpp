@@ -608,8 +608,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         req.schedule = slopfab::sampler::ScheduleKind::kBeta;
       else
         throw std::runtime_error("--schedule wants default, beta, taomate-3step or dmad-4step");
-    } else if (arg == "--regenerate-2k") {
-      req.regenerate.mode = next("--regenerate-2k");
+    } else if (arg == "--mode") {
+      req.regenerate.mode = next("--mode");
       (void)regenerate_steps(req.regenerate.mode);
     } else if (arg == "--regenerate-silence") {
       req.regenerate.silence_path = next("--regenerate-silence");

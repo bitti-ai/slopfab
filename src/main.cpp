@@ -164,10 +164,10 @@ int cli_main(int argc, char** argv) {
       return remote_fetch(args);
     if (command == "settings")
       return settings_command(args);
-    if (command == "generate" || command == "validate") {
+    if (command == "generate" || command == "validate" || command == "regenerate") {
       if (command == "validate")
         args.push_back("--dry-run");
-      return finish_command(run_generation_arguments(args, media_task));
+      return finish_command(run_generation_arguments(args, media_task, command == "regenerate"));
     }
     if (command == "capabilities" || command == "schema" || command == "models" ||
         command == "doctor" || command == "devices")

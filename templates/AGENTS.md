@@ -1,4 +1,4 @@
-16
+17
 
 # Slopfab media generation
 
@@ -48,7 +48,7 @@ If the user delegates choices, state reasonable defaults and proceed.
 
 ## Match the method to the scene
 
-- **Refine an H3 draft to 2K:** use `video generate --regenerate-2k up3` with
+- **Refine an H3 draft to 2K:** use `video regenerate` with
   the IC LoRA, HyperFlow, Ref2VA, full multimodal Qwen and one 124-frame draft
   at 24 fps. Keep its original caption. Default output is 2560x1440; mux the
   original soundtrack back afterward. Consult `docs/regenerate_2k.md`.

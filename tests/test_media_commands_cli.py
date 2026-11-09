@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix='slopfab-media-commands-') as tmp:
                            cwd=root, capture_output=True, text=True, input=input, timeout=30)
         assert p.returncode == code, (args, p.returncode, p.stdout, p.stderr)
         return json.loads(p.stdout.splitlines()[-1])
-    groups = {'video': ['generate', 'frames', 'syncnet', 'upscale', 'upscale-latents', 'decode', 'compare'],
+    groups = {'video': ['generate', 'regenerate', 'frames', 'syncnet', 'upscale', 'upscale-latents', 'decode', 'compare'],
               'audio': ['generate', 'transcribe', 'separate'], 'image': ['generate', 'upscale'],
               'jobs': ['submit', 'status', 'wait', 'cancel', 'worker'],
               'models': ['list', 'inspect', 'compare', 'prepare-lora'],
@@ -62,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix='slopfab-media-commands-') as tmp:
         assert run(command, '--help', code=0 if command == 'motions' else 2)['type'] == ('help' if command == 'motions' else 'error')
     for old in ['submit', 'status', 'wait', 'cancel', 'worker', 'inspect', 'compare',
                 'prepare-lora', 'tokenize', 'encode-text', 'encode-refmod', 'bundle-refmods',
-                'doctor', 'devices', 'capabilities', 'version', 'generate', 'validate', 'schema', 'fetch', 'model-list']:
+                'doctor', 'devices', 'capabilities', 'version', 'generate', 'regenerate', 'validate', 'schema', 'fetch', 'model-list']:
         assert run(old, '--help', code=2)['type'] == 'error'
         assert run('help', old, code=2)['type'] == 'error'
     assert run('remote', 'fetch', '--help')['command'] == 'remote fetch'

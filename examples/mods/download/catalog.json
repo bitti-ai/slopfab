@@ -904,7 +904,7 @@
               "firstVideoSigma": 1
             }
           },
-          "note": "Use --regenerate-2k to select initialization and the corresponding tail of this full grid. Native implementation defaults to LMS Sharp off and the standard H3 VAE."
+          "note": "Use slopfab video regenerate --mode to select initialization and the corresponding tail of this full grid. Native implementation defaults to LMS Sharp off and the standard H3 VAE."
         }
       },
       {

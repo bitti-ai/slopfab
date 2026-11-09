@@ -21,7 +21,8 @@ const Route routes[] = {
     {"system capabilities", "capabilities", ""}, {"system version", "version", ""},
     {"requests run", "generate", ""}, {"requests validate", "validate", ""},
     {"requests schema", "schema", ""}, {"remote fetch", "fetch", ""},
-    {"video generate", "generate", "video"}, {"audio generate", "generate", "music"},
+    {"video generate", "generate", "video"}, {"video regenerate", "regenerate", "video"},
+    {"audio generate", "generate", "music"},
     {"image generate", "generate", "image"}, {"video frames", "frames", ""},
     {"video syncnet", "syncnet", ""},        {"video upscale", "upscale", ""},
     {"image upscale", "upscale", ""},        {"video upscale-latents", "upscale-latents", ""},
@@ -79,6 +80,8 @@ const CommandHelp* media_command_help(std::string_view name) {
   if (usage.rfind(prefix, 0) == 0)
     usage.replace(0, prefix.size(), "slopfab " + title);
   detail = base->detail;
+  if (std::string_view(r->target) == "regenerate")
+    detail += std::string("\nShared generation options:\n") + find_command("generate")->detail;
   if (*r->task) {
     auto pos = usage.find(" [video|image|music]");
     if (pos != std::string::npos)

@@ -41,15 +41,21 @@ with tempfile.TemporaryDirectory(prefix='slopfab-regenerate-') as temp:
             input=json.dumps(request) if request else None, capture_output=True, text=True, timeout=30)
         assert (result.returncode == 0) == ok, (result.stdout, result.stderr)
         return json.loads(result.stdout.splitlines()[-1])
-    base = ['video', 'generate', '--regenerate-2k', 'hf8', '--reference-video', movie,
+    base = ['video', 'regenerate', '--mode', 'hf8', '--reference-video', movie,
             '--resolution', '64x64', '--dry-run']
     plan = run(*base)['plans'][0]
     assert plan['steps'] == 8 and plan['regenerate_mode'] == 'hf8'
     assert plan['conditioning'] == {'pin_target_audio': True, 'include_reference_audio': False}
     # Explicit HyperFlow must not be added a second time by discovery.
     assert run(*base, '--lora', hf)['plans'][0]['steps'] == 8
-    for extras, message in [(['--regenerate-2k', 'bad'], 'up3'),
-                            (['--regenerate-2k', 'up3'], 'upsampler'),
+    # The command defaults to up3, including when a prompt resembles an option.
+    default = ['video', 'regenerate', '--reference-video', movie, '--resolution', '64x64', '--dry-run']
+    for extras in [[], ['--prompt', '--mode']]:
+        assert 'upsampler' in run(*default, *extras, ok=False)['error']['message']
+    # Old flag spelling has been removed.
+    run('video', 'generate', '--regenerate-2k', 'hf8', '--dry-run', ok=False)
+    for extras, message in [(['--mode', 'bad'], 'up3'),
+                            (['--mode', 'up3'], 'upsampler'),
                             (['--steps', '3'], 'step count'),
                             (['--frames', '90'], '124 frames'),
                             (['--synthetic-latents'], 'initializes'),
@@ -58,9 +64,14 @@ with tempfile.TemporaryDirectory(prefix='slopfab-regenerate-') as temp:
         assert message in event['error']['message'], event
     request = {'schema_version': 1, 'task': 'video', 'resolution': {'width': 64, 'height': 64},
                'references': [{'type': 'video', 'path': str(movie)}],
-               'options': {'regenerate-2k': 'hf8'}}
+               'options': {'mode': 'hf8'}}
     assert run('requests', 'validate', '--request', '-', request=request)['plans'][0]['steps'] == 8
-    assert run('system', 'capabilities')['data']['regenerate_2k']['frames'] == 124
-    text = subprocess.run([exe, 'help', 'video', 'generate'], capture_output=True, text=True).stdout
-    assert '--regenerate-2k' in text
+    assert run('video', 'regenerate', '--request', '-', '--dry-run', request=request)['plans'][0]['steps'] == 8
+    request['task'] = 'image'
+    assert run('video', 'regenerate', '--request', '-', '--dry-run', request=request, ok=False)['error']['field'] == 'task'
+    caps = run('system', 'capabilities')['data']['regenerate_2k']
+    assert caps['frames'] == 124 and caps['command'] == 'slopfab video regenerate'
+    assert caps['default_mode'] == 'up3'
+    text = subprocess.run([exe, 'help', 'video', 'regenerate'], capture_output=True, text=True).stdout
+    assert '--mode' in text and '--reference-video' in text and '--regenerate-2k' not in text
 print('PASS: Regenerate CLI/JSON, weight discovery and recipe validation')

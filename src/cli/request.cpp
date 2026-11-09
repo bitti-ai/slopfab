@@ -194,10 +194,13 @@ std::vector<std::string> request_args(Value request) {
                        "options." + key);
       const std::string flag = "--" + key;
       const std::string help = find_command("generate")->detail;
-      const auto location = help.find(flag);
-      if (location == std::string::npos ||
-          (location + flag.size() < help.size() && help[location + flag.size()] != ' ' &&
-           help[location + flag.size()] != '\n'))
+      size_t location = 0;
+      while ((location = help.find(flag, location)) != std::string::npos) {
+        const auto end = location + flag.size();
+        if (end == help.size() || help[end] == ' ' || help[end] == '\n') break;
+        location = end;
+      }
+      if (location == std::string::npos)
         throw CliError("INVALID_REQUEST", "unknown option: " + key, 2, "options." + key);
       auto append = [&](const Value& value) {
         if (value.type() == json::Type::Bool) {
@@ -514,7 +517,8 @@ Value capabilities() {
           {"duration_policy", str("trim_end_or_pad_silence")}, {"source_slicing", Value(false)},
           {"preserve_option", str("--preserve-driving-audio")},
           {"pin_target_audio", Value(true)}, {"include_reference_audio_when_pinned", Value(false)}})},
-      {"regenerate_2k", Value(Object{{"option", str("--regenerate-2k up3|up4|hf8")},
+      {"regenerate_2k", Value(Object{{"command", str("slopfab video regenerate")},
+          {"mode_option", str("--mode up3|up4|hf8")}, {"default_mode", str("up3")},
           {"frames", num(124)}, {"fps", num(24)}, {"default_width", num(2560)}, {"default_height", num(1440)},
           {"base", str("H3 Ref2VA")}, {"hyperflow_required", Value(true)},
           {"audio", str("fixed published silence latents; mux original soundtrack after rendering")},
@@ -528,7 +532,7 @@ Value capabilities() {
           {"model_sha256", str("961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442")},
           {"automatic_face_tracking", Value(true)}, {"fps", num(25)},
           {"s3fd_safetensors", Value(true)}, {"cli_only", Value(true)}})},
-      {"media_commands", Value(Object{{"video", Value(Array{str("generate"), str("frames"), str("syncnet"), str("upscale"), str("upscale-latents"), str("decode"), str("compare")})},
+      {"media_commands", Value(Object{{"video", Value(Array{str("generate"), str("regenerate"), str("frames"), str("syncnet"), str("upscale"), str("upscale-latents"), str("decode"), str("compare")})},
           {"audio", Value(Array{str("generate"), str("transcribe"), str("separate")})},
           {"image", Value(Array{str("generate"), str("upscale")})}})},
       {"separation", Value(Object{{"command", str("slopfab audio separate FILE --model MODEL.safetensors")},
@@ -686,9 +690,22 @@ int discovery_command(const std::string& command, const std::vector<std::string>
   return 0;
 }
 
-int run_generation_arguments(const std::vector<std::string>& args, const std::string& task) {
+int run_generation_arguments(const std::vector<std::string>& args, const std::string& task,
+                             bool regenerate) {
   start_request();
   auto prepared = prepare_arguments(args, task);
+  if (regenerate) {
+    bool has_mode = false;
+    for (size_t i = 0; i < prepared.size(); ++i) {
+      has_mode |= prepared[i] == "--mode";
+      if (option_takes_value(prepared[i]) && i + 1 < prepared.size()) ++i;
+    }
+    if (!has_mode) {
+      prepared.insert(prepared.begin(), {"--mode", "up3"});
+      agent().generation_arguments.push_back(str("--mode"));
+      agent().generation_arguments.push_back(str("up3"));
+    }
+  }
   std::vector<char*> argv;
   for (auto& a : prepared)
     argv.push_back(a.data());

@@ -6,8 +6,10 @@ generating higher-resolution frames. Slopfab supports CUDA and Vulkan, with
 the released IC LoRA (312 rank-384 projections, including both token-refiner
 blocks), HyperFlow, and fixed silence latents.
 
-Use `slopfab video generate --regenerate-2k up3` with one Y4M draft containing
-at least 124 frames at 24 fps. The first 124 frames are used. Normalize or pad
+Use `slopfab video regenerate` with one Y4M draft containing
+at least 124 frames at 24 fps. The default mode is `up3`; select alternatives
+with `--mode up4` or `--mode hf8`.
+The first 124 frames are used. Normalize or pad
 shorter clips externally. Default output is **2560x1440**; `--resolution` can
 select an aligned smaller canvas for testing or 768p refinement. Each target
 axis must be at least the source axis and at most 4x larger, with both axes
@@ -55,7 +57,7 @@ Slopfab adds the author's enhancement instruction and encodes the draft's visual
 context automatically. Do not substitute a text-only cached prompt embedding.
 
 ```sh
-slopfab video generate --regenerate-2k up3 --reference-video draft.y4m --prompt "Original scene caption" --transformer weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors --text-encoder weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors --vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out output/PROJECT_NAME.y4m
+slopfab video regenerate --reference-video draft.y4m --prompt "Original scene caption" --transformer weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors --text-encoder weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors --vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out output/PROJECT_NAME.y4m
 ```
 
 Append `--inference-backend vulkan --vulkan-arithmetic portable --attention flash2`
@@ -77,7 +79,7 @@ bit-identical. A full 2K pass is substantially more expensive than draft generat
 
 The C++ API exposes `GenerateRequest::regenerate`; C API 1.52 adds
 `slopfab_request_set_regenerate_2k`. Library callers supply paths and add both
-LoRAs explicitly. JSON requests use `options.regenerate-2k`,
+LoRAs explicitly. JSON requests use `options.mode`,
 `options.regenerate-silence` and `options.regenerate-upsampler`.
 
 ## Validation
