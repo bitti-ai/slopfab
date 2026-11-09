@@ -1,4 +1,5 @@
 #include "session_state.h"
+#include "slopfab/ph3_image.h"
 #include <mutex>
 #include <stdexcept>
 
@@ -31,6 +32,8 @@ void GenerationSession::clear() {
 
 RunResult run_generate(GenerationSession& session, const GenerateRequest& request,
                        const GeneratePlan& plan, const RunOptions& options) {
+  if (plan.model.family == "ph3_image")
+    throw std::runtime_error(kPH3ImageRuntimePending);
   std::unique_lock<std::mutex> session_lock(session.impl_->mutex, std::try_to_lock);
   std::unique_lock<std::mutex> execution_lock(execution_mutex, std::try_to_lock);
   if (!session_lock.owns_lock() || !execution_lock.owns_lock()) {

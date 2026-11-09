@@ -1,6 +1,7 @@
 #include "upscale_options.h"
 #include "projects.h"
 #include "slopfab/model_profile.h"
+#include "slopfab/ph3_image.h"
 // slopfab - MiniMax H3 video generation in C++/CUDA.
 
 #include <algorithm>
@@ -783,7 +784,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   if (slopfab::request_model_family(req) == "moss" ||
       slopfab::request_model_family(req) == "fibo2" ||
-      slopfab::request_model_family(req) == "krea2") {
+      slopfab::request_model_family(req) == "krea2" ||
+      slopfab::request_model_family(req) == "ph3_image") {
     if (saw_frames)
       throw std::invalid_argument("This model generates one image; omit --frames");
     if (!saw_attention)
@@ -929,6 +931,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
            true);
     return 0;
   }
+
+  if (plan.model.family == "ph3_image")
+    throw CliError("UNSUPPORTED_CAPABILITY", slopfab::kPH3ImageRuntimePending, 4);
 
 #if SLOPFAB_WITH_CUDA
   // Dry-run above is deliberately device-free. Synthetic latents skip the

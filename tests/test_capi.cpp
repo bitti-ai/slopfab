@@ -1509,6 +1509,25 @@ SLOPFAB_TEST(capi_moss_plan_and_guidance) {
   CHECK(plan.num_model_evaluations == 1);
 }
 
+SLOPFAB_TEST(capi_ph3_image_plan_and_execution_guard) {
+  Request request;
+  CHECK(slopfab_request_set_model_family(request.handle, "ph3_image") == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 2912 && plan.canvas_height == 2912);
+  CHECK(plan.aligned_frames == 1 && plan.num_audio_rows == 4);
+  CHECK(plan.num_model_evaluations == 8);
+  OwnedString description;
+  CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
+  CHECK(std::string(description.text).find("planning only") != std::string::npos);
+  slopfab_generation* generation = nullptr;
+  CHECK(slopfab_generation_start(request.handle, nullptr, nullptr, &generation) ==
+        SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(generation == nullptr);
+  CHECK(slopfab_request_set_steps(request.handle, 4) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+}
+
 SLOPFAB_TEST(capi_krea_plan_and_guidance) {
   Request request;
   CHECK(slopfab_request_set_model_family(request.handle, "krea2") == SLOPFAB_OK);

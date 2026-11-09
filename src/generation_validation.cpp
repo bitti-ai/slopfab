@@ -11,6 +11,17 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  if (p.model.family == "ph3_image") {
+    require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler,
+            "P-H3 Image requires the Euler sampler");
+    require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(),
+            "P-H3 Image planning requires fresh noise");
+    require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty() &&
+                o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() &&
+                o.save_latents_path.empty() && !o.on_latents && !o.attention_band && o.veda.predictor_path.empty(),
+            "P-H3 Image planning does not support H3 archives, effects or upscaling");
+    return;
+  }
   if (!r.regenerate.mode.empty()) {
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(),
             "Regenerate initializes its own latents; omit synthetic/init-latents options");

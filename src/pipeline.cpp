@@ -1,6 +1,7 @@
 #include "slopfab/pipeline.h"
 #include "slopfab/remake.h"
 #include "slopfab/model_profile.h"
+#include "slopfab/ph3_image.h"
 #include "slopfab/krea.h"
 
 #include <algorithm>
@@ -134,6 +135,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::invalid_argument(
         "ending anchor requires H3 video generation or continuation without bridge, transitions or edits");
   if (request_model_family(request) == "yue2" || request_model_family(request) == "minimax_music3") return resolve_music_plan(request);
+  if (request_model_family(request) == "ph3_image")
+    return resolve_ph3_image_plan(request);
   if (request_model_family(request) == "moss")
     return resolve_moss_plan(request);
   if (request_model_family(request) == "krea2")
@@ -563,6 +566,13 @@ std::string media_encoding_cache_key(const GenerateRequest& request,
 }
 
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {
+  if (plan.model.family == "ph3_image") {
+    return "model       P-H3 Image (planning only)\ncanvas      " +
+        std::to_string(plan.canvas_width) + " x " + std::to_string(plan.canvas_height) +
+        "\nmode        text-to-image\nsteps       8 Euler updates (fixed grid; shifts 1/1)"
+        "\nguidance    1 (no CFG)\naudio       2 latent positions per channel (internal only)"
+        "\nstatus      GPU generation is not implemented yet\noutput      " + request.out_path + "\n";
+  }
   if (plan.model.family == "minimax_music3") {
     return "  model               MiniMax Music3\n  output              stereo 44100 Hz WAV\n  duration ceiling    " +
         std::to_string(plan.duration_seconds) + " seconds\n  flow steps          " +

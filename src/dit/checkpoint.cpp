@@ -1,5 +1,6 @@
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/remake.h"
+#include "slopfab/ph3_image.h"
 
 #include <algorithm>
 #include <cctype>
@@ -124,6 +125,17 @@ void validate_adaln_table_config(int rank, int rows) {
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
   ModelDescriptor model;
+  if (is_ph3_image_transformer(checkpoint)) {
+    validate_ph3_image_transformer(checkpoint);
+    if (checkpoint.metadata().count("slopfab.model"))
+      throw std::invalid_argument("P-H3 Image cannot use a legacy slopfab.model descriptor");
+    model.family = "ph3_image";
+    model.compatibility_architecture = TransformerArchitecture::kPH3Image;
+    model.modulation = ModulationImplementation::kTable;
+    model.quantization = detect_transformer_quantization(checkpoint);
+    model.origin = "P-H3 Image rank-16 tensor contract (planning only)";
+    return model;
+  }
   if (has(checkpoint, "cond_layer_logits") && has(checkpoint, "diffusion_transformer.transformer.project_in.weight")) {
     for (const auto& item : std::vector<std::pair<std::string, std::vector<int64_t>>>{
         {"cond_layer_logits", {8}}, {"latent_conditioners.0.weight", {2048,4096,3}},
@@ -379,6 +391,8 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
 
 const char* transformer_architecture_name(TransformerArchitecture architecture) {
   switch (architecture) {
+  case TransformerArchitecture::kPH3Image:
+    return "P-H3 Image (rank-16, 8-step; planning only) transformer";
   case TransformerArchitecture::kKrea2:
     return "Krea 2 transformer";
   case TransformerArchitecture::kFibo2EditTurbo:

@@ -68,6 +68,7 @@
 #include "agent.h"
 #include "settings.h"
 #include "slopfab/model_profile.h"
+#include "slopfab/ph3_image.h"
 
 namespace slopfab::cli {
 uint64_t random_seed() {
@@ -161,6 +162,24 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   const auto weights = configured_weight_paths();
   if (weights.empty())
     return;
+  if (std::string_view(profile.family) == "ph3_image") {
+    if (req.transformer_path.empty()) {
+      for (const char* name : {"p-h3-image_bf16.safetensors", "p-h3-image_int8_convrot.safetensors",
+                               "p-h3-image_w4a8.safetensors"}) {
+        const auto candidate = find_weight(weights, {"diffusion_models", "transformer", ""}, name, true);
+        if (!candidate.empty()) {
+          if (!req.transformer_path.empty())
+            throw CliError("MODEL_AMBIGUOUS", "multiple P-H3 Image transformers; pass --transformer FILE", 3);
+          req.transformer_path = candidate;
+        }
+      }
+    }
+    if (req.text_encoder_path.empty())
+      req.text_encoder_path = find_weight(weights, {"text_encoders", "text_encoder", ""}, profile.conditioner_hint);
+    if (!text_only && req.video_vae_path.empty())
+      req.video_vae_path = find_weight(weights, {"vae", ""}, profile.vae_hint);
+    return;
+  }
   if (std::string_view(profile.family) == "yue2") {
     if (req.transformer_path.empty())
       req.transformer_path = find_weight(weights, {"", "transformer"}, "yue2_3b");
@@ -230,6 +249,8 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
 }
 
 void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_encoder) {
+  if (request_model_family(req) == "ph3_image")
+    throw std::runtime_error(kPH3ImageRuntimePending);
   if (request_model_family(req) == "minimax_music3") {
     if (req.transformer_path.empty() || req.text_encoder_path.empty() || req.audio_vae_path.empty())
       throw std::runtime_error(

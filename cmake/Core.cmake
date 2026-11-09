@@ -21,6 +21,7 @@ add_library(slopfab_core STATIC
   src/core/device_tensor.cpp
   src/core/model_geometry.cpp
   src/core/model_profile.cpp
+  src/core/ph3_image.cpp
   src/core/image.cpp
   src/core/upscale.cpp
   src/core/latent_upscale.cpp
