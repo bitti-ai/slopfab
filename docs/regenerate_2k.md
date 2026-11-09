@@ -79,3 +79,14 @@ The C++ API exposes `GenerateRequest::regenerate`; C API 1.52 adds
 `slopfab_request_set_regenerate_2k`. Library callers supply paths and add both
 LoRAs explicitly. JSON requests use `options.regenerate-2k`,
 `options.regenerate-silence` and `options.regenerate-upsampler`.
+
+## Validation
+
+The Windows build passes all 28 release checks. Local tests load all 312
+projections from the released FP32 IC adapter, check all three schedule modes,
+the 2K default canvas, silence transposition and invalid requests. On an RTX
+5090, CUDA `up3` and Vulkan portable `up4` both completed 124-frame smoke renders
+from 160x96 to 320x192 using Ref2VA NVFP4, full Qwen, both LoRAs and the learned
+latent upscaler; pinned audio remained unchanged. These verify execution, not
+2K visual quality or performance. Full-resolution 2K rendering has not been
+benchmarked here.
