@@ -207,10 +207,10 @@ public:
   // [rows,heads,head_dim], tables [rows,96] or [rows,head_dim].
   void rope_h3_bf16(DeviceTensor& input, DeviceTensor& cosine, DeviceTensor& sine);
   void rope_neox_bf16(DeviceTensor& input, DeviceTensor& cosine, DeviceTensor& sine);
-  // Video-VAE fused split-QKV, bias, head-width-64 RMSNorm and partial-width-48
+  // Video-VAE fused split-QKV, bias, head-width-64 RMSNorm and partial-width
   // RoPE. QKV is [sequence,heads,192] or its GEMM-native contiguous flattening
   // [sequence,heads*192]; bias is correspondingly [heads,192] or [heads*192]. Tables
-  // [sequence,48], and outputs [heads,sequence,64]. Tokens at and beyond
+  // [sequence,rope_dim] (positive even width <=64), and outputs [heads,sequence,64]. Tokens at and beyond
   // num_patches bypass rotation. All tensors are contiguous fp32 and distinct.
   void split_qkv_norm_rope_f32(DeviceTensor& qkv, DeviceTensor& bias, DeviceTensor& cosine,
                                DeviceTensor& sine, DeviceTensor& q, DeviceTensor& k,

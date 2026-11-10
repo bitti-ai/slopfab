@@ -94,7 +94,9 @@ void TensorBatch::split_qkv_norm_rope_f32(DeviceTensor& qkv, DeviceTensor& bias,
                     resources[1]->layout.extent[1] != 192)) ||
       resources[2]->layout.rank != 2 || resources[3]->layout.rank != 2 ||
       resources[2]->layout.extent[0] != sequence || resources[3]->layout.extent[0] != sequence ||
-      resources[2]->layout.extent[1] != 48 || resources[3]->layout.extent[1] != 48) {
+      resources[2]->layout.extent[1] == 0 || resources[2]->layout.extent[1] > 64 ||
+      (resources[2]->layout.extent[1] & 1u) != 0 ||
+      resources[3]->layout.extent[1] != resources[2]->layout.extent[1]) {
     throw std::invalid_argument("vulkan tensor: invalid video-VAE fused RoPE");
   }
   for (size_t i = 0; i < resources.size(); ++i) {
@@ -114,6 +116,7 @@ void TensorBatch::split_qkv_norm_rope_f32(DeviceTensor& qkv, DeviceTensor& bias,
   TensorContext::Impl::VaeRopeParameters parameters;
   parameters.sequence = static_cast<uint32_t>(sequence);
   parameters.heads = static_cast<uint32_t>(heads);
+  parameters.rope_dim = static_cast<uint32_t>(resources[2]->layout.extent[1]);
   parameters.num_patches = num_patches;
   std::memcpy(&parameters.epsilon_bits, &epsilon, sizeof(epsilon));
   try {

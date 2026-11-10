@@ -1,6 +1,7 @@
 #include "detail/tensor_backends_fixture.h"
 
-SLOPFAB_TEST_CATEGORY(cuda_vulkan_tensor_exact_vae_fused_rope, "synthetic") {
+namespace {
+void check_vae_fused_rope(uint32_t rope_dim) {
   using namespace slopfab;
   using namespace slopfab::vulkan;
   int cuda_devices = 0;
@@ -19,16 +20,14 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_tensor_exact_vae_fused_rope, "synthetic") {
     return;
   }
   DeviceOptions options;
+  options.portable_arithmetic = true;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = true;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
-  if (!vk.exact_normalization()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: !vk.exact_normalization()");
-    return;
-  }
+  vk.require_fp32_vae_normalization();
 
-  constexpr uint32_t sequence = 5, heads = 3, head_dim = 64, rope_dim = 48, num_patches = 3;
+  constexpr uint32_t sequence = 5, heads = 3, head_dim = 64, num_patches = 3;
   constexpr float epsilon = 1.0e-6f;
   const size_t qkv_count = static_cast<size_t>(sequence) * heads * 3 * head_dim;
   const size_t bias_count = static_cast<size_t>(heads) * 3 * head_dim;
@@ -220,7 +219,7 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_tensor_exact_vae_fused_rope, "synthetic") {
   {
     const uint64_t tiny_qkv_shape[] = {2, 1, 192};
     const uint64_t tiny_bias_shape[] = {1, 192};
-    const uint64_t tiny_table_shape[] = {2, 48};
+    const uint64_t tiny_table_shape[] = {2, rope_dim};
     const uint64_t tiny_output_shape[] = {1, 2, 64};
     DeviceTensor in = vk.allocate(TensorLayout::contiguous(tiny_qkv_shape, 3));
     DeviceTensor bv = vk.allocate(TensorLayout::contiguous(tiny_bias_shape, 2));
@@ -240,4 +239,10 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_tensor_exact_vae_fused_rope, "synthetic") {
     TensorBatch collect_completed_slot = vk.begin_batch();
   }
   CHECK(vk.pooled_used_bytes() == used_before_drop);
+}
+} // namespace
+
+SLOPFAB_TEST_CATEGORY(cuda_vulkan_tensor_exact_vae_fused_rope, "synthetic") {
+  check_vae_fused_rope(48);
+  check_vae_fused_rope(32);
 }
