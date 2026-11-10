@@ -5,8 +5,18 @@ Use the `ph3_image` family, or supply a transformer checkpoint and let Slopfab
 identify it from its tensors. Files do not need renaming or conversion.
 
 The tested bundle is the upstream INT8 ConvRot transformer, INT8 ConvRot
-Qwen3-VL-4B text encoder and INT8 image VAE. Keep all three files together,
-or specify their paths:
+Qwen3-VL-4B text encoder and INT8 image VAE. Download the matching files with
+the download mod:
+
+```sh
+slopfab download ph3_image                      # List the matching files and URLs
+slopfab download ph3_image transformer-int8
+slopfab download ph3_image text-int8
+slopfab download ph3_image vae-int8
+```
+
+The download mod saves files in `weights/` beside the executable by default.
+For files already in Downloads, use explicit paths:
 
 ```powershell
 $weights = "$env:USERPROFILE/Downloads"

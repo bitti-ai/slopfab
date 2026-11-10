@@ -1,4 +1,25 @@
 {
+  "ph3_image": {
+    "source": "https://huggingface.co/PrunaAI/P-H3-Image-Comfy",
+    "note": "P-H3 Image text-to-image: download all three matching INT8 files below. This bundle is validated on CUDA and portable Vulkan with the fixed eight-step Euler schedule. No audio VAE is needed. Prompt upsampling, image editing and W4A8 text encoders are not currently supported.",
+    "files": [
+      {
+        "id": "transformer-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/PrunaAI/P-H3-Image-Comfy/resolve/main/diffusion_models/p-h3-image_int8_convrot.safetensors"
+      },
+      {
+        "id": "text-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/PrunaAI/P-H3-Image-Comfy/resolve/main/text_encoders/p-h3-image_text_encoder_int8_convrot.safetensors"
+      },
+      {
+        "id": "vae-int8",
+        "role": "vae",
+        "url": "https://huggingface.co/PrunaAI/P-H3-Image-Comfy/resolve/main/vae/p-h3-image_vae_int8_convrot.safetensors"
+      }
+    ]
+  },
   "minimaxh3": {
     "source": "https://huggingface.co/Comfy-Org/MiniMax-H3",
     "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Singularity and Singularity v2 use the Turbo LoRA; Viggle Remake swap/edit files are listed under viggle-remake. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained. Smaller text encoders and their required projections are listed in minimaxh3-clipproj.",
