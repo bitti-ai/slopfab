@@ -64,6 +64,10 @@ if checkpoint:
 # Full-image editing uses Picture 1, with ordered additional references.
 source = root / "source.ppm"
 source.write_bytes(b"P6\n64 32\n255\n" + bytes([90, 40, 20]) * (64 * 32))
+second = root / "second.ppm"
+second.write_bytes(b"P6\n32 64\n255\n" + bytes([20, 40, 90]) * (32 * 64))
+text = run(*base, "--reference-image", str(second), "--edit-image", str(source))
+assert "2048 x 1024" in text and "image editing (2 references)" in text
 text = run(*base, "--edit-image", str(source), "--prompt", "Make the teapot blue")
 assert "2048 x 1024" in text and "image editing (1 references)" in text
 text = run(*base, "--edit-image", str(source), "--reference-image", str(source),
