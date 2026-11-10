@@ -87,38 +87,40 @@ void validate_endpoint_archive(const SafeTensors& st, const ExactH3TransformerCo
   require_float_weight("condition_proj.bias", {h});
   require_float_weight("video_patch_proj.weight", {h, c.video_dim});
   require_float_weight("video_patch_proj.bias", {h});
-  require_float_weight("audio_patch_proj.weight", {h, c.audio_dim});
-  require_float_weight("audio_patch_proj.bias", {h});
+  if (c.pdd_steps != 6) require_float_weight("audio_patch_proj.weight", {h, c.audio_dim});
+  if (c.pdd_steps != 6) require_float_weight("audio_patch_proj.bias", {h});
   require_float_weight("token_refiner.final_norm.weight", {h});
   require_float_weight("final_layer.norm.weight", {h});
   require_float_weight("final_layer.adaln_proj.linear.weight", {2 * h, r});
   require_float_weight("final_layer.adaln_proj.linear.bias", {2 * h});
-  if (c.pdd_steps != 1 && c.pdd_steps != 32)
+  if (c.pdd_steps != 1 && c.pdd_steps != 6 && c.pdd_steps != 32)
     throw std::invalid_argument("Vulkan H3: unsupported PDD head count");
   require_float_weight("final_layer.video_out.weight", {c.video_dim * c.pdd_steps, h});
   require_float_weight("final_layer.video_out.bias", {c.video_dim * c.pdd_steps});
-  require_float_weight("final_layer.audio_out.weight", {c.audio_dim * c.pdd_steps, h});
-  require_float_weight("final_layer.audio_out.bias", {c.audio_dim * c.pdd_steps});
+  if (c.pdd_steps != 6) require_float_weight("final_layer.audio_out.weight", {c.audio_dim * c.pdd_steps, h});
+  if (c.pdd_steps != 6) require_float_weight("final_layer.audio_out.bias", {c.audio_dim * c.pdd_steps});
   for (const char* name :
        {"condition_proj", "video_patch_proj", "audio_patch_proj", "final_layer.video_out",
         "final_layer.audio_out", "final_layer.adaln_proj.linear"})
-    require_plain_weight(st, name);
+    if (c.pdd_steps != 6 || (std::string(name) != "audio_patch_proj" &&
+                             std::string(name) != "final_layer.audio_out"))
+      require_plain_weight(st, name);
   // Decode now, before a Vulkan allocation, so malformed dtypes/non-finite
   // conversion paths are part of the host-only initial-load transaction.
   (void)to_f32(st.at("condition_proj.weight"));
   (void)to_f32(st.at("condition_proj.bias"));
   (void)to_f32(st.at("video_patch_proj.weight"));
   (void)to_f32(st.at("video_patch_proj.bias"));
-  (void)to_f32(st.at("audio_patch_proj.weight"));
-  (void)to_f32(st.at("audio_patch_proj.bias"));
+  if (c.pdd_steps != 6) (void)to_f32(st.at("audio_patch_proj.weight"));
+  if (c.pdd_steps != 6) (void)to_f32(st.at("audio_patch_proj.bias"));
   (void)to_f32(st.at("token_refiner.final_norm.weight"));
   (void)to_f32(st.at("final_layer.norm.weight"));
   (void)to_f32(st.at("final_layer.adaln_proj.linear.weight"));
   (void)to_f32(st.at("final_layer.adaln_proj.linear.bias"));
   (void)to_f32(st.at("final_layer.video_out.weight"));
   (void)to_f32(st.at("final_layer.video_out.bias"));
-  (void)to_f32(st.at("final_layer.audio_out.weight"));
-  (void)to_f32(st.at("final_layer.audio_out.bias"));
+  if (c.pdd_steps != 6) (void)to_f32(st.at("final_layer.audio_out.weight"));
+  if (c.pdd_steps != 6) (void)to_f32(st.at("final_layer.audio_out.bias"));
 }
 
 DeviceTensor upload_f32(TensorContext& context, const TensorView& view,
@@ -304,9 +306,13 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
       throw std::invalid_argument("OmniRef does not support output-head LoRA adapters");
     const auto upload_heads = [&](const char* name, uint32_t dim, float shift, auto& weights,
                                   auto& biases) {
-      const auto w = dit::fuse_omniref_heads(checkpoint.at(std::string(name) + ".weight"), shift);
-      const auto b = dit::fuse_omniref_heads(checkpoint.at(std::string(name) + ".bias"), shift);
-      for (int i = 0; i < 8; ++i) {
+      const auto w = c.pdd_steps == 6
+          ? dit::fuse_h3_image_heads(checkpoint.at(std::string(name) + ".weight"))
+          : dit::fuse_omniref_heads(checkpoint.at(std::string(name) + ".weight"), shift);
+      const auto b = c.pdd_steps == 6
+          ? dit::fuse_h3_image_heads(checkpoint.at(std::string(name) + ".bias"))
+          : dit::fuse_omniref_heads(checkpoint.at(std::string(name) + ".bias"), shift);
+      for (int i = 0; i < (c.pdd_steps == 6 ? 6 : 8); ++i) {
         weights[i] = upload_slice(w.data() + uint64_t(i) * dim * h, matrix(dim, h));
         biases[i] = upload_slice(b.data() + uint64_t(i) * dim, vector(dim));
       }
@@ -541,7 +547,7 @@ void ExactH3Transformer::record_forward(
     throw std::logic_error("Vulkan H3 transformer: text is not prepared");
   const auto& c = impl_->config;
   auto& s = *impl_->state;
-  if (pdd_step < 0 || pdd_step >= 8)
+  if (pdd_step < 0 || pdd_step >= (impl_->config.pdd_steps == 6 ? 6 : 8))
     throw std::invalid_argument("Vulkan H3: invalid PDD step");
   const H3BlockConfig& b = c.main.block;
   const uint32_t video_output = c.video_output_rows ? c.video_output_rows : c.video_rows;

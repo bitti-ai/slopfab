@@ -38,7 +38,7 @@ RunResult run_generate(GenerationSession& session, const GenerateRequest& reques
     result.message = "generation execution is busy";
     return result;
   }
-  if (plan.model.family == "ph3_image") {
+  if ((plan.model.family == "ph3_image" || plan.model.family == "h3_image")) {
     auto image_request = request;
     image_request.still_image = true;
     return generation::run_generate_impl(image_request, plan, options, session.impl_->models);

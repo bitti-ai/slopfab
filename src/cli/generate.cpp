@@ -785,7 +785,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (slopfab::request_model_family(req) == "moss" ||
       slopfab::request_model_family(req) == "fibo2" ||
       slopfab::request_model_family(req) == "krea2" ||
-      slopfab::request_model_family(req) == "ph3_image") {
+      slopfab::request_model_family(req) == "ph3_image" ||
+      slopfab::request_model_family(req) == "h3_image") {
     if (saw_frames)
       throw std::invalid_argument("This model generates one image; omit --frames");
     if (!saw_attention)

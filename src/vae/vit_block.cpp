@@ -57,12 +57,12 @@ std::vector<float> load_vector(const SafeTensors& checkpoint, const std::string&
 } // namespace
 
 ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t width, uint32_t suffix,
-                                    uint32_t rope_dim, float theta, bool ph3_image) {
-  if (time == 0 || height == 0 || width == 0 || rope_dim == 0 || rope_dim % 6 != 0 ||
+                                    uint32_t rope_dim, float theta, bool ph3_image, uint32_t rope_dims) {
+  if (time == 0 || height == 0 || width == 0 || rope_dim == 0 || (rope_dims != 2 && rope_dims != 3) || rope_dim % (2 * rope_dims) != 0 ||
       !std::isfinite(theta) || theta <= 0.0f) {
     throw std::invalid_argument("video VAE RoPE: invalid configuration");
   }
-  if (ph3_image && time != 1)
+  if ((ph3_image || rope_dims == 2) && time != 1)
     throw std::invalid_argument("P-H3 Image VAE requires one temporal latent");
   const uint64_t patches64 = static_cast<uint64_t>(time) * height * width;
   const uint64_t sequence64 = patches64 + suffix;
@@ -70,7 +70,7 @@ ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t wid
     throw std::overflow_error("video VAE RoPE: table size overflow");
   const uint32_t sequence = static_cast<uint32_t>(sequence64);
   const uint32_t half = rope_dim / 2;
-  const uint32_t per_axis = half / 3;
+  const uint32_t per_axis = half / rope_dims;
   std::vector<float> inv_freq(per_axis);
   for (uint32_t f = 0; f < per_axis; ++f)
     inv_freq[f] = 1.0f / std::pow(theta, float(f) / float(per_axis));
@@ -86,10 +86,10 @@ ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t wid
       for (uint32_t w = 0; w < width; ++w) {
         const size_t token = (static_cast<size_t>(t) * height + h) * width + w;
         const float coords[3] = {coordinate(t, ph3_image ? 7 : time), coordinate(h, height), coordinate(w, width)};
-        for (uint32_t axis = 0; axis < 3; ++axis) {
+        for (uint32_t axis = 0; axis < rope_dims; ++axis) {
           for (uint32_t f = 0; f < per_axis; ++f) {
             const uint32_t j = axis * per_axis + f;
-            const double angle = kTwoPi * double(coords[axis]) * inv_freq[f];
+            const double angle = kTwoPi * double(coords[axis + (3 - rope_dims)]) * inv_freq[f];
             const float c = static_cast<float>(std::cos(angle));
             const float s = static_cast<float>(std::sin(angle));
             result.cosine[token * rope_dim + j] = c;

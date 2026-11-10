@@ -21,6 +21,7 @@ enum class TransformerArchitecture {
   kFibo2EditTurbo,
   kKrea2,
   kPH3Image,
+  kH3Image,
 };
 
 constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture) {
@@ -29,7 +30,8 @@ constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture
          architecture == TransformerArchitecture::kViggleAnimatePrunedTable ||
          architecture == TransformerArchitecture::kFastH3V2PrunedTable ||
          architecture == TransformerArchitecture::kOmniRefPrunedTable ||
-         architecture == TransformerArchitecture::kPH3Image;
+         architecture == TransformerArchitecture::kPH3Image ||
+         architecture == TransformerArchitecture::kH3Image;
 }
 
 enum class TransformerQuantization {

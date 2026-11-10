@@ -8,6 +8,8 @@ namespace slopfab::dit {
 constexpr int kOmniRefHeads = 32, kOmniRefSteps = 8;
 std::vector<float> omniref_sigmas(float shift);
 int omniref_step(float video_timestep);
+int pdd_step(int heads, float video_timestep);
+std::vector<float> fuse_h3_image_heads(const TensorView& tensor);
 std::array<float, kOmniRefHeads> omniref_head_weights(int step, float shift);
 // Comfy exports store a full head zero and residuals relative to it thereafter.
 // Return eight ordinary projections, with the output feature order unchanged.

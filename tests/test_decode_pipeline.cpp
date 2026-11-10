@@ -281,3 +281,15 @@ SLOPFAB_TEST(decode_planar_output_matches_chunk_reference_with_padding) {
     }
   }
 }
+
+SLOPFAB_TEST(h3_image_decode_uses_one_spatial_window) {
+  StillBackend backend;
+  backend.config_.rope_dims = 2;
+  backend.config_.rope_dim = 32;
+  backend.config_.patch_t = 1;
+  const std::vector<float> latent{0, 1, 2, 3};
+  const auto image = slopfab::vae::decode_still_image(backend, latent.data(), 2, 2, {1}, {2});
+  CHECK(backend.seen_t == 1 && backend.calls == 1);
+  CHECK(backend.seen_latents == (std::vector<float>{1,3,5,7}));
+  CHECK(image.frames == 1 && image.width == 4 && image.height == 4);
+}

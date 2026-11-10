@@ -191,7 +191,7 @@ namespace slopfab::capi {
 inline RunOptions generation_options(const slopfab_request& request, const GeneratePlan& plan) {
   auto options = request.options;
   if (!request.attention_explicit &&
-      (plan.model.family == "yue2" || plan.model.family == "minimax_music3" || plan.model.family == "ph3_image"))
+      (plan.model.family == "yue2" || plan.model.family == "minimax_music3" || plan.model.family == "ph3_image" || plan.model.family == "h3_image"))
     options.attention_mode = slopfab::AttentionMode::kFlash2;
   return options;
 }

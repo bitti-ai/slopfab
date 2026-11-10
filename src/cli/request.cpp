@@ -484,7 +484,7 @@ Value capabilities() {
   backends.push_back(str("vulkan"));
 #endif
   Array models;
-  for (const char* family : {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3", "ph3_image"}) {
+  for (const char* family : {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3", "ph3_image", "h3_image"}) {
     const std::string f = family;
     Array tasks = f == "h3" ? Array{str("video"), str("image")}
                             : Array{str(f == "yue2" || f == "minimax_music3" ? "music" : "image")};
@@ -614,7 +614,7 @@ int discovery_command(const std::string& command, const std::vector<std::string>
   else if (command == "models") {
     Array models;
     auto cfg = config();
-    std::vector<std::string> names = {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3", "ph3_image"};
+    std::vector<std::string> names = {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3", "ph3_image", "h3_image"};
     if (const auto* aliases = cfg.find("models"))
       for (const auto& m : aliases->as_object())
         names.push_back(m.first);

@@ -1,4 +1,5 @@
 #include "slopfab/dit/pdd.h"
+#include "slopfab/h3_image.h"
 #include "slopfab/tensor_convert.h"
 #include <algorithm>
 #include <cmath>
@@ -18,6 +19,31 @@ std::vector<float> omniref_sigmas(float shift) {
   std::vector<float> result;
   for (int i = 0; i <= kOmniRefHeads; i += 4)
     result.push_back(static_cast<float>(sigma(i, shift)));
+  return result;
+}
+
+int pdd_step(int heads, float t) {
+  if (heads == 1) return 0;
+  if (heads == kOmniRefHeads) return omniref_step(t);
+  if (heads == 6) {
+    const auto& grid = h3_image_sigmas();
+    for (int i = 0; i < heads; ++i)
+      if (std::abs(t - (1.f - grid[i])) < 2e-6f) return i;
+  }
+  throw std::invalid_argument("PDD evaluation is outside its trained grid");
+}
+
+std::vector<float> fuse_h3_image_heads(const TensorView& tensor) {
+  if (tensor.shape.empty() || tensor.shape.size() > 2 || tensor.shape[0] % 6)
+    throw std::invalid_argument("invalid MiniMax-H3-Image head bank");
+  auto result = to_f32(tensor);
+  const size_t stride = result.size() / 6;
+  if (!stride || result.size() % 6)
+    throw std::invalid_argument("empty or incomplete MiniMax-H3-Image head bank");
+  // Head zero is complete; every later interval stores an offset from it.
+  for (int head = 1; head < 6; ++head)
+    for (size_t i = 0; i < stride; ++i)
+      result[head * stride + i] += result[i];
   return result;
 }
 

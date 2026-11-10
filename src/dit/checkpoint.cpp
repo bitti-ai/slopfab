@@ -1,6 +1,7 @@
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/remake.h"
 #include "slopfab/ph3_image.h"
+#include "slopfab/h3_image.h"
 
 #include <algorithm>
 #include <cctype>
@@ -126,6 +127,17 @@ void validate_adaln_table_config(int rank, int rows) {
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
   ModelDescriptor model;
+  if (is_h3_image_transformer(checkpoint)) {
+    validate_h3_image_transformer(checkpoint);
+    if (checkpoint.metadata().count("slopfab.model"))
+      throw std::invalid_argument("MiniMax-H3-Image cannot use a legacy slopfab.model descriptor");
+    model.family = "h3_image";
+    model.pdd_steps = 6;
+    model.compatibility_architecture = TransformerArchitecture::kH3Image;
+    model.quantization = detect_transformer_quantization(checkpoint);
+    model.origin = "MiniMax-H3-Image six-head image-only tensor contract";
+    return model;
+  }
   if (is_ph3_image_transformer(checkpoint)) {
     validate_ph3_image_transformer(checkpoint);
     if (checkpoint.metadata().count("slopfab.model"))
@@ -392,6 +404,8 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
 
 const char* transformer_architecture_name(TransformerArchitecture architecture) {
   switch (architecture) {
+  case TransformerArchitecture::kH3Image:
+    return "minimax-h3-image";
   case TransformerArchitecture::kPH3Image:
     return "P-H3 Image (rank-16, 8-step) transformer";
   case TransformerArchitecture::kKrea2:

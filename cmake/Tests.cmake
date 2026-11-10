@@ -44,6 +44,9 @@ if(SLOPFAB_BUILD_TESTS)
     add_test(NAME ph3_image_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ph3_image_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(ph3_image_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+    add_test(NAME h3_image_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_h3_image_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(h3_image_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME download_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_download_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(download_cli PROPERTIES LABELS synthetic TIMEOUT 120)
@@ -241,6 +244,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_pipeline.cpp
     tests/test_model_descriptor.cpp
     tests/test_ph3_image.cpp
+    tests/test_h3_image.cpp
     tests/test_model_geometry.cpp
     tests/test_attention_descriptor.cpp
     tests/test_prompt_embedding.cpp

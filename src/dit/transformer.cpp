@@ -536,14 +536,14 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   if (s.model.pdd_steps > 1) {
     // Text retains the global video time even when held video rows use a
     // context-noise ramp (or a clean Keystone).
-    const int step = omniref_step(row_timesteps.unique.at(
+    const int step = pdd_step(s.model.pdd_steps, row_timesteps.unique.at(
         row_timesteps.indices.at(s.indices.text.front())));
     const auto select = [&](QuantWeight& weight) {
       weight.data = static_cast<const float*>(weight.data) + size_t(step) * weight.out_features * hidden;
       weight.bias = static_cast<const float*>(weight.bias) + size_t(step) * weight.out_features;
     };
     select(video_head);
-    select(audio_head);
+    if (audio_rows > 0) select(audio_head);
   }
   run_head(video_head, patch, video_rows, s.d_video_idx.get(), s.d_ts_video.get(),
            s.d_video_head.get());

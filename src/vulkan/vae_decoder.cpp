@@ -198,7 +198,7 @@ struct VideoVaeDecoder::Impl {
     slot->patch_indices = context.allocate(vector(slot->patches), ScalarType::kInt32);
     const vae::ViTRopeTables rope =
         vae::build_vit_rope_tables(time, height, width, static_cast<uint32_t>(config.num_suffix),
-                                   static_cast<uint32_t>(config.rope_dim), config.rope_theta, config.ph3_image);
+                                   static_cast<uint32_t>(config.rope_dim), config.rope_theta, config.ph3_image, config.rope_dims);
     context.upload(slot->cosine, rope.cosine.data(), rope.cosine.size());
     context.upload(slot->sine, rope.sine.data(), rope.sine.size());
     std::vector<int32_t> registers(config.num_register);

@@ -78,6 +78,7 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
         "transformer: full-AdaLN execution requires an FP8 or bitsandbytes NF4 Ref2VA "
         "checkpoint");
   }
+  const bool has_audio = s.model.family != "h3_image";
   const bool full_adaln = s.architecture == TransformerArchitecture::kRef2VAFullAdaLN;
   const bool interleaved_qkv = transformer_qkv_is_interleaved(checkpoint);
 
@@ -114,8 +115,10 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   // Spec 8.3 — the 32 top-level tensors.
   plan.require("video_patch_proj.weight", {hidden, patch}, Store::kAsF32);
   plan.require("video_patch_proj.bias", {hidden}, Store::kAsF32);
-  plan.require("audio_patch_proj.weight", {hidden, config.audio_in_channels}, Store::kAsF32);
-  plan.require("audio_patch_proj.bias", {hidden}, Store::kAsF32);
+  if (has_audio) {
+    plan.require("audio_patch_proj.weight", {hidden, config.audio_in_channels}, Store::kAsF32);
+    plan.require("audio_patch_proj.bias", {hidden}, Store::kAsF32);
+  }
   plan.require("condition_proj.weight", {hidden, config.text_dim}, Store::kVerbatim);
   plan.require("condition_proj.bias", {hidden}, Store::kAsF32);
   // Claimed but not uploaded: the lookup runs on the host — 8 floats per
@@ -151,8 +154,10 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   }
   plan.require("final_layer.video_out.weight", {patch * s.model.pdd_steps, hidden}, Store::kAsF32);
   plan.require("final_layer.video_out.bias", {patch * s.model.pdd_steps}, Store::kAsF32);
-  plan.require("final_layer.audio_out.weight", {config.audio_in_channels * s.model.pdd_steps, hidden}, Store::kAsF32);
-  plan.require("final_layer.audio_out.bias", {config.audio_in_channels * s.model.pdd_steps}, Store::kAsF32);
+  if (has_audio) {
+    plan.require("final_layer.audio_out.weight", {config.audio_in_channels * s.model.pdd_steps, hidden}, Store::kAsF32);
+    plan.require("final_layer.audio_out.bias", {config.audio_in_channels * s.model.pdd_steps}, Store::kAsF32);
+  }
   plan.require("token_refiner.final_norm.weight", {hidden}, Store::kAsBF16);
 
   // A block's tensor set, shared by the 50 main blocks and the 2 refiner
@@ -428,7 +433,8 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
            kv.first.find("final_layer.audio_out.") == 0)) {
         if (loras && loras->find("final_layer.video_out"))
           throw std::invalid_argument("OmniRef does not support output-head LoRA adapters");
-        wide = fuse_omniref_heads(*r.view, kv.first.find("video_out") != std::string::npos ? 12.f : 3.f);
+        wide = s.model.pdd_steps == 6 ? fuse_h3_image_heads(*r.view)
+            : fuse_omniref_heads(*r.view, kv.first.find("video_out") != std::string::npos ? 12.f : 3.f);
         copy(wide.data(), wide.size() * sizeof(float), false);
         continue;
       }
@@ -800,9 +806,9 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     return w;
   };
   s.video_in = fp32_layer("video_patch_proj", hidden, patch);
-  s.audio_in = fp32_layer("audio_patch_proj", hidden, config.audio_in_channels);
+  if (has_audio) s.audio_in = fp32_layer("audio_patch_proj", hidden, config.audio_in_channels);
   s.video_out = fp32_layer("final_layer.video_out", patch, hidden);
-  s.audio_out = fp32_layer("final_layer.audio_out", config.audio_in_channels, hidden);
+  if (has_audio) s.audio_out = fp32_layer("final_layer.audio_out", config.audio_in_channels, hidden);
 
   if (full_adaln) {
     s.timestep_embedding.load(checkpoint, config.timestep_freq_dim, config.timestep_hidden_dim,

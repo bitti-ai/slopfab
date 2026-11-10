@@ -37,6 +37,7 @@ struct ViTConfig {
   int patch_t = 4;      // temporal upsample factor
   int num_register = 4; // learned register tokens
   int num_suffix = 5;   // register tokens + one literal zero token
+  int rope_dims = 3;   // MiniMax-H3-Image uses only height/width
   int rope_dim = 48;    // of head_dim; the remaining 16 dims pass through
   float rope_theta = 100.0f;
   float eps = 1e-5f;

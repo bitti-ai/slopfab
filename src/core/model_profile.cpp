@@ -1,6 +1,7 @@
 #include "slopfab/model_profile.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/ph3_image.h"
+#include "slopfab/h3_image.h"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -11,6 +12,7 @@ const ModelProfile& model_profile(const std::string& family) {
   static const ModelProfile profiles[] = {
       {"yue2", "YuE2", "yue2_3b", "", "", false, 1, 2048},
       {"minimax_music3", "MiniMax Music3", "minimax_music3_dit", "minimax_music3_text_encoder", "minimax_music3_dav", false, 1, 32768},
+      {"h3_image", "MiniMax-H3-Image", "minimax_h3_image_pruned_", "qwen3vl_32b", "minimax_h3_image_vae_", true, 32, 5120},
       {"ph3_image", "P-H3 Image", "p-h3-image_", "p-h3-image_text_encoder_", "p-h3-image_vae_", true, 32, 5120},
       {"h3", "MiniMax H3", "fl2va", "qwen3vl_32b", "video", false, 32, 5120},
       {"moss", "MOSS Image", "moss_image", "qwen3.5_9b", "flux2", true, 16, 4096},
@@ -23,6 +25,8 @@ const ModelProfile& model_profile(const std::string& family) {
 }
 
 const ModelProfile& checkpoint_model_profile(const SafeTensors& checkpoint) {
+  if (is_h3_image_transformer(checkpoint))
+    return model_profile("h3_image");
   if (is_ph3_image_transformer(checkpoint))
     return model_profile("ph3_image");
   if (checkpoint.find("cond_layer_logits") && checkpoint.find("diffusion_transformer.transformer.project_in.weight"))

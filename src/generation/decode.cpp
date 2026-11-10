@@ -1,3 +1,4 @@
+#include "slopfab/h3_image.h"
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
 #include "slopfab/model_profile.h"
@@ -185,7 +186,8 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     } else if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
       vae::ViTDecoder decoder;
-      vae::ViTConfig config;
+      vae::ViTConfig config = request_model_family(request) == "h3_image"
+          ? h3_image_vae_config() : vae::ViTConfig{};
       if (request_model_family(request) == "ph3_image") {
         config.ph3_image = true;
         config.patch_t = 1;
@@ -211,7 +213,8 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     } else {
 #if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
-      vae::ViTConfig config;
+      vae::ViTConfig config = request_model_family(request) == "h3_image"
+          ? h3_image_vae_config() : vae::ViTConfig{};
       if (request_model_family(request) == "ph3_image") {
         config.ph3_image = true;
         config.patch_t = 1;

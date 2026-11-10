@@ -603,7 +603,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
                 inner_batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine,
                 s.video_timestep_indices, s.audio_timestep_indices, s.video_velocity, s.audio_velocity,
                 s.ranges ? &s.ranges : nullptr, taps, conditioned ? &s.video_row_indices : nullptr,
-                nullptr, c.transformer.pdd_steps > 1 ? dit::omniref_step(video_t) : 0);
+                nullptr, dit::pdd_step(c.transformer.pdd_steps, video_t));
             inner_batch.submit().wait();
             impl_->context->download(s.video_velocity, velocity, edited_video.size());
             ++result.steps_computed;
@@ -633,7 +633,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
           s.audio_timestep_indices, s.video_velocity, s.audio_velocity,
           s.ranges ? &s.ranges : nullptr, taps, conditioned ? &s.video_row_indices : nullptr,
           conditioned && has_audio ? &s.audio_row_indices : nullptr,
-          c.transformer.pdd_steps > 1 ? dit::omniref_step(video_t) : 0);
+          dit::pdd_step(c.transformer.pdd_steps, video_t));
     if (motion.enabled() && compute) {
       batch.submit().wait();
       impl_->context->download(s.video_velocity, motion_vv.data(), motion_vv.size());
