@@ -877,6 +877,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (saw_seed && uint64_t(count - 1) > UINT64_MAX - base_seed)
     throw CliError("INVALID_REQUEST", "batch seeds exceed the unsigned 64-bit range", 2, "seed");
   slopfab::RunOptions options;
+  // CLI delivery writes PNG/PPM itself; expose that contract during validation.
+  options.on_samples = Delivery::samples;
   upscaling.finish();
   options.upscale_model_path = upscaling.model;
   options.upscale_method = upscaling.method;

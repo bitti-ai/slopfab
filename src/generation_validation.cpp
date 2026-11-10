@@ -26,6 +26,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
                 o.save_latents_path.empty() && !o.on_latents && !o.attention_band && o.veda.predictor_path.empty(),
             "H3 image generation does not support H3 archives, effects or upscaling");
     require(!o.on_preview && o.preview_vae_path.empty(), "H3 image generation does not support H3 preview decoders");
+    require(!r.image_edit.image || o.on_samples || r.out_path.empty() ||
+                std::filesystem::path(r.out_path).extension() == ".ppm",
+            "image editing file output requires a .ppm path or an output callback");
     return;
   }
   if (!r.regenerate.mode.empty()) {

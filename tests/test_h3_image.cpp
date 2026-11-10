@@ -281,6 +281,15 @@ SLOPFAB_TEST(h3_image_outpaint_canvas_and_fixed_schedule) {
   CHECK(p.layout.num_audio_rows == 0 && p.layout.num_latent_frames == 1);
   CHECK(p.video_sigmas == h3_image_sigmas() && p.num_model_evaluations() == 6);
   CHECK(describe_plan(r, p).find("outpainting") != std::string::npos);
+  RunOptions options;
+  options.attention_mode = AttentionMode::kFlash2;
+  r.out_path = "expanded.ppm";
+  validate_generation_options(r, p, options);
+  r.out_path = "expanded.png";
+  bool invalid_output = false;
+  try { validate_generation_options(r, p, options); }
+  catch (const std::invalid_argument&) { invalid_output = true; }
+  CHECK(invalid_output); // Direct core output is PPM; CLI/C API install their own delivery hook.
   CHECK(outpaint_source_image(r.image_edit).pixels == source.pixels);
   const auto anchor = outpaint_keyframe_geometry(r.image_edit);
   CHECK(anchor.target_aligned && anchor.target_latent_x == 2 && anchor.target_latent_y == 2);

@@ -85,6 +85,9 @@ assert "128 x 64" in text and "outpainting" in text and "6 Euler updates" in tex
 text = run(*base, "--edit-image", str(source), "--outpaint", "1,0,0,0",
            "--outpaint-blend", "1", "--reference-image", str(second))
 assert "96 x 32" in text and "outpainting" in text
+assert "delivered   65 x 32" in text and "pictures    2" in text
+run("image", "generate", "--model", "h3", "--dry-run", "--edit-image", str(source),
+    "--outpaint", "32,16,32,16", "--out", str(root / "expanded.png"))
 for extra in [("--outpaint", "0,0,0,0"), ("--outpaint", "-1,0,32,0"),
               ("--outpaint", "1,2,3"), ("--outpaint", "2147483647,0,0,0"),
               ("--outpaint-blend", "1"), ("--outpaint-langevin-steps", "0")]:
