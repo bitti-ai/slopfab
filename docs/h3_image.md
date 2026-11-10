@@ -155,7 +155,10 @@ does not apply to this model. C++ callers can create the canvas with
 
 This is experimental constrained sampling using the existing image model;
 seam quality depends on the source and prompt. It does not add a separately
-trained outpainting checkpoint.
+trained outpainting checkpoint. The teapot regression sample preserves the
+source correctly but has visible joins and repeated window details at its
+expanded boundary. A passing preservation test does not guarantee seamless
+scene continuation.
 
 The optional prompt enhancer, video/audio
 references, original sharded full-AdaLN weights, previews and H3 latent archives
