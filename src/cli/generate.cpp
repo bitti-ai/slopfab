@@ -932,8 +932,6 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     return 0;
   }
 
-  if (plan.model.family == "ph3_image")
-    throw CliError("UNSUPPORTED_CAPABILITY", slopfab::kPH3ImageRuntimePending, 4);
 
 #if SLOPFAB_WITH_CUDA
   // Dry-run above is deliberately device-free. Synthetic latents skip the

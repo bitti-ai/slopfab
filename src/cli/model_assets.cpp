@@ -249,8 +249,6 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
 }
 
 void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_encoder) {
-  if (request_model_family(req) == "ph3_image")
-    throw std::runtime_error(kPH3ImageRuntimePending);
   if (request_model_family(req) == "minimax_music3") {
     if (req.transformer_path.empty() || req.text_encoder_path.empty() || req.audio_vae_path.empty())
       throw std::runtime_error(

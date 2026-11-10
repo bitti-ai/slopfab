@@ -47,7 +47,10 @@ GeneratePlan resolve_ph3_image_plan(const GenerateRequest& r) {
       r.animate || r.video_transition || r.preserve_driving_audio || !r.loras.empty() ||
       r.cache_threshold != 0 || r.skip_every != 0 || r.block_cache_span != 0 ||
       r.motion_cache.active())
-    throw std::invalid_argument("P-H3 Image currently plans text-to-image only, without references, adapters or caches");
+    throw std::invalid_argument("P-H3 Image supports text-to-image only, without references, adapters or caches");
+  if (!r.clip_projection_path.empty() || !r.video_decoder_path.empty() ||
+      r.end_anchor_latents || !r.regenerate.mode.empty() || !r.remake_mode.empty())
+    throw std::invalid_argument("P-H3 Image requires its own text encoder and image VAE without H3 editing modes");
   if (!r.negative_prompt.empty() || (r.guidance_scale_set && r.guidance_scale != 1.f))
     throw std::invalid_argument("P-H3 Image uses guidance 1 without a negative prompt");
   validate_sampling_settings(r.sampling);

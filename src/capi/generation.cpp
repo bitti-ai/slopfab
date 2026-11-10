@@ -1,5 +1,4 @@
 #include "internal.h"
-#include "slopfab/ph3_image.h"
 extern "C" {
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* request,
                                                         slopfab_progress_fn callback,
@@ -20,8 +19,6 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
           request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       resolved_plan = slopfab::resolve_plan(request->request);
-      if (resolved_plan.model.family == "ph3_image")
-        throw std::invalid_argument(slopfab::kPH3ImageRuntimePending);
       resolved_options = generation_options(*request, resolved_plan);
       slopfab::validate_generation_options(request->request, resolved_plan, resolved_options);
     } catch (const std::exception& e) {

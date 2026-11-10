@@ -112,6 +112,29 @@ std::vector<float> multiply(const std::vector<float>& x, int rows, int in, int o
 
 ClipProjection::ClipProjection(const std::string& path) {
   file_.open(path);
+  if (file_.find("text_connector.proj.weight")) {
+    ph3_image_ = true;
+    hidden_taps_ = {13, 19, 25, 31, 36};
+    input_ = 12800;
+    output_ = 5120;
+    tap_ = 36;
+    const auto& weight = file_.at("text_connector.proj.weight");
+    require(weight.shape == std::vector<int64_t>{output_, input_} && weight.dtype == DType::kF32,
+            "P-H3 text connector requires a float32 [5120,12800] projection");
+    auto load = [&](const char* name, int size) {
+      const std::string key = std::string("text_connector.") + name;
+      require(file_.at(key).dtype == DType::kF32, "P-H3 connector statistics must be float32");
+      return vector(file_, key, size);
+    };
+    mean_in_ = load("input_mean", input_);
+    std_in_ = load("input_std", input_);
+    mean_out_ = load("output_mean", output_);
+    std_out_ = load("output_std", output_);
+    sink_ = load("sink_embedding", output_);
+    for (float value : std_in_) require(value > 0, "P-H3 input_std must be positive");
+    for (float value : std_out_) require(value >= 0, "P-H3 output_std must be nonnegative");
+    return;
+  }
   const auto& input = file_.at("mean_in");
   const auto& output = file_.at("mean_out");
   require(input.shape.size() == 1 && output.shape.size() == 1, "means must be vectors");
@@ -201,7 +224,10 @@ PromptEmbedding ClipProjection::apply(const PromptEmbedding& hidden,
   result.num_tokens = hidden.num_tokens;
   result.hidden_size = output_;
   result.modality_tags = hidden.modality_tags;
-  if (const auto* w = file_.find("W"))
+  if (ph3_image_)
+    result.data = multiply(x, hidden.num_tokens, input_, output_, file_.at("text_connector.proj.weight"),
+                           true, {}, DType::kF32, cancel);
+  else if (const auto* w = file_.find("W"))
     result.data =
         multiply(x, hidden.num_tokens, input_, output_, *w, false, {}, DType::kF32, cancel);
   else
@@ -267,12 +293,16 @@ ClipStudentConfig validate_clip_student(const SafeTensors& file, const ClipProje
           "use a ComfyUI Qwen3-VL-4B or 8B encoder");
   c.width = int(w.shape[1]);
   c.layers = projection.tap();
-  require(c.width == projection.input_width(),
+  require(c.width * (projection.ph3_image() ? 5 : 1) == projection.input_width(),
           "encoder width does not match projection; pair 4B with 4B or 8B with 8B");
   require(floating(w.dtype) || w.dtype == DType::kI8,
           "student embedding requires BF16, FP16, FP32 or INT8 ConvRot (INT4 is unsupported)");
   if (w.dtype == DType::kI8)
     (void)read_int8_weight(file, w.name, "ClipProj embedding");
+  if (projection.ph3_image()) {
+    require(c.width == 2560 && c.layers == 36, "P-H3 requires Qwen3-VL-4B with 36 layers");
+    (void)vector(file, c.prefix + "norm.weight", c.width);
+  }
   const int inner = c.width == 2560 ? 9728 : 12288;
   for (int i = 0; i < c.layers; ++i) {
     const auto p = c.prefix + "layers." + std::to_string(i) + ".";

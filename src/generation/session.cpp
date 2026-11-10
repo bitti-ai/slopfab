@@ -1,5 +1,4 @@
 #include "session_state.h"
-#include "slopfab/ph3_image.h"
 #include <mutex>
 #include <stdexcept>
 
@@ -32,14 +31,17 @@ void GenerationSession::clear() {
 
 RunResult run_generate(GenerationSession& session, const GenerateRequest& request,
                        const GeneratePlan& plan, const RunOptions& options) {
-  if (plan.model.family == "ph3_image")
-    throw std::runtime_error(kPH3ImageRuntimePending);
   std::unique_lock<std::mutex> session_lock(session.impl_->mutex, std::try_to_lock);
   std::unique_lock<std::mutex> execution_lock(execution_mutex, std::try_to_lock);
   if (!session_lock.owns_lock() || !execution_lock.owns_lock()) {
     RunResult result;
     result.message = "generation execution is busy";
     return result;
+  }
+  if (plan.model.family == "ph3_image") {
+    auto image_request = request;
+    image_request.still_image = true;
+    return generation::run_generate_impl(image_request, plan, options, session.impl_->models);
   }
   return generation::run_generate_impl(request, plan, options, session.impl_->models);
 }

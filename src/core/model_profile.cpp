@@ -11,7 +11,7 @@ const ModelProfile& model_profile(const std::string& family) {
   static const ModelProfile profiles[] = {
       {"yue2", "YuE2", "yue2_3b", "", "", false, 1, 2048},
       {"minimax_music3", "MiniMax Music3", "minimax_music3_dit", "minimax_music3_text_encoder", "minimax_music3_dav", false, 1, 32768},
-      {"ph3_image", "P-H3 Image (planning only)", "p-h3-image_", "p-h3-image_text_encoder_", "p-h3-image_vae_", true, 32, 5120},
+      {"ph3_image", "P-H3 Image", "p-h3-image_", "p-h3-image_text_encoder_", "p-h3-image_vae_", true, 32, 5120},
       {"h3", "MiniMax H3", "fl2va", "qwen3vl_32b", "video", false, 32, 5120},
       {"moss", "MOSS Image", "moss_image", "qwen3.5_9b", "flux2", true, 16, 4096},
       {"krea2", "Krea 2", "krea2", "qwen3vl_4b_int8", "qwen_image_vae", true, 16, 30720},

@@ -21,9 +21,9 @@ def run(*args, success=True):
 
 base = ("requests", "run", "--model", "ph3_image", "--dry-run")
 text = run(*base)
-assert "P-H3 Image (planning only)" in text
+assert "P-H3 Image" in text
 assert "2912 x 2912" in text and "8 Euler updates" in text
-assert "2 latent positions" in text and "GPU generation is not implemented" in text
+assert "2 latent positions" in text
 text = run(*base, "--resolution", "2048x2048", "--steps", "8")
 assert "2048 x 2048" in text
 for args in [
@@ -33,8 +33,8 @@ for args in [
 ]:
     run(*base, *args, success=False)
 
-text = run("image", "generate", "--model", "ph3_image", "--prompt", "A red cube", success=False)
-assert "not wired into generation yet" in text
+text = run("image", "generate", "--model", "ph3_image", "--attention", "exact", "--prompt", "A red cube", success=False)
+assert "flash2" in text
 capabilities = json.loads(run("system", "capabilities", "--agent"))
 def find_model(value):
     if isinstance(value, dict):
@@ -50,13 +50,13 @@ def find_model(value):
             if found:
                 return found
 model = find_model(capabilities)
-assert model and model["planning_only"] and model["backends"] == []
+assert model and not model["planning_only"]
 
 # Verify the downloaded transformer without copying or changing it.
 checkpoint = os.environ.get("SLOPFAB_PH3_IMAGE_CHECKPOINT")
 if checkpoint:
     text = run("requests", "run", "--transformer", checkpoint, "--dry-run")
-    assert "P-H3 Image (planning only)" in text
+    assert "P-H3 Image" in text
     run("requests", "run", "--model", "h3", "--transformer", checkpoint,
         "--dry-run", success=False)
 

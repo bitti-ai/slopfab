@@ -73,13 +73,15 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend, const float* z_n
   // its first retained frame. Keeping that phase gives this new mode a precise
   // relationship to the existing decoder instead of choosing an arbitrary one
   // of the four pixels emitted along the temporal axis.
-  const int phase = schedule.frame_pre_padding;
+  if (cfg.ph3_image && cfg.patch_t != 1)
+    throw std::invalid_argument("P-H3 Image VAE requires temporal patch size one");
+  const int phase = cfg.ph3_image ? 0 : schedule.frame_pre_padding;
   if (phase < 0 || phase >= cfg.patch_t) {
     throw std::runtime_error("vae: still-image temporal phase is outside the decoder patch");
   }
 
   const size_t latent_pixels = static_cast<size_t>(H_lat) * W_lat;
-  constexpr int window = 7;
+  const int window = cfg.ph3_image ? 1 : 7;
   std::vector<float> z;
   backend.denormalize_latents(z_norm, ch, latent_pixels, latents_mean, latents_std, z);
 

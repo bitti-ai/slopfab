@@ -904,7 +904,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       dit::TransformerLoadOptions load_options;
       load_options.layout = &live;
       load_options.block_cache = request.block_cache_span > 0;
-      model.load(dit_file, {}, &loras, load_options);
+      dit::TransformerConfig transformer_config;
+      if (plan.model.family == "ph3_image") {
+        transformer_config.adaln_rank = 16;
+        transformer_config.adaln_table_rows = 4097;
+      }
+      model.load(dit_file, transformer_config, &loras, load_options);
       loras = LoraAdapters();
       result.seconds_transformer_load = seconds_since(t0);
       if (options.verbose) {
@@ -1142,6 +1147,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       config.continuation = continuation_constraint;
       config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
+      if (plan.model.family == "ph3_image")
+        config.transformer.main.block.adaln_rank = 16;
       config.transformer.pdd_steps = plan.model.pdd_steps;
       config.transformer.main.block.attention_mode = options.attention_mode;
       config.transformer.main.block.veda = veda;
@@ -1325,6 +1332,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // Preserve normalized sampler output, join in latent space, then decode the
   // cumulative stream so the VAE sees context on both sides of the join.
   auto completed = std::make_shared<LatentClip>();
+  // The image transformer samples four internal audio rows; delivery has no audio.
+  if (plan.model.family == "ph3_image") audio_rows.clear();
   if (request.end_anchor_latents) {
     *completed = join_latent_end_anchor(*request.end_anchor_latents, request.continuation.get(),
                                        plan.latent_end_anchor, video_rows, audio_rows);

@@ -24,12 +24,16 @@ std::vector<uint16_t> load_f16_matrix(const SafeTensors& checkpoint, const std::
   require_shape(tensor, rows, columns);
   if (tensor.dtype == DType::kI8)
     return unpack_int8_weight(read_int8_weight(checkpoint, name, "video VAE block"), true);
-  if (tensor.dtype != DType::kF16 ||
-      tensor.nbytes != static_cast<size_t>(rows * columns) * sizeof(uint16_t)) {
-    throw std::runtime_error("video VAE block: tensor '" + name + "' must be fp16 or Comfy INT8");
+  if (tensor.dtype != DType::kF16 && tensor.dtype != DType::kBF16 && tensor.dtype != DType::kF32) {
+    throw std::runtime_error("video VAE block: tensor '" + name + "' must be floating-point or Comfy INT8");
   }
   std::vector<uint16_t> result(static_cast<size_t>(rows * columns));
-  std::memcpy(result.data(), tensor.data, tensor.nbytes);
+  if (tensor.dtype == DType::kF16) {
+    std::memcpy(result.data(), tensor.data, tensor.nbytes);
+  } else {
+    const auto values = to_f32(tensor);
+    for (size_t i = 0; i < values.size(); ++i) result[i] = f32_to_f16(values[i]);
+  }
   for (uint16_t& bits : result) {
     if ((bits & 0x7c00u) == 0 && (bits & 0x03ffu) != 0)
       bits &= 0x8000u;
@@ -44,8 +48,8 @@ std::vector<float> load_vector(const SafeTensors& checkpoint, const std::string&
     throw std::runtime_error("video VAE block: tensor '" + name +
                              "' has an unexpected vector shape");
   }
-  if (tensor.dtype != DType::kF16 && tensor.dtype != DType::kF32) {
-    throw std::runtime_error("video VAE block: tensor '" + name + "' must be fp16 or fp32");
+  if (tensor.dtype != DType::kF16 && tensor.dtype != DType::kBF16 && tensor.dtype != DType::kF32) {
+    throw std::runtime_error("video VAE block: tensor '" + name + "' must be floating-point");
   }
   return to_f32(tensor);
 }
@@ -53,11 +57,13 @@ std::vector<float> load_vector(const SafeTensors& checkpoint, const std::string&
 } // namespace
 
 ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t width, uint32_t suffix,
-                                    uint32_t rope_dim, float theta) {
+                                    uint32_t rope_dim, float theta, bool ph3_image) {
   if (time == 0 || height == 0 || width == 0 || rope_dim == 0 || rope_dim % 6 != 0 ||
       !std::isfinite(theta) || theta <= 0.0f) {
     throw std::invalid_argument("video VAE RoPE: invalid configuration");
   }
+  if (ph3_image && time != 1)
+    throw std::invalid_argument("P-H3 Image VAE requires one temporal latent");
   const uint64_t patches64 = static_cast<uint64_t>(time) * height * width;
   const uint64_t sequence64 = patches64 + suffix;
   if (sequence64 > UINT32_MAX || sequence64 * rope_dim > SIZE_MAX)
@@ -79,7 +85,7 @@ ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t wid
     for (uint32_t h = 0; h < height; ++h) {
       for (uint32_t w = 0; w < width; ++w) {
         const size_t token = (static_cast<size_t>(t) * height + h) * width + w;
-        const float coords[3] = {coordinate(t, time), coordinate(h, height), coordinate(w, width)};
+        const float coords[3] = {coordinate(t, ph3_image ? 7 : time), coordinate(h, height), coordinate(w, width)};
         for (uint32_t axis = 0; axis < 3; ++axis) {
           for (uint32_t f = 0; f < per_axis; ++f) {
             const uint32_t j = axis * per_axis + f;

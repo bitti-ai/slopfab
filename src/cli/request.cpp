@@ -490,10 +490,10 @@ Value capabilities() {
                             : Array{str(f == "yue2" || f == "minimax_music3" ? "music" : "image")};
     Array supported;
     for (const auto& b : backends)
-      if (f != "ph3_image" && (b.as_string() == "cuda" || (f != "moss" && f != "fibo2")))
+      if (b.as_string() == "cuda" || (f != "moss" && f != "fibo2"))
         supported.push_back(b);
     models.push_back(Value(Object{{"family", str(f)},
-                                  {"planning_only", Value(f == "ph3_image")},
+                                  {"planning_only", Value(false)},
                                   {"tasks", Value(tasks)},
                                   {"backends", Value(supported)},
                                   {"canvas_multiple", num(model_profile(f).canvas_multiple)},

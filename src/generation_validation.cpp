@@ -12,14 +12,20 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
       throw std::invalid_argument(message);
   };
   if (p.model.family == "ph3_image") {
+    require(o.inference_backend == DeviceBackend::kCuda || o.inference_backend == DeviceBackend::kVulkan,
+            "P-H3 Image requires CUDA or Vulkan");
+    require(o.inference_backend != DeviceBackend::kVulkan || o.vulkan_portable_arithmetic,
+            "P-H3 Image Vulkan requires portable arithmetic");
+    require(o.attention_mode == AttentionMode::kFlash2, "P-H3 Image currently supports flash2 attention");
     require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler,
             "P-H3 Image requires the Euler sampler");
     require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(),
-            "P-H3 Image planning requires fresh noise");
+            "P-H3 Image requires fresh noise");
     require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty() &&
                 o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() &&
                 o.save_latents_path.empty() && !o.on_latents && !o.attention_band && o.veda.predictor_path.empty(),
-            "P-H3 Image planning does not support H3 archives, effects or upscaling");
+            "P-H3 Image does not support H3 archives, effects or upscaling");
+    require(!o.on_preview && o.preview_vae_path.empty(), "P-H3 Image does not support H3 preview decoders");
     return;
   }
   if (!r.regenerate.mode.empty()) {

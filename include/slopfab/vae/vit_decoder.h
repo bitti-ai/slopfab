@@ -40,6 +40,8 @@ struct ViTConfig {
   int rope_dim = 48;    // of head_dim; the remaining 16 dims pass through
   float rope_theta = 100.0f;
   float eps = 1e-5f;
+  // P-H3 uses one temporal patch at the first position of H3's seven-frame window.
+  bool ph3_image = false;
   ViTTransformerMode transformer_mode = ViTTransformerMode::kShipped;
 
   // Flat width of proj_out: out_channels * patch_t * patch * patch.

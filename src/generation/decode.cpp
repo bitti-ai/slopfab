@@ -1,5 +1,6 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
+#include "slopfab/model_profile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -185,6 +186,10 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 #if SLOPFAB_WITH_CUDA
       vae::ViTDecoder decoder;
       vae::ViTConfig config;
+      if (request_model_family(request) == "ph3_image") {
+        config.ph3_image = true;
+        config.patch_t = 1;
+      }
       if (options.attention_mode == AttentionMode::kExact)
         config.transformer_mode = vae::ViTTransformerMode::kExact;
       decoder.load(vae_file, config);
@@ -207,6 +212,10 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 #if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
       vae::ViTConfig config;
+      if (request_model_family(request) == "ph3_image") {
+        config.ph3_image = true;
+        config.patch_t = 1;
+      }
       config.transformer_mode = vae::ViTTransformerMode::kExact;
       vulkan::VideoVaeDecoder decoder = vulkan::VideoVaeDecoder::create(device, config);
       decoder.load(vae_file);

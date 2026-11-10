@@ -6,6 +6,7 @@
 
 #include "harness.h"
 #include "slopfab/vae/vit_decoder.h"
+#include "slopfab/vae/vit_block.h"
 
 namespace {
 
@@ -71,6 +72,36 @@ public:
 };
 
 } // namespace
+
+SLOPFAB_TEST(ph3_image_decode_uses_one_latent_and_fixed_temporal_position) {
+  StillBackend backend;
+  backend.config_.ph3_image = true;
+  backend.config_.patch_t = 1;
+  const std::vector<float> latent{0, 1, 2, 3};
+  const auto image = slopfab::vae::decode_still_image(backend, latent.data(), 2, 2, {1}, {2});
+  CHECK(backend.seen_t == 1);
+  CHECK(backend.seen_latents == (std::vector<float>{1, 3, 5, 7}));
+  CHECK(image.frames == 1 && image.width == 4 && image.height == 4);
+  const float mean[] = {.485f, .456f, .406f}, stddev[] = {.229f, .224f, .225f};
+  for (int c = 0; c < 3; ++c)
+    CHECK_NEAR(image.data[c * 16], (c - 6) * .01f * stddev[c] + mean[c], 1e-7);
+  // Every image token must occupy H3's first temporal slice, including all
+  // spatial frequencies; learned registers retain identity rotations.
+  const auto h3 = slopfab::vae::build_vit_rope_tables(7, 2, 3, 5, 48, 100);
+  const auto ph3 = slopfab::vae::build_vit_rope_tables(1, 2, 3, 5, 48, 100, true);
+  for (int i = 0; i < 6 * 48; ++i) {
+    CHECK(ph3.cosine[i] == h3.cosine[i]);
+    CHECK(ph3.sine[i] == h3.sine[i]);
+  }
+  for (int i = 6 * 48; i < 11 * 48; ++i) {
+    CHECK(ph3.cosine[i] == 1);
+    CHECK(ph3.sine[i] == 0);
+  }
+  bool rejected = false;
+  try { (void)slopfab::vae::build_vit_rope_tables(2, 2, 3, 5, 48, 100, true); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+}
 
 SLOPFAB_TEST(still_decode_uses_seven_tokens_and_first_retained_phase) {
   StillBackend backend;

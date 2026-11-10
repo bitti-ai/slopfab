@@ -54,7 +54,7 @@ std::vector<float> load_vector(const SafeTensors& checkpoint, const std::string&
                                uint64_t count) {
   const TensorView& tensor = checkpoint.at(name);
   if (tensor.numel() != static_cast<int64_t>(count) ||
-      (tensor.dtype != DType::kF16 && tensor.dtype != DType::kF32)) {
+      (tensor.dtype != DType::kF16 && tensor.dtype != DType::kBF16 && tensor.dtype != DType::kF32)) {
     throw std::runtime_error("Vulkan video VAE: invalid vector '" + name + "'");
   }
   return to_f32(tensor);
@@ -67,14 +67,14 @@ std::vector<uint16_t> load_matrix(const SafeTensors& checkpoint, const std::stri
                             tensor.shape[0] == static_cast<int64_t>(rows) &&
                             tensor.shape[1] == static_cast<int64_t>(columns);
   if ((!matrix_shape && (!flattened || tensor.numel() != static_cast<int64_t>(rows * columns))) ||
-      (tensor.dtype != DType::kF16 && tensor.dtype != DType::kF32)) {
-    throw std::runtime_error("Vulkan video VAE: invalid fp16/fp32 matrix '" + name + "'");
+      (tensor.dtype != DType::kF16 && tensor.dtype != DType::kBF16 && tensor.dtype != DType::kF32)) {
+    throw std::runtime_error("Vulkan video VAE: invalid floating-point matrix '" + name + "'");
   }
   std::vector<uint16_t> result(static_cast<size_t>(rows * columns));
   if (tensor.dtype == DType::kF16) {
     std::memcpy(result.data(), tensor.data, tensor.nbytes);
   } else {
-    // Comfy INT8 VAEs retain their unquantized endpoint matrices as FP32.
+    // Comfy INT8 VAEs retain their endpoint matrices as FP32 or BF16.
     // Narrow once to the same canonical FP16 contract as native FP16 files.
     const auto values = to_f32(tensor);
     for (size_t i = 0; i < values.size(); ++i)
@@ -198,7 +198,7 @@ struct VideoVaeDecoder::Impl {
     slot->patch_indices = context.allocate(vector(slot->patches), ScalarType::kInt32);
     const vae::ViTRopeTables rope =
         vae::build_vit_rope_tables(time, height, width, static_cast<uint32_t>(config.num_suffix),
-                                   static_cast<uint32_t>(config.rope_dim), config.rope_theta);
+                                   static_cast<uint32_t>(config.rope_dim), config.rope_theta, config.ph3_image);
     context.upload(slot->cosine, rope.cosine.data(), rope.cosine.size());
     context.upload(slot->sine, rope.sine.data(), rope.sine.size());
     std::vector<int32_t> registers(config.num_register);

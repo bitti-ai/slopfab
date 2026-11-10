@@ -134,7 +134,7 @@ ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
     model.compatibility_architecture = TransformerArchitecture::kPH3Image;
     model.modulation = ModulationImplementation::kTable;
     model.quantization = detect_transformer_quantization(checkpoint);
-    model.origin = "P-H3 Image rank-16 tensor contract (planning only)";
+    model.origin = "P-H3 Image rank-16 tensor contract";
     return model;
   }
   if (has(checkpoint, "cond_layer_logits") && has(checkpoint, "diffusion_transformer.transformer.project_in.weight")) {
@@ -393,7 +393,7 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
 const char* transformer_architecture_name(TransformerArchitecture architecture) {
   switch (architecture) {
   case TransformerArchitecture::kPH3Image:
-    return "P-H3 Image (rank-16, 8-step; planning only) transformer";
+    return "P-H3 Image (rank-16, 8-step) transformer";
   case TransformerArchitecture::kKrea2:
     return "Krea 2 transformer";
   case TransformerArchitecture::kFibo2EditTurbo:

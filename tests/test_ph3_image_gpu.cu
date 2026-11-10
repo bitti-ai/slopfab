@@ -8,6 +8,12 @@ struct PH3Result {
   std::vector<float> video, audio;
 };
 
+bool ph3_gpu_available() {
+  int devices = 0;
+  return cudaGetDeviceCount(&devices) == cudaSuccess && devices > 0 &&
+         slopfab::vulkan::Instance::available();
+}
+
 PH3Result run_ph3_cuda(const slopfab::SafeTensors& checkpoint, const TransformerConfig& cfg,
                        const Case& input) {
   Transformer model;
@@ -95,6 +101,10 @@ Case ph3_case(const TransformerConfig& cfg) {
 }
 
 SLOPFAB_TEST_CATEGORY(ph3_image_rank16_cuda_vulkan_trajectory, "synthetic") {
+  if (!ph3_gpu_available()) {
+    SKIP_UNSUPPORTED_HARDWARE("P-H3 GPU tests require CUDA and Vulkan");
+    return;
+  }
   auto cfg = tiny_config();
   auto tensors = build_synthetic(cfg);
   const auto input = ph3_case(cfg);
@@ -146,6 +156,10 @@ SLOPFAB_TEST_CATEGORY(ph3_image_checkpoint_cuda_vulkan_trajectory, "integration"
   const char* enabled = std::getenv("SLOPFAB_PH3_GPU");
   if (!path || !enabled || std::string(enabled) != "1") {
     SKIP_OPT_IN("set SLOPFAB_PH3_GPU=1 and SLOPFAB_PH3_IMAGE_CHECKPOINT for eight-step GPU validation");
+    return;
+  }
+  if (!ph3_gpu_available()) {
+    SKIP_UNSUPPORTED_HARDWARE("P-H3 GPU tests require CUDA and Vulkan");
     return;
   }
   TransformerConfig cfg;

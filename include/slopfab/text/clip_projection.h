@@ -11,11 +11,15 @@ public:
   int input_width() const;
   int output_width() const;
   int tap() const;
+  bool ph3_image() const { return ph3_image_; }
+  const std::vector<int>& hidden_taps() const { return hidden_taps_; }
   PromptEmbedding apply(const PromptEmbedding& hidden,
                         const std::function<void()>& check_cancel = {}) const;
 
 private:
   SafeTensors file_;
+  bool ph3_image_ = false;
+  std::vector<int> hidden_taps_;
   int input_ = 0, output_ = 0, tap_ = 0;
   std::vector<int> layers_;
   std::vector<float> mean_in_, std_in_, mean_out_, std_out_, sink_;

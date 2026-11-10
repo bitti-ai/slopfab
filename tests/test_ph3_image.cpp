@@ -5,6 +5,8 @@
 #include "slopfab/model_profile.h"
 #include "slopfab/generate.h"
 #include "slopfab/safetensors_write.h"
+#include "slopfab/text/clip_projection.h"
+#include "slopfab/tensor_convert.h"
 #include <cstdlib>
 #include <limits>
 
@@ -38,7 +40,7 @@ SLOPFAB_TEST(ph3_image_plan_matches_published_workflow) {
     CHECK_NEAR(p.video_timesteps[i], 1 - expected[i], 1e-7);
     CHECK(p.audio_timesteps[i] == p.video_timesteps[i]);
   }
-  CHECK(describe_plan(r, p).find("planning only") != std::string::npos);
+  CHECK(describe_plan(r, p).find("P-H3 Image") != std::string::npos);
   r.canvas_width = 3872;
   r.canvas_height = 2176;
   r.num_inference_steps = 8;
@@ -75,6 +77,8 @@ SLOPFAB_TEST(ph3_image_rejects_incompatible_requests) {
   catch (const std::exception&) { rejected = true; }
   CHECK(rejected);
   RunOptions options;
+  options.attention_mode = AttentionMode::kFlash2;
+  options.vulkan_portable_arithmetic = true;
   validate_generation_options(base, p, options);
   options.sampler = sampler::SamplerKind::kAb2;
   rejected = false;
@@ -139,4 +143,45 @@ SLOPFAB_TEST(ph3_image_local_checkpoint) {
   CHECK(table.rank() == 16 && table.rows() == 4097);
   for (float t : p.video_timesteps)
     CHECK(table.lookup_code(t).size() == 16);
+}
+
+SLOPFAB_TEST(ph3_image_local_text_connector) {
+  const char* path = std::getenv("SLOPFAB_PH3_TEXT_ENCODER");
+  if (!path || !*path) {
+    SKIP_MISSING_FIXTURE("set SLOPFAB_PH3_TEXT_ENCODER to validate the downloaded connector");
+    return;
+  }
+  using namespace slopfab;
+  SafeTensors checkpoint;
+  checkpoint.open(path);
+  text::ClipProjection connector(path);
+  CHECK(connector.ph3_image());
+  CHECK(connector.hidden_taps() == (std::vector<int>{13, 19, 25, 31, 36}));
+  const auto cfg = text::validate_clip_student(checkpoint, connector);
+  CHECK(cfg.width == 2560 && cfg.layers == 36);
+  const auto mean = to_f32(checkpoint.at("text_connector.input_mean"));
+  const auto stddev = to_f32(checkpoint.at("text_connector.input_std"));
+  const auto output_mean = to_f32(checkpoint.at("text_connector.output_mean"));
+  const auto output_std = to_f32(checkpoint.at("text_connector.output_std"));
+  const auto sink = to_f32(checkpoint.at("text_connector.sink_embedding"));
+  text::PromptEmbedding h;
+  h.num_tokens = 2;
+  h.hidden_size = 12800;
+  h.modality_tags = {1, 1};
+  h.data = mean;
+  h.data.insert(h.data.end(), mean.begin(), mean.end());
+  // One distinct component in each of the five taps makes omitted/reordered
+  // taps and a transposed projection observable in the expected output.
+  const int channels[] = {7, 2569, 5131, 7697, 10261};
+  for (int i = 0; i < 5; ++i) h.data[12800 + channels[i]] += (i + 1) * stddev[channels[i]];
+  const auto out = connector.apply(h);
+  CHECK(out.num_tokens == 2 && out.hidden_size == 5120);
+  const auto* weight = static_cast<const float*>(checkpoint.at("text_connector.proj.weight").data);
+  for (int row = 0; row < 5120; ++row) {
+    CHECK(out.data[row] == sink[row]);
+    double expected = 0;
+    for (int c : channels)
+      expected += weight[size_t(row) * 12800 + c] * ((h.data[12800 + c] - mean[c]) / stddev[c]);
+    CHECK_NEAR(out.data[5120 + row], expected * output_std[row] + output_mean[row], 1e-4);
+  }
 }

@@ -29,7 +29,7 @@ struct ViTRopeTables {
 
 // Canonical video-VAE T/H/W rotary tables, including identity suffix rows.
 ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t width, uint32_t suffix,
-                                    uint32_t rope_dim, float theta);
+                                    uint32_t rope_dim, float theta, bool ph3_image = false);
 
 // Non-owning host views. Linear matrices are row-major fp16 in unrotated
 // coordinates [out_features,in_features]; all other arrays are fp32.

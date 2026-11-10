@@ -1,5 +1,6 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
+#include "slopfab/model_profile.h"
 #include "slopfab/remake.h"
 
 #include <algorithm>
@@ -271,10 +272,14 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
       return false;
     }
     const char* conditioner_mode = nullptr;
-    if (!request.clip_projection_path.empty()) {
+    const bool ph3_image = request_model_family(request) == "ph3_image";
+    if (!request.clip_projection_path.empty() || ph3_image) {
       if (!qwen_images.empty())
         throw std::invalid_argument("ClipProj supports text-only conditioning");
-      text::ClipProjection projection(request.clip_projection_path);
+      text::ClipProjection projection(ph3_image
+                                          ? request.text_encoder_path : request.clip_projection_path);
+      if (ph3_image && !projection.ph3_image())
+        throw std::invalid_argument("P-H3 Image requires its matching text connector checkpoint");
       (void)text::validate_clip_student(encoder_file, projection);
       auto check = [&]() {
         if (options.on_progress &&
@@ -299,7 +304,8 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
 #endif
       }
       prompt = projection.apply(hidden, check);
-      conditioner_mode = "ClipProj streaming student + host projection";
+      conditioner_mode = projection.ph3_image() ? "P-H3 five-tap Qwen3-VL + host connector"
+                                              : "ClipProj streaming student + host projection";
     } else if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
       text::Encoder encoder;

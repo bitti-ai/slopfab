@@ -403,7 +403,7 @@ struct ViTDecoder::Impl {
       throw std::runtime_error("vae: invalid RoPE sequence");
     vae::ViTRopeTables tables = vae::build_vit_rope_tables(
         static_cast<uint32_t>(T), static_cast<uint32_t>(H), static_cast<uint32_t>(W),
-        static_cast<uint32_t>(cfg.num_suffix), static_cast<uint32_t>(cfg.rope_dim), cfg.rope_theta);
+        static_cast<uint32_t>(cfg.num_suffix), static_cast<uint32_t>(cfg.rope_dim), cfg.rope_theta, cfg.ph3_image);
     d_cos.copy_from_host(tables.cosine.data(), tables.cosine.size(), stream);
     d_sin.copy_from_host(tables.sine.data(), tables.sine.size(), stream);
     stream.synchronize(); // host vectors die at scope exit

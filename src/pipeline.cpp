@@ -567,11 +567,11 @@ std::string media_encoding_cache_key(const GenerateRequest& request,
 
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {
   if (plan.model.family == "ph3_image") {
-    return "model       P-H3 Image (planning only)\ncanvas      " +
+    return "model       P-H3 Image\ncanvas      " +
         std::to_string(plan.canvas_width) + " x " + std::to_string(plan.canvas_height) +
         "\nmode        text-to-image\nsteps       8 Euler updates (fixed grid; shifts 1/1)"
         "\nguidance    1 (no CFG)\naudio       2 latent positions per channel (internal only)"
-        "\nstatus      GPU generation is not implemented yet\noutput      " + request.out_path + "\n";
+        "\noutput      " + request.out_path + "\n";
   }
   if (plan.model.family == "minimax_music3") {
     return "  model               MiniMax Music3\n  output              stereo 44100 Hz WAV\n  duration ceiling    " +

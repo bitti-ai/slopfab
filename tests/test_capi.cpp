@@ -1509,7 +1509,7 @@ SLOPFAB_TEST(capi_moss_plan_and_guidance) {
   CHECK(plan.num_model_evaluations == 1);
 }
 
-SLOPFAB_TEST(capi_ph3_image_plan_and_execution_guard) {
+SLOPFAB_TEST(capi_ph3_image_plan_and_invalid_attention) {
   Request request;
   CHECK(slopfab_request_set_model_family(request.handle, "ph3_image") == SLOPFAB_OK);
   slopfab_plan plan{};
@@ -1519,7 +1519,8 @@ SLOPFAB_TEST(capi_ph3_image_plan_and_execution_guard) {
   CHECK(plan.num_model_evaluations == 8);
   OwnedString description;
   CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
-  CHECK(std::string(description.text).find("planning only") != std::string::npos);
+  CHECK(std::string(description.text).find("P-H3 Image") != std::string::npos);
+  CHECK(slopfab_request_set_attention(request.handle, "exact") == SLOPFAB_OK);
   slopfab_generation* generation = nullptr;
   CHECK(slopfab_generation_start(request.handle, nullptr, nullptr, &generation) ==
         SLOPFAB_ERR_INVALID_REQUEST);
