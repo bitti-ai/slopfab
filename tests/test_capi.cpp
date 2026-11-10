@@ -1509,6 +1509,21 @@ SLOPFAB_TEST(capi_moss_plan_and_guidance) {
   CHECK(plan.num_model_evaluations == 1);
 }
 
+SLOPFAB_TEST(capi_h3_image_sixteen_references) {
+  Request request;
+  CHECK(slopfab_request_set_model_family(request.handle, "h3_image") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_resolution(request.handle, 512, 512) == SLOPFAB_OK);
+  for (int i = 0; i < 16; ++i)
+    CHECK(slopfab_request_add_reference_image(request.handle, "ref.png") == SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_image(request.handle, "ref.png") == SLOPFAB_ERR_INVALID_REQUEST);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 6 && plan.num_audio_rows == 0 && plan.aligned_frames == 1);
+  OwnedString description;
+  CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
+  CHECK(std::string(description.text).find("16 references") != std::string::npos);
+}
+
 SLOPFAB_TEST(capi_ph3_image_plan_and_invalid_attention) {
   Request request;
   CHECK(slopfab_request_set_model_family(request.handle, "ph3_image") == SLOPFAB_OK);

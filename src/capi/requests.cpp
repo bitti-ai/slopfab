@@ -926,11 +926,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_reque
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_add_reference_image: null argument");
   }
   return guarded([&] {
-    if (request->request.reference_image_paths.size() >= 9) {
-      return fail(SLOPFAB_ERR_INVALID_REQUEST,
-                  "MiniMax-H3 Ref2VA accepts at most 9 reference images");
+    const bool image_model = slopfab::request_model_family(request->request) == "h3_image";
+    if (request->request.reference_image_paths.size() >= (image_model ? 16u : 9u)) {
+      return fail(SLOPFAB_ERR_INVALID_REQUEST, image_model
+          ? "MiniMax-H3-Image accepts at most 16 reference images"
+          : "MiniMax-H3 Ref2VA accepts at most 9 reference images");
     }
-    if (request->request.reference_image_paths.size() + request->request.reference_media.size() >=
+    if (!image_model && request->request.reference_image_paths.size() + request->request.reference_media.size() >=
         12) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST,
                   "MiniMax-H3 Ref2VA accepts at most 12 references in total");
