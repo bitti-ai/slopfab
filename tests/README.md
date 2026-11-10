@@ -1,9 +1,11 @@
 # Test coverage
 
-P-H3 Image host contracts are selected with `SLOPFAB_TEST_FILTER=ph3_image`.
-Set `SLOPFAB_PH3_IMAGE_CHECKPOINT` to a completed transformer download to also
-validate its header and rank-16 timestep table. These tests do not establish
-GPU generation support; see [current implementation status](../docs/ph3_image.md).
+P-H3 Image contracts are selected with `SLOPFAB_TEST_FILTER=ph3_image`.
+Set `SLOPFAB_PH3_IMAGE_CHECKPOINT` and `SLOPFAB_PH3_TEXT_ENCODER` to completed
+downloads to validate the table and five-tap connector. The tensor backend
+suite tests rank-16 preservation on CUDA and Vulkan; `SLOPFAB_PH3_GPU=1`
+also enables a real-transformer eight-step smoke test. This does not assert
+cross-backend numerical parity; see [implementation status](../docs/ph3_image.md).
 
 The large backend, transformer, and encoder suites are split by operator or
 stage. Shared implementation details live in `detail/*_fixture.h`; test cases
