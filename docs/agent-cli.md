@@ -14,9 +14,31 @@ after the original process exits. Read `.slopfab-update-result.json` beside the
 executable for `installed` or `failed` (also included in the next successful
 `update --check`). Linux installs before returning. Replaced files remain in
 `.slopfab-update-*/backup`; a failed replacement restores them automatically.
-Close other running slopfab processes before updating on Windows. There are no
-background update checks. No public release, an unavailable package, or a missing
+Close other running slopfab processes before updating on Windows. No public
+release, an unavailable package, or a missing
 or mismatched signature/checksum causes an error without replacing the installation.
+
+Automatic updates are enabled by default. After a regular CLI command finishes,
+Slopfab launches a hidden background check at most once per UTC calendar day and
+installs a newer release using the same signed updater. It does not restart the
+foreground command or add output to its JSON response. This runs when the CLI is
+used, not as a scheduled service while Slopfab is closed. Settings commands,
+explicit update commands and internal workers do not schedule another check.
+
+Global settings store the last attempt as `last_update_check: "YYYY-MM-DD"`.
+The date is reserved under the settings lock before launching, so simultaneous
+commands cannot start duplicate checks. Failed attempts also count for the day;
+`slopfab update` and `slopfab update --check` always allow an immediate retry and
+record their attempt. Background results and errors go to `auto-update.log`
+beside the settings file; Windows installation outcomes remain in the status
+file described above. An update may fail if another process still holds the
+installation open.
+
+Use `slopfab settings set auto_update false` to disable automatic updates or
+`slopfab settings set auto_update true` to enable them. Removing `auto_update`
+restores the default. `SLOPFAB_NO_AUTO_UPDATE=1` suppresses background checks for
+automation/tests without changing saved settings. `--config` and `SLOPFAB_CONFIG`
+select the same settings file for the foreground command and its updater.
 
 Release maintainers: publish the bundle made by `tools/package_bundle.py` as
 `slopfab-VERSION-windows-linux-x64.zip` on a stable `VERSION` or `vVERSION` release.
@@ -295,8 +317,9 @@ Paths may be directories or individual checkpoint files. Paths supplied to this
 command are resolved against the current working directory and saved as absolute
 paths. Relative paths in manually edited configuration resolve against the config
 file. Duplicate paths collapse. `remove weight_paths` without paths clears the
-list. `models` and `presets` support dotted keys and JSON values; `schema_version`
-is read-only. Writes are atomic and concurrent updates are serialized.
+list. `models` and `presets` support dotted keys and JSON values. `auto_update`
+accepts a JSON boolean; `schema_version` and `last_update_check` are read-only.
+Writes are atomic and concurrent updates are serialized.
 Existing `weights_directory` configuration migrates to `weight_paths` automatically.
 
 ```json

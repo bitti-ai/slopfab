@@ -12,6 +12,9 @@ Ask your agent to create [mods](docs/mods.md): reusable workflows you can share 
 
 Update to the latest GitHub release with `slopfab update`, or check availability
 with `slopfab update --check`. Your weights, projects and settings are preserved.
+Regular commands also check and install updates in the background once per UTC
+day. Disable this with `slopfab settings set auto_update false`; inspect the last
+attempt with `slopfab settings get last_update_check`.
 
 ## Models and capabilities
 
