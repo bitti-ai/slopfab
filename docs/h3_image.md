@@ -56,6 +56,13 @@ H3 latent archives are not supported.
 Host tests cover checkpoint identity, incompatible requests and metadata,
 schedule selection, PDD head fusion, 2D RoPE and single-frame decoding. Set
 `SLOPFAB_H3_IMAGE_CHECKPOINT` to inspect a real transformer with the host tests.
+GPU regression tests compare CUDA and Vulkan fused RoPE at both widths.
+
+Validated on an RTX 5090 with the INT8 transformer, NVFP4 H3 text encoder and
+FP16 image VAE: CUDA at 512×512 and 4096×4096, and portable Vulkan at 512×512.
+The 4096×4096 CUDA run took about 64 seconds including conditioning, loading,
+six denoising steps and PNG delivery. Both backends produced complete images;
+their full generation arithmetic is not expected to be pixel-identical.
 
 Sources: [original model and examples](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image),
 [PDD schedule](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/pdd_config.json),
