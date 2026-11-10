@@ -104,7 +104,7 @@ SLOPFAB_TEST(ph3_image_checkpoint_identity_and_shape_validation) {
   const auto model = dit::resolve_model_descriptor(st);
   CHECK(model.family == "ph3_image");
   CHECK(model.compatibility_architecture == dit::TransformerArchitecture::kPH3Image);
-  CHECK(!dit::is_pruned_table_architecture(model.compatibility_architecture));
+  CHECK(dit::is_pruned_table_architecture(model.compatibility_architecture));
   GenerateRequest r;
   r.transformer_path = fixture.path.string();
   CHECK(request_model_family(r) == "ph3_image");

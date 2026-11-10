@@ -56,6 +56,9 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   require(!independent || (!inputs.cache.enabled() && !inputs.motion_cache.active() &&
                            !transformer.block_cache_config().enabled()),
           "independent audio steps do not support approximate caches");
+  require(transformer.config().adaln_rank == AdaLNTable::kRank ||
+              (!inputs.cache.enabled() && !inputs.motion_cache.active()),
+          "rank-16 modulation does not support approximate caches");
   const int patch = transformer.config().video_patch_dim();
   const int audio_dim = transformer.config().audio_in_channels;
   const size_t video_rows = indices.video.size();

@@ -456,11 +456,11 @@ std::vector<float> expand_adaln(const Tensors& t, const AdaLNTable& table, const
   const std::vector<float>& b = at(t, name + ".bias");
   std::vector<float> out(timesteps.size() * out_features);
   for (size_t i = 0; i < timesteps.size(); ++i) {
-    const std::array<float, AdaLNTable::kRank> c = table.lookup(timesteps[i]);
+    const auto c = table.lookup_code(timesteps[i]);
     for (int p = 0; p < out_features; ++p) {
       double acc = b[static_cast<size_t>(p)];
-      for (int r = 0; r < AdaLNTable::kRank; ++r) {
-        acc += static_cast<double>(w[static_cast<size_t>(p) * AdaLNTable::kRank + r]) * c[r];
+      for (int r = 0; r < table.rank(); ++r) {
+        acc += static_cast<double>(w[static_cast<size_t>(p) * table.rank() + r]) * c[r];
       }
       out[i * out_features + p] = static_cast<float>(acc);
     }
@@ -638,15 +638,15 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
   // A smooth table, as the real one is: linear interpolation only means
   // anything on a smooth grid.
   {
-    std::vector<float> table(static_cast<size_t>(AdaLNTable::kRows) * AdaLNTable::kRank);
-    for (int j = 0; j < AdaLNTable::kRows; ++j) {
-      const double u = static_cast<double>(j) / (AdaLNTable::kRows - 1);
-      for (int c = 0; c < AdaLNTable::kRank; ++c) {
-        table[static_cast<size_t>(j) * AdaLNTable::kRank + c] =
+    std::vector<float> table(static_cast<size_t>(cfg.adaln_table_rows) * cfg.adaln_rank);
+    for (int j = 0; j < cfg.adaln_table_rows; ++j) {
+      const double u = static_cast<double>(j) / (cfg.adaln_table_rows - 1);
+      for (int c = 0; c < cfg.adaln_rank; ++c) {
+        table[static_cast<size_t>(j) * cfg.adaln_rank + c] =
             static_cast<float>(std::cos((c + 1) * 1.7 * u) / (c + 1));
       }
     }
-    put(t, "adaln_t_table", {AdaLNTable::kRows, AdaLNTable::kRank}, std::move(table));
+    put(t, "adaln_t_table", {cfg.adaln_table_rows, cfg.adaln_rank}, std::move(table));
   }
 
   norm_weight("final_layer.norm.weight", hidden);
@@ -656,13 +656,13 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
   // distinguishable: a reversed split would change the answer.
   {
     std::vector<float> w =
-        make_data(static_cast<size_t>(2 * hidden) * AdaLNTable::kRank, seed++, 0.08f);
+        make_data(static_cast<size_t>(2 * hidden) * cfg.adaln_rank, seed++, 0.08f);
     std::vector<float> b = make_data(static_cast<size_t>(2 * hidden), seed++, 0.02f);
     for (int i = 0; i < hidden; ++i)
       b[static_cast<size_t>(i)] += 0.10f; // shift
     for (int i = 0; i < hidden; ++i)
       b[static_cast<size_t>(hidden + i)] += 0.30f; // scale
-    put(t, "final_layer.adaln_proj.linear.weight", {2 * hidden, AdaLNTable::kRank}, std::move(w));
+    put(t, "final_layer.adaln_proj.linear.weight", {2 * hidden, cfg.adaln_rank}, std::move(w));
     put(t, "final_layer.adaln_proj.linear.bias", {2 * hidden}, std::move(b));
   }
   put(t, "final_layer.video_out.weight", {patch, hidden}, fan_in_weights(patch, hidden, seed++));
@@ -691,7 +691,7 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
     // all of its power.
     const float base[6] = {0.05f, 0.25f, 0.90f, 0.08f, 0.20f, 0.75f};
     std::vector<float> w =
-        make_data(static_cast<size_t>(18 * hidden) * AdaLNTable::kRank, seed++, 0.05f);
+        make_data(static_cast<size_t>(18 * hidden) * cfg.adaln_rank, seed++, 0.05f);
     std::vector<float> b(static_cast<size_t>(18) * hidden);
     for (int modality = 0; modality < 3; ++modality) {
       for (int param = 0; param < 6; ++param) {
@@ -702,7 +702,7 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
         }
       }
     }
-    put(t, prefix + "adaln_proj.linear.weight", {18 * hidden, AdaLNTable::kRank}, std::move(w));
+    put(t, prefix + "adaln_proj.linear.weight", {18 * hidden, cfg.adaln_rank}, std::move(w));
     put(t, prefix + "adaln_proj.linear.bias", {18 * hidden}, std::move(b));
   };
 

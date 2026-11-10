@@ -52,8 +52,15 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
       throw std::invalid_argument(
           "VEDA requires a matching predictor and an uncompressed H3 transformer");
   }
-  if (s.model.modulation == ModulationImplementation::kTable)
+  if (s.model.modulation == ModulationImplementation::kTable) {
     validate_adaln_table_config(config.adaln_rank, config.adaln_table_rows);
+    s.table.load(checkpoint);
+    if (s.table.rank() != config.adaln_rank || s.table.rows() != config.adaln_table_rows)
+      throw std::invalid_argument("transformer: AdaLN table shape disagrees with configuration");
+    if (config.adaln_rank != AdaLNTable::kRank && loras &&
+        (loras->projection_count() || loras->hyperflow()))
+      throw std::invalid_argument("transformer: rank-16 modulation does not support H3 adapters");
+  }
   if (s.architecture == TransformerArchitecture::kUnknown) {
     throw std::runtime_error("transformer: checkpoint architecture is unknown");
   }
@@ -138,7 +145,7 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     plan.optional("final_layer.adaln_proj.linear.comfy_quant");
     plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsBF16);
   } else {
-    plan.require("final_layer.adaln_proj.linear.weight", {final_adaln_out, AdaLNTable::kRank},
+    plan.require("final_layer.adaln_proj.linear.weight", {final_adaln_out, config.adaln_rank},
                  Store::kAsF32);
     plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsF32);
   }
@@ -207,7 +214,7 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
         plan_linear(prefix + "adaln_proj.linear", adaln_out, config.timestep_embed_dim);
         plan.require(prefix + "adaln_proj.linear.bias", {adaln_out}, Store::kAsBF16);
       } else {
-        plan.require(prefix + "adaln_proj.linear.weight", {adaln_out, AdaLNTable::kRank},
+        plan.require(prefix + "adaln_proj.linear.weight", {adaln_out, config.adaln_rank},
                      Store::kAsF32);
         plan.require(prefix + "adaln_proj.linear.bias", {adaln_out}, Store::kAsF32);
       }
@@ -800,8 +807,6 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   if (full_adaln) {
     s.timestep_embedding.load(checkpoint, config.timestep_freq_dim, config.timestep_hidden_dim,
                               config.timestep_embed_dim);
-  } else {
-    s.table.load(checkpoint);
   }
   if (s.hyperflow) {
     s.hyperflow_weights.resize(config.num_layers + 1);

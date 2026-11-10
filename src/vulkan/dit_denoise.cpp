@@ -88,6 +88,7 @@ void validate_config(const ExactH3DenoiseConfig& c) {
           (c.continuation ? c.continuation->context_noise_scales.size() : 0u) ||
       c.transformer.main.block.modalities != 3 ||
       (c.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank &&
+       c.transformer.main.block.adaln_rank != dit::AdaLNTable::kPH3Rank &&
        c.transformer.main.block.adaln_rank != 18) ||
       c.transformer.video_dim == 0 || c.transformer.audio_dim == 0 || c.attention_band < 0 ||
       (c.attention_band != 0 && !c.attention_ranges.empty()) ||
@@ -250,8 +251,13 @@ void ExactH3Denoiser::load(const SafeTensors& checkpoint) {
   next->table.load(checkpoint);
   const auto* loras = impl_->config.transformer.main.block.loras;
   next->hyperflow = loras ? loras->hyperflow() : nullptr;
-  if (!next->hyperflow && impl_->config.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank)
-    throw std::invalid_argument("Vulkan H3: nonstandard code rank requires a Hyperflow companion");
+  const auto rank = impl_->config.transformer.main.block.adaln_rank;
+  if ((!next->hyperflow && rank != uint32_t(next->table.rank())) ||
+      (next->hyperflow && next->table.rank() != dit::AdaLNTable::kRank))
+    throw std::invalid_argument("Vulkan H3: AdaLN table rank disagrees with configuration");
+  if (next->table.rank() != dit::AdaLNTable::kRank &&
+      (impl_->config.motion_cache.active() || (loras && loras->projection_count())))
+    throw std::invalid_argument("Vulkan H3: rank-16 modulation does not support adapters or caches");
   next->transformer = ExactH3Transformer::create(*impl_->context, impl_->config.transformer);
   next->transformer.load(checkpoint);
   try {
@@ -543,9 +549,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     if (s.hyperflow) code = s.hyperflow->code(row, code_rows);
     else for (uint32_t t = 0; t < code_rows; ++t) {
       const float value = row.unique[std::min<size_t>(t, row.unique.size() - 1)];
-      const auto selected = s.table.lookup(value);
+      const auto selected = s.table.lookup_code(value);
       std::copy(selected.begin(), selected.end(),
-                code.begin() + uint64_t(t) * dit::AdaLNTable::kRank);
+                code.begin() + uint64_t(t) * c.transformer.main.block.adaln_rank);
     }
     for (uint32_t i = 0; i < video_output; ++i)
       video_indices[i] = row.indices[static_cast<size_t>(c.indices.video[condition_video + i])];

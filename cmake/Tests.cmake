@@ -361,6 +361,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_tensor_backends_attention_benchmark.cu
       tests/test_tensor_backends_attention_checkpoint.cu
       tests/test_tensor_backends_dit_synthetic.cu
+      tests/test_ph3_image_gpu.cu
       tests/test_tensor_backends_conditioner_synthetic.cu
       tests/test_tensor_backends_conditioner_checkpoint.cu
       tests/test_tensor_backends_conditioner_integration_1.cu

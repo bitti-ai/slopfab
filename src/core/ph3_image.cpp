@@ -10,6 +10,7 @@ bool is_ph3_image_transformer(const SafeTensors& checkpoint) {
   return table && table->shape == std::vector<int64_t>{4097, 16} &&
          checkpoint.find("video_patch_proj.weight") &&
          checkpoint.find("condition_proj.weight") &&
+         checkpoint.at("condition_proj.weight").shape == std::vector<int64_t>{5376, 5120} &&
          checkpoint.find("blocks.0.adaln_proj.linear.weight");
 }
 

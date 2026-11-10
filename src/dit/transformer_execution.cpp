@@ -10,7 +10,7 @@ void Transformer::Impl::build_modulation(const std::vector<float>& timesteps,
 
   const int code_dim =
       hyperflow ? hyperflow->rank() :
-      is_pruned_table_architecture(architecture) ? AdaLNTable::kRank : cfg.timestep_embed_dim;
+      is_pruned_table_architecture(architecture) ? cfg.adaln_rank : cfg.timestep_embed_dim;
   if (hyperflow) {
     RowTimesteps times;
     times.unique = timesteps;
@@ -19,7 +19,7 @@ void Transformer::Impl::build_modulation(const std::vector<float>& timesteps,
   } else if (is_pruned_table_architecture(architecture)) {
     host_code.assign(static_cast<size_t>(T) * code_dim, 0.0f);
     for (int i = 0; i < T; ++i) {
-      const std::array<float, AdaLNTable::kRank> c = table.lookup(timesteps[i], lookup);
+      const auto c = table.lookup_code(timesteps[i], lookup);
       for (int k = 0; k < code_dim; ++k) {
         host_code[static_cast<size_t>(i) * code_dim + k] = c[k];
       }

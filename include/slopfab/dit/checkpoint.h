@@ -28,7 +28,8 @@ constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture
          architecture == TransformerArchitecture::kRef2VAPrunedTable ||
          architecture == TransformerArchitecture::kViggleAnimatePrunedTable ||
          architecture == TransformerArchitecture::kFastH3V2PrunedTable ||
-         architecture == TransformerArchitecture::kOmniRefPrunedTable;
+         architecture == TransformerArchitecture::kOmniRefPrunedTable ||
+         architecture == TransformerArchitecture::kPH3Image;
 }
 
 enum class TransformerQuantization {
@@ -63,7 +64,7 @@ struct ModelDescriptor {
 };
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint);
-// The supported table implementation has fixed lookup/capture/adapter contracts.
+// Supported table shapes. Adapter and cache contracts are validated separately.
 void validate_adaln_table_config(int rank, int rows);
 
 TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint);

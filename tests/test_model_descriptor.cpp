@@ -108,6 +108,7 @@ SLOPFAB_TEST(model_descriptor_rejects_unsupported_contracts) {
     dit::validate_adaln_table_config(8, 1024);
   }));
   dit::validate_adaln_table_config(8, 1025);
+  dit::validate_adaln_table_config(16, 4097);
 }
 
 SLOPFAB_TEST(model_descriptor_compression_is_independent_of_release) {

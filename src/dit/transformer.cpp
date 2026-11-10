@@ -108,6 +108,8 @@ void Transformer::set_veda(std::shared_ptr<VedaRequest> request) {
 void Transformer::set_block_cache(const BlockCacheConfig& config, int num_steps) {
   Impl& s = *impl_;
   s.require_loaded("set_block_cache");
+  if (s.cfg.adaln_rank != AdaLNTable::kRank && config.enabled())
+    throw std::invalid_argument("transformer: rank-16 modulation does not support block caching");
   s.block_cache = BlockCache(config, num_steps);
   // Resolved against the loaded stack, so this needs `load` to have run. The
   // number of blocks is the one input the config cannot supply and getting it
@@ -153,9 +155,9 @@ int Transformer::block_cache_reused() const {
 }
 
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
-  if (!is_pruned_table_architecture(impl_->architecture)) {
+  if (!is_pruned_table_architecture(impl_->architecture) || impl_->table.rank() != AdaLNTable::kRank) {
     throw std::runtime_error(
-        "transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
+        "transformer: rank-8 adaln_code requires a rank-8 table architecture");
   }
   return impl_->table.lookup(t, impl_->lookup);
 }

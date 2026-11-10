@@ -119,8 +119,9 @@ static TransformerArchitecture infer_legacy_architecture(const SafeTensors& chec
 }
 
 void validate_adaln_table_config(int rank, int rows) {
-  if (rank != AdaLNTable::kRank || rows != AdaLNTable::kRows)
-    throw std::runtime_error("transformer: table modulation requires AdaLN rank 8 and 1025 rows");
+  if ((rank != AdaLNTable::kRank || rows != AdaLNTable::kRows) &&
+      (rank != AdaLNTable::kPH3Rank || rows != AdaLNTable::kPH3Rows))
+    throw std::runtime_error("transformer: table modulation requires [1025, 8] or [4097, 16]");
 }
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
