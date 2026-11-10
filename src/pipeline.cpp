@@ -577,15 +577,17 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     std::string description = "model       MiniMax-H3-Image\ncanvas      " +
         std::to_string(plan.canvas_width) + " x " + std::to_string(plan.canvas_height) +
         "\nmode        " + (request.image_edit.invert_mask ? std::string("outpainting (preserve source)") :
+          request.image_edit.image ? std::string("masked inpainting") :
           request.reference_image_paths.empty() ? std::string("text-to-image")
           : "image editing (" + std::to_string(request.reference_image_paths.size()) + " references)") +
         "\nsteps       6 Euler updates (fixed PDD grid)"
         "\nguidance    1 (no CFG)\naudio       none\noutput      " + request.out_path + "\n";
-    if (request.image_edit.invert_mask) {
+    if (request.image_edit.image) {
       const auto& e = request.image_edit;
-      description += "source box  " + std::to_string(e.x) + "," + std::to_string(e.y) + "," +
+      description += std::string(e.mask ? "pixel mask  U8 coverage\n" : "source box  " + std::to_string(e.x) + "," + std::to_string(e.y) + "," +
           std::to_string(e.width) + "," + std::to_string(e.height) +
-          "\nblend       " + std::to_string(e.blend_overlap) +
+          "\n") + (e.invert_mask ? "blend       " + std::to_string(e.blend_overlap) :
+                                  "feather     " + std::to_string(e.feather)) +
           "\npictures    " + std::to_string(request.reference_image_paths.size() + 1) +
           "\ndelivered   " + std::to_string(e.image->width) + " x " + std::to_string(e.image->height) + "\n";
     }

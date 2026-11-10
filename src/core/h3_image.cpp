@@ -80,17 +80,20 @@ std::string h3_image_picture_label(size_t index) {
 
 GeneratePlan resolve_h3_image_plan(const GenerateRequest& r) {
   r.image_edit.validate();
+  const bool edit = bool(r.image_edit.image);
   const bool outpaint = r.image_edit.image && r.image_edit.invert_mask;
-  if (outpaint && (r.image_edit.strength != 1.f || r.image_edit.langevin_steps != 0))
-    throw std::invalid_argument("MiniMax-H3-Image outpainting requires strength 1 and Langevin steps 0 to retain six PDD evaluations");
+  if (edit && r.image_edit.strength != 1.f)
+    throw std::invalid_argument("MiniMax-H3-Image masked editing requires strength 1 to retain six PDD evaluations");
+  if (outpaint && r.image_edit.langevin_steps != 0)
+    throw std::invalid_argument("MiniMax-H3-Image outpainting requires Langevin steps 0 to retain six PDD evaluations");
   if (!r.reference_media.empty() || r.has_refmods() || !r.end_anchor_path.empty() ||
-      (r.image_edit.image && !outpaint) || r.continuation || r.bridge ||
+      r.continuation || r.bridge ||
       r.animate || r.video_transition || r.preserve_driving_audio || !r.loras.empty() ||
       r.cache_threshold != 0 || r.skip_every != 0 || r.block_cache_span != 0 ||
       r.motion_cache.active())
-    throw std::invalid_argument("MiniMax-H3-Image accepts image references; masked edits, video/audio references, adapters and caches are unsupported");
-  if (r.reference_image_paths.size() + size_t(outpaint) > 16)
-    throw std::invalid_argument("MiniMax-H3-Image supports at most 16 reference images including the outpaint source");
+    throw std::invalid_argument("MiniMax-H3-Image accepts image references; video/audio references, adapters and caches are unsupported");
+  if (r.reference_image_paths.size() + size_t(edit) > 16)
+    throw std::invalid_argument("MiniMax-H3-Image supports at most 16 reference images including the edit source");
   if (!r.clip_projection_path.empty() || !r.video_decoder_path.empty() ||
       r.end_anchor_latents || !r.regenerate.mode.empty() || !r.remake_mode.empty())
     throw std::invalid_argument("MiniMax-H3-Image requires the H3 text encoder and its image VAE without H3 editing modes");
@@ -131,11 +134,11 @@ GeneratePlan resolve_h3_image_plan(const GenerateRequest& r) {
   }
   p.canvas_width = r.canvas_width ? r.canvas_width : 4096;
   p.canvas_height = r.canvas_height ? r.canvas_height : 4096;
-  if (outpaint) {
+  if (edit) {
     p.canvas_width = (r.image_edit.image->width + 31) / 32 * 32;
     p.canvas_height = (r.image_edit.image->height + 31) / 32 * 32;
     if (r.has_explicit_canvas() && (r.canvas_width != p.canvas_width || r.canvas_height != p.canvas_height))
-      throw std::invalid_argument("outpaint resolution must match the expanded canvas padded to 32 pixels");
+      throw std::invalid_argument("masked edit resolution must match the source canvas padded to 32 pixels");
   } else if (!r.has_explicit_canvas() && !r.reference_image_paths.empty()) {
     const auto image = load_reference_image(r.reference_image_paths.front());
     h3_image_reference_size(image.width, image.height, &p.canvas_height, &p.canvas_width);

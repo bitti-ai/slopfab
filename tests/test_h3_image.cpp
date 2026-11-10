@@ -301,5 +301,33 @@ SLOPFAB_TEST(h3_image_outpaint_canvas_and_fixed_schedule) {
   r.canvas_width = 128; r.canvas_height = 96; CHECK(!rejects(r));
   r.image_edit.strength = .5f; CHECK(rejects(r));
   r.image_edit.strength = 1;
-  r.image_edit.invert_mask = false; CHECK(rejects(r));
+  r.image_edit.invert_mask = false; CHECK(!rejects(r));
+}
+
+SLOPFAB_TEST(h3_image_masked_inpainting_plan) {
+  using namespace slopfab;
+  auto source = std::make_shared<RGBImage>();
+  source->width = 67; source->height = 65;
+  source->pixels.assign(67 * 65 * 3, 123);
+  GenerateRequest r;
+  r.model_family = "h3_image";
+  r.image_edit = {source, 16, 16, 32, 32, 1.f, 4};
+  const auto p = resolve_plan(r);
+  CHECK(p.canvas_width == 96 && p.canvas_height == 96 && p.num_model_evaluations() == 6);
+  CHECK(p.video_sigmas == h3_image_sigmas());
+  CHECK(describe_plan(r, p).find("masked inpainting") != std::string::npos);
+  auto mask = std::make_shared<std::vector<uint8_t>>(67 * 65, 0);
+  (*mask)[67 * 20 + 20] = 128;
+  r.image_edit.mask = mask;
+  r.image_edit.width = r.image_edit.height = 0;
+  CHECK(describe_plan(r, resolve_plan(r)).find("pixel mask") != std::string::npos);
+  r.reference_image_paths.assign(15, "unused.png");
+  CHECK(resolve_plan(r).canvas_width == 96);
+  r.reference_image_paths.push_back("unused.png"); CHECK(rejects(r));
+  r.reference_image_paths.clear();
+  r.image_edit.strength = .5f; CHECK(rejects(r));
+  r.image_edit.strength = 1;
+  r.image_edit.invert_mask = true; CHECK(rejects(r));
+  r.image_edit.invert_mask = false;
+  (*mask)[67 * 20 + 20] = 0; CHECK(rejects(r));
 }

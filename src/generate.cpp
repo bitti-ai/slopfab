@@ -302,7 +302,10 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   const std::string arithmetic_key = options.inference_backend == DeviceBackend::kVulkan
       ? (options.vulkan_portable_arithmetic ? ":vulkan-portable" : ":vulkan-qualified-exact")
       : ":cuda";
-  const bool cache_references = options.reuse_models;
+  const bool masked_image_edit = plan.model.family == "h3_image" && request.image_edit.image &&
+                                  !request.image_edit.invert_mask;
+  // In-memory edit sources are not represented in the file-reference cache key.
+  const bool cache_references = options.reuse_models && !masked_image_edit;
   const auto image_paths = request.conditioning_image_paths();
   const std::vector<std::string> reference_identities =
       options.reuse_models ? reference_image_identities(request) : std::vector<std::string>();
@@ -327,6 +330,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     reference_images.clear();
     reference_images.reserve(image_paths.size());
     try {
+      if (masked_image_edit) {
+        const auto& source = *request.image_edit.image;
+        int h = 0, w = 0;
+        h3_image_reference_size(source.width, source.height, &h, &w);
+        reference_images.push_back(resize_reference_lanczos(source, w, h));
+      }
       for (const std::string& path : image_paths) {
         RGBImage image = load_reference_image(path);
         if (static_cast<int64_t>(image.width) > 4LL * image.height ||
@@ -416,6 +425,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   if (plan.model.family == "h3_image") {
     // Qwen and the VAE resize independently from the original. Reusing the
     // rounded VAE canvas can change the aspect ratio and Qwen token grid.
+    if (masked_image_edit) {
+      const auto& source = *request.image_edit.image;
+      int h = 0, w = 0;
+      h3_image_reference_size(source.width, source.height, &h, &w, true);
+      image_model_prompt_images.push_back(resize_reference_lanczos(source, w, h));
+    }
     for (const auto& path : image_paths) {
       auto image = load_reference_image(path);
       int h = 0, w = 0;

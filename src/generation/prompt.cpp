@@ -186,8 +186,9 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
   const auto& reference_images = inputs.reference_images;
   const bool has_prompt_references = !reference_images.empty() || request.has_native_references();
   // The source scene is an in-memory crop, not part of the file-reference key.
-  // Never reuse conditioning from another outpainting source with the same text.
-  const bool cache_prompt = options.reuse_models && !request.image_edit.invert_mask;
+  // Never reuse conditioning from another in-memory edit source with the same text.
+  const bool cache_prompt = options.reuse_models && !request.image_edit.invert_mask &&
+      !(request_model_family(request) == "h3_image" && request.image_edit.image);
   auto& reference_conditioning_grids = inputs.reference_conditioning_grids;
   auto& reference_conditioning_ids = inputs.reference_conditioning_ids;
   auto& media_qwen_pairs = inputs.media_qwen_pairs;

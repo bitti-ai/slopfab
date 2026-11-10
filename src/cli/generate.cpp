@@ -121,6 +121,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_resolution = false;
   bool saw_out = false;
   std::string edit_image;
+  std::string edit_mask;
   bool saw_edit_box = false;
   bool saw_edit_option = false;
   bool saw_outpaint = false, saw_outpaint_option = false, saw_langevin = false;
@@ -188,6 +189,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       saw_outpaint_option = saw_langevin = true;
     } else if (arg == "--edit-image") {
       edit_image = next("--edit-image");
+    } else if (arg == "--edit-mask") {
+      edit_mask = next("--edit-mask");
+      if (edit_mask.empty())
+        throw std::invalid_argument("--edit-mask requires a grayscale image file");
     } else if (arg == "--edit-box") {
       std::string box = next("--edit-box");
       std::replace(box.begin(), box.end(), ',', ' ');
@@ -709,17 +714,20 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   if (saw_outpaint_option && !saw_outpaint)
     throw std::invalid_argument("outpaint settings require --outpaint");
-  if (saw_outpaint && (edit_image.empty() || saw_edit_box || saw_edit_option || saw_aspect))
+  if (!edit_mask.empty() && (edit_image.empty() || saw_edit_box || req.image_edit.feather != 0))
+    throw std::invalid_argument("--edit-mask requires --edit-image without edit-box or feather; use gray mask values for soft edges");
+  if (saw_outpaint && (edit_image.empty() || !edit_mask.empty() || saw_edit_box || saw_edit_option || saw_aspect))
     throw std::invalid_argument("--outpaint requires --edit-image without edit-box, strength, feather or aspect");
-  if (!saw_outpaint && !edit_image.empty() && slopfab::request_model_family(req) == "h3_image") {
-    if (saw_edit_box || saw_edit_option)
-      throw std::invalid_argument("MiniMax-H3-Image edits use prompt instructions; omit box, strength and feather options");
+  if (!saw_outpaint && !saw_edit_box && edit_mask.empty() && !edit_image.empty() &&
+      slopfab::request_model_family(req) == "h3_image") {
+    if (saw_edit_option)
+      throw std::invalid_argument("MiniMax-H3-Image prompt edits omit strength and feather; use --edit-box or --edit-mask for masked editing");
     req.reference_image_paths.insert(req.reference_image_paths.begin(), edit_image);
     edit_image.clear();
   }
   if (!edit_image.empty()) {
-    if (!saw_edit_box && !saw_outpaint)
-      throw std::invalid_argument("--edit-image requires --edit-box x,y,width,height");
+    if (!saw_edit_box && !saw_outpaint && edit_mask.empty())
+      throw std::invalid_argument("--edit-image requires --edit-box x,y,width,height or --edit-mask FILE");
     if (saw_aspect)
       throw std::invalid_argument("image editing inherits source dimensions; omit --aspect");
     const auto source = slopfab::load_reference_image(edit_image);
@@ -733,6 +741,19 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                                          ? 0 : langevin;
     } else {
       req.image_edit.image = std::make_shared<const slopfab::RGBImage>(source);
+      if (!edit_mask.empty()) {
+        const auto mask_image = slopfab::load_reference_image(edit_mask);
+        if (mask_image.width != source.width || mask_image.height != source.height)
+          throw std::invalid_argument("edit mask dimensions must match the source image");
+        auto coverage = std::make_shared<std::vector<uint8_t>>(size_t(source.width) * source.height);
+        for (size_t p = 0; p < coverage->size(); ++p) {
+          const auto* rgb = mask_image.pixels.data() + p * 3;
+          if (rgb[0] != rgb[1] || rgb[0] != rgb[2])
+            throw std::invalid_argument("edit mask must be grayscale: black preserves, white edits");
+          (*coverage)[p] = rgb[0];
+        }
+        req.image_edit.mask = coverage;
+      }
     }
     req.image_edit.validate();
     req.still_image = true;

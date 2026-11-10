@@ -73,7 +73,7 @@ assert "2048 x 1024" in text and "image editing (1 references)" in text
 text = run(*base, "--edit-image", str(source), "--reference-image", str(source),
            "--resolution", "512x512")
 assert "512 x 512" in text and "image editing (2 references)" in text
-for extra in [("--edit-box", "0,0,32,32"), ("--edit-strength", "0.5"), ("--edit-feather", "2")]:
+for extra in [("--edit-strength", "0.5"), ("--edit-feather", "2")]:
     run(*base, "--edit-image", str(source), *extra, success=False)
 references = ("--reference-image", str(source)) * 16
 text = run(*base, "--resolution", "512x512", *references)
@@ -97,6 +97,21 @@ for extra in [("--outpaint-blend", "2"), ("--outpaint-langevin-steps", "1"),
               ("--edit-strength", "0.5"), ("--aspect", "1:1"), references]:
     run(*base, "--edit-image", str(source), "--outpaint", "32,16,32,16", *extra, success=False)
 run(*base, "--outpaint", "32,16,32,16", success=False)
+
+text = run(*base, "--edit-image", str(source), "--edit-box", "0,0,32,32", "--edit-feather", "2")
+assert "masked inpainting" in text and "64 x 32" in text and "6 Euler updates" in text
+mask = root / "mask.ppm"
+mask.write_bytes(b"P6\n64 32\n255\n" + bytes([0,0,0]) * 1024 + bytes([128,128,128]) * 1024)
+text = run(*base, "--edit-image", str(source), "--edit-mask", str(mask), "--reference-image", str(second))
+assert "pixel mask" in text and "pictures    2" in text and "delivered   64 x 32" in text
+for extra in [("--edit-box", "0,0,32,32"), ("--edit-strength", "0.5"),
+              ("--edit-feather", "2"), ("--resolution", "512x512"), ("--outpaint", "32,0,0,0"), references]:
+    run(*base, "--edit-image", str(source), "--edit-mask", str(mask), *extra, success=False)
+run(*base, "--edit-mask", str(mask), success=False)
+run(*base, "--edit-image", str(source), "--edit-mask", str(second), success=False)
+run(*base, "--edit-image", str(source), "--edit-mask", str(source), success=False) # Colored mask.
+mask.write_bytes(b"P6\n64 32\n255\n" + bytes(64 * 32 * 3))
+run(*base, "--edit-image", str(source), "--edit-mask", str(mask), success=False)
 
 workspace.cleanup()
 print("MiniMax-H3-Image CLI checks passed")
