@@ -1,7 +1,7 @@
 {
   "h3_image": {
     "source": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image",
-    "note": "MiniMax-H3-Image native text-to-image with six fixed Euler steps. Choose the INT8 transformer, shared H3 Qwen3-VL-32B encoder, and image FP16 VAE. Existing H3 text encoder weights can be reused. No audio VAE is needed. Reference editing and the optional prompt enhancer are not currently supported.",
+    "note": "MiniMax-H3-Image native generation and editing with up to 16 ordered image references and six fixed Euler steps. Choose the INT8 transformer, shared H3 Qwen3-VL-32B encoder, and image FP16 VAE. Existing H3 text encoder weights can be reused. No audio VAE is needed. Use --edit-image for the source and --reference-image for additional pictures. Masked edits and the optional prompt enhancer are not supported.",
     "files": [
       {
         "id": "transformer-int8",
