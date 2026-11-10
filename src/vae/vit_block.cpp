@@ -63,7 +63,7 @@ ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t wid
     throw std::invalid_argument("video VAE RoPE: invalid configuration");
   }
   if ((ph3_image || rope_dims == 2) && time != 1)
-    throw std::invalid_argument("P-H3 Image VAE requires one temporal latent");
+    throw std::invalid_argument("Image VAE requires one temporal latent");
   const uint64_t patches64 = static_cast<uint64_t>(time) * height * width;
   const uint64_t sequence64 = patches64 + suffix;
   if (sequence64 > UINT32_MAX || sequence64 * rope_dim > SIZE_MAX)

@@ -26,6 +26,7 @@ attempt with `slopfab settings get last_update_check`.
 | [Krea 2](docs/krea2.md) (Turbo / Raw) | Text-to-image generation; Turbo is the default image model. |
 | [MOSS Image](docs/moss.md) | Text-to-image generation with Qwen3.5 conditioning. |
 | [P-H3 Image](docs/ph3_image.md) | Native eight-step text-to-image generation with the Qwen3-VL connector and image VAE. |
+| [MiniMax-H3-Image](docs/h3_image.md) | Native six-step text-to-image generation with the H3 text encoder and 2D image VAE. |
 | [Fibo 2.0](docs/fibo2.md) | Text-to-image generation and instruction-based image editing; Edit Turbo accepts up to four reference images. |
 | [YuE2 / MiniMax Music3](docs/music-models.md) | Generates stereo songs from style descriptions and lyrics, or instrumental music. |
 | [RealESRGAN x4plus](docs/upscaling.md) / [SeedVR2 3B](docs/seedvr2.md) | Image/video upscaling; SeedVR2 restores video in temporal segments. |

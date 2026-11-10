@@ -119,7 +119,15 @@ SLOPFAB_TEST(h3_image_checkpoint_identity_and_shape_validation) {
   r.model_family = "h3";
   CHECK(rejects(r));
   st.close();
-  tensors.pop_back(); // missing output projection must fail before inference
+  write_safetensors(fixture.path.string(), tensors,
+                    {{"config", R"({"transformer":{"pdd_steps":8}})"}});
+  st.open(fixture.path.string());
+  bool bad_metadata = false;
+  try { (void)dit::resolve_model_descriptor(st); }
+  catch (const std::exception&) { bad_metadata = true; }
+  CHECK(bad_metadata);
+  st.close();
+  tensors.pop_back(); // missing output bias must fail before inference
   write_safetensors(fixture.path.string(), tensors);
   st.open(fixture.path.string());
   bool rejected = false;

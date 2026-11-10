@@ -162,6 +162,15 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   const auto weights = configured_weight_paths();
   if (weights.empty())
     return;
+  if (std::string_view(profile.family) == "h3_image") {
+    if (req.transformer_path.empty())
+      req.transformer_path = find_weight(weights, {"diffusion_models", "transformer", ""}, profile.transformer_hint);
+    if (req.text_encoder_path.empty())
+      req.text_encoder_path = find_weight(weights, {"text_encoders", "text_encoder", ""}, profile.conditioner_hint);
+    if (!text_only && req.video_vae_path.empty())
+      req.video_vae_path = find_weight(weights, {"vae", ""}, profile.vae_hint);
+    return;
+  }
   if (std::string_view(profile.family) == "ph3_image") {
     if (req.transformer_path.empty()) {
       for (const char* name : {"p-h3-image_bf16.safetensors", "p-h3-image_int8_convrot.safetensors",

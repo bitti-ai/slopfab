@@ -202,6 +202,8 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   };
 
   auto plan_block = [&](const std::string& prefix, bool with_adaln) {
+    // Comfy's attention-kernel preference is metadata, not a learned parameter.
+    plan.optional(prefix + "attn.comfy_attention.config");
     plan.require(prefix + "norm1.weight", {hidden}, Store::kAsBF16);
     plan.require(prefix + "norm2.weight", {hidden}, Store::kAsBF16);
     plan_linear(prefix + "attn.qkv_proj", 3 * inner, hidden);

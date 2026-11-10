@@ -1,4 +1,30 @@
 {
+  "h3_image": {
+    "source": "https://huggingface.co/MiniMaxAI/MiniMax-H3-Image",
+    "note": "MiniMax-H3-Image native text-to-image with six fixed Euler steps. Choose the INT8 transformer, shared H3 Qwen3-VL-32B encoder, and image FP16 VAE. Existing H3 text encoder weights can be reused. No audio VAE is needed. Reference editing and the optional prompt enhancer are not currently supported.",
+    "files": [
+      {
+        "id": "transformer-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image/resolve/main/diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors"
+      },
+      {
+        "id": "text-nvfp4",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+      },
+      {
+        "id": "text-int8",
+        "role": "text_encoder",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+      },
+      {
+        "id": "vae-fp16",
+        "role": "vae",
+        "url": "https://huggingface.co/Comfy-Org/MiniMax-H3-Image/resolve/main/vae/minimax_h3_image_vae_fp16.safetensors"
+      }
+    ]
+  },
   "ph3_image": {
     "source": "https://huggingface.co/PrunaAI/P-H3-Image-Comfy",
     "note": "P-H3 Image text-to-image: download all three matching INT8 files below. This bundle is validated on CUDA and portable Vulkan with the fixed eight-step Euler schedule. No audio VAE is needed. Prompt upsampling, image editing and W4A8 text encoders are not currently supported.",

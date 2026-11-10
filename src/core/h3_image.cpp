@@ -1,5 +1,6 @@
 #include "slopfab/h3_image.h"
 #include "slopfab/pipeline.h"
+#include "slopfab/json.h"
 #include <cmath>
 #include <filesystem>
 #include <stdexcept>
@@ -25,6 +26,24 @@ void validate_h3_image_transformer(const SafeTensors& checkpoint) {
   if (checkpoint.find("audio_patch_proj.weight") || checkpoint.find("final_layer.audio_out.weight") ||
       checkpoint.find("blocks.0.attn.to_gate_compress.weight"))
     throw std::invalid_argument("MiniMax-H3-Image requires dense image-only attention");
+  const auto metadata = checkpoint.metadata().find("config");
+  if (metadata != checkpoint.metadata().end()) {
+    const auto root = json::parse(metadata->second);
+    if (const auto* config = root.find("transformer")) {
+      if (const auto* steps = config->find("pdd_steps"))
+        if (steps->as_number() != 6)
+          throw std::invalid_argument("MiniMax-H3-Image requires six PDD heads");
+      if (const auto* grid = config->find("pdd_sigmas")) {
+        const auto& values = grid->as_array();
+        const auto& expected = h3_image_sigmas();
+        if (values.size() != expected.size())
+          throw std::invalid_argument("MiniMax-H3-Image has an incompatible PDD grid");
+        for (size_t i = 0; i < values.size(); ++i)
+          if (std::abs(values[i].as_number() - expected[i]) > 1e-7)
+            throw std::invalid_argument("MiniMax-H3-Image has an incompatible PDD grid");
+      }
+    }
+  }
 }
 
 const std::vector<float>& h3_image_sigmas() {

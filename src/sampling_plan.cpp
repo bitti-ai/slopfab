@@ -316,7 +316,7 @@ void validate_sampling_sampler(const GeneratePlan& plan,
   if (plan.model.family == "ph3_image" && kind != sampler::SamplerKind::kEuler)
     throw std::invalid_argument("P-H3 Image requires the Euler sampler");
   if (plan.model.pdd_steps > 1 && kind != sampler::SamplerKind::kEuler)
-    throw std::invalid_argument("OmniRef PDD requires the Euler sampler");
+    throw std::invalid_argument("PDD models require the Euler sampler");
   if (plan.hyperflow && kind != sampler::SamplerKind::kEuler)
     throw std::invalid_argument("Hyperflow requires the Euler sampler");
   if (plan.fasth3_v2 && kind != sampler::SamplerKind::kEuler)
