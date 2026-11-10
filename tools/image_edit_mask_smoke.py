@@ -28,13 +28,18 @@ def main():
     import math
 
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("library", "transformer", "vae", "prompt-embedding"):
+    for name in ("library", "transformer", "vae"):
         parser.add_argument("--" + name, type=Path, required=True)
+    conditioning = parser.add_mutually_exclusive_group(required=True)
+    conditioning.add_argument("--prompt-embedding", type=Path)
+    conditioning.add_argument("--text-encoder", type=Path)
+    parser.add_argument("--model", choices=("h3", "h3_image"), default="h3")
     parser.add_argument("--backend", choices=("cuda", "vulkan"), required=True)
     parser.add_argument("--sampler", choices=("euler", "renoise"), default="euler")
     parser.add_argument("--trained-grid", action="store_true",
                         help="Use the checkpoint's trained grid (OmniRef: four steps at strength 0.5)")
     args = parser.parse_args()
+    image_model = args.model == "h3_image"
     dll = C.CDLL(str(args.library.resolve()))
     handle = C.c_void_p
 
@@ -73,26 +78,34 @@ def main():
     generation = handle()
     destroy_request = bind("request_destroy", [handle], None)
     try:
+        check(bind("request_set_model_family", [handle, C.c_char_p])(request, args.model.encode()))
         set_model = bind("request_set_model_path", [handle, C.c_int, C.c_char_p])
         for kind, path in ((0, args.transformer), (3, args.vae)):
             check(set_model(request, kind, str(path.resolve()).encode()))
-        check(bind("request_set_prompt_embedding_path", [handle, C.c_char_p])(
-            request, str(args.prompt_embedding.resolve()).encode()))
+        if args.prompt_embedding:
+            check(bind("request_set_prompt_embedding_path", [handle, C.c_char_p])(
+                request, str(args.prompt_embedding.resolve()).encode()))
+        else:
+            check(set_model(request, 1, str(args.text_encoder.resolve()).encode()))
+            check(bind("request_set_prompt", [handle, C.c_char_p])(
+                request, b"Edit <Picture 1>. Paint the surroundings in bright blue and gold stripes."))
         check(bind("request_set_verbose", [handle, C.c_int])(request, 1))
         check(bind("request_set_inference_backend", [handle, C.c_int])(
             request, int(args.backend == "vulkan")))
-        check(bind("request_set_attention", [handle, C.c_char_p])(request, b"sage2"))
-        check(bind("request_set_steps", [handle, C.c_int])(request, 3))
+        if image_model and args.backend == "vulkan":
+            check(bind("request_set_vulkan_arithmetic", [handle, C.c_int])(request, 1))
+        check(bind("request_set_attention", [handle, C.c_char_p])(request, b"flash2" if image_model else b"sage2"))
+        check(bind("request_set_steps", [handle, C.c_int])(request, 6 if image_model else 3))
         check(bind("request_set_seed", [handle, C.c_uint64])(request, 17))
         sampling = {"version": 1, "sampler": args.sampler}
-        if not args.trained_grid:
+        if not args.trained_grid and not image_model:
             sampling["base_sigmas"] = [1, .5, 0]
         check(bind("request_set_sampling_settings", [handle, C.c_char_p])(
             request, json.dumps(sampling).encode()))
         check(bind("request_set_image_edit_rgb24", [
             handle, C.POINTER(C.c_uint8), C.c_size_t, C.c_int, C.c_int, C.c_size_t,
             C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_int,
-        ])(request, rgb, len(rgb), w, h, rgb_stride, 0, 0, w, h, .5, 0))
+        ])(request, rgb, len(rgb), w, h, rgb_stride, 0, 0, w, h, 1 if image_model else .5, 0))
         check(bind("request_set_image_edit_mask_u8", [
             handle, C.POINTER(C.c_uint8), C.c_size_t, C.c_int, C.c_int, C.c_size_t,
         ])(request, mask, len(mask), w, h, mask_stride))
@@ -116,7 +129,7 @@ def main():
         check(bind("generation_output", [handle, C.POINTER(Output)])(generation, C.byref(output)))
         assert (output.frames, output.channels, output.width, output.height) == (1, 3, w, h)
         assert output.video_float_count == 3 * w * h
-        assert output.steps_computed == (4 if args.trained_grid else 1)
+        assert output.steps_computed == (6 if image_model else 4 if args.trained_grid else 1)
         changed = preserved = 0
         for p, alpha in enumerate(coverage):
             for c in range(3):

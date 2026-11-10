@@ -7,7 +7,15 @@ not multiples of 32.
 
 C API 1.32 also supports arbitrary full-resolution pixel masks for lasso,
 polygon, and brush selections, including holes, disconnected regions, and
-soft edges. The CLI continues to accept rectangular edits.
+soft edges. The CLI accepts rectangles or matching grayscale image files with
+`--edit-mask FILE` (black preserves, white edits, gray blends). Do not combine
+`--edit-mask` with `--edit-box` or nonzero `--edit-feather`.
+
+MiniMax-H3-Image also supports masked inpainting, using strength 1 and its fixed
+six-step schedule. The source becomes Picture 1 automatically. See
+[H3 Image masked inpainting](h3_image.md#masked-inpainting) for its model paths,
+reference limits and examples. The schedule-strength details below describe
+the ordinary H3 model.
 
 ```sh
 slopfab image generate --model h3 --edit-image scene.png --edit-box 120,80,240,160 --prompt "A red ceramic vase on the table" --edit-strength 0.8 --edit-feather 8 --seed 17 --out edited.ppm
