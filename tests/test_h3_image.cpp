@@ -11,6 +11,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <limits>
+#include <fstream>
+#include "slopfab/vae/keyframe_encoder.h"
+#include "slopfab/dit/ref2va.h"
 
 namespace {
 bool rejects(const slopfab::GenerateRequest& request) {
@@ -69,7 +72,8 @@ SLOPFAB_TEST(h3_image_rejects_incompatible_requests) {
   r = base; r.negative_prompt = "bad"; CHECK(rejects(r));
   r = base; r.guidance_scale_set = true; CHECK(rejects(r));
   r.guidance_scale = std::numeric_limits<float>::quiet_NaN(); CHECK(rejects(r));
-  r = base; r.reference_image_paths = {"unused.png"}; CHECK(rejects(r));
+  r = base; r.reference_image_paths.assign(17, "unused.png"); CHECK(rejects(r));
+  r = base; r.end_anchor_path = "unused.png"; CHECK(rejects(r));
   r = base; r.loras = {{"unused.safetensors", 1}}; CHECK(rejects(r));
   r = base; r.cache_threshold = .1f; CHECK(rejects(r));
   r = base; r.conditioning.pin_target_audio = true; CHECK(rejects(r));
@@ -190,4 +194,74 @@ SLOPFAB_TEST(h3_image_pdd_heads_and_spatial_rope) {
       }
     }
   }
+}
+
+SLOPFAB_TEST(h3_image_reference_sizes_labels_and_plan) {
+  using namespace slopfab;
+  int h = 0, w = 0;
+  h3_image_reference_size(640, 320, &h, &w);
+  CHECK(h == 1024 && w == 2048);
+  h3_image_reference_size(1920, 1080, &h, &w);
+  CHECK(h == 1088 && w == 1920);
+  h3_image_reference_size(1920, 1080, &h, &w, true);
+  CHECK(h == 1024 && w == 1824);
+  h3_image_reference_size(6000, 3000, &h, &w);
+  CHECK(h == 2048 && w == 4096);
+  h3_image_reference_size(6000, 3000, &h, &w, true);
+  CHECK(h == 1024 && w == 2048);
+  CHECK(h3_image_picture_label(0) == "Picture 1: ");
+  CHECK(h3_image_picture_label(15) == "Picture 16: ");
+  LatentFixture fixture;
+  fixture.path.replace_extension(".ppm");
+  {
+    std::ofstream image(fixture.path, std::ios::binary);
+    image << "P6\n64 32\n255\n";
+    const std::string pixels(64 * 32 * 3, char(90));
+    image.write(pixels.data(), pixels.size());
+  }
+  GenerateRequest r;
+  r.model_family = "h3_image";
+  r.reference_image_paths = {fixture.path.string()};
+  const auto p = resolve_plan(r);
+  CHECK(p.canvas_width == 2048 && p.canvas_height == 1024);
+  CHECK(p.model.supports_references && p.layout.num_audio_rows == 0);
+  CHECK(describe_plan(r, p).find("image editing (1 references)") != std::string::npos);
+  r.canvas_width = 512; r.canvas_height = 768;
+  r.reference_image_paths.assign(16, fixture.path.string());
+  CHECK(resolve_plan(r).canvas_width == 512);
+  CHECK(resolve_plan(r).num_model_evaluations() == 6);
+  CHECK(describe_plan(r, resolve_plan(r)).find("16 references") != std::string::npos);
+  r.reference_image_paths.push_back(fixture.path.string());
+  CHECK(rejects(r));
+  // Different picture labels/posterior rules cannot hit video H3's cache.
+  r.reference_image_paths.clear();
+  const auto text_key = conditioning_cache_key(r), ref_key = reference_cache_key(r);
+  r.model_family = "h3";
+  CHECK(text_key != conditioning_cache_key(r));
+  CHECK(ref_key != reference_cache_key(r));
+}
+
+SLOPFAB_TEST(h3_image_multi_reference_positions_and_posterior) {
+  using namespace slopfab;
+  std::vector<dit::ReferenceGeometry> refs;
+  for (int i = 0; i < 16; ++i) refs.push_back({dit::ReferenceKind::kImage, 1, 2, 4, 0});
+  const auto packed = dit::build_ref2va_packed_sequence({1,0,1}, refs, 1, 4, 4, 0);
+  CHECK(packed.layout.num_condition_video == 32 && packed.layout.num_video_rows == 4);
+  CHECK(packed.indices.audio.empty() && packed.layout.num_audio_rows == 0);
+  for (int i = 0; i < 16; ++i) {
+    CHECK(packed.position_ids[(3 + 2 * i) * 3] == 3 + i);
+    CHECK(packed.position_ids[(4 + 2 * i) * 3] == 3 + i);
+  }
+  CHECK(packed.position_ids[35 * 3] == 19);
+  const auto times = dit::build_row_timesteps(packed.layout, packed.indices, .25f, .25f, .999f, 1.f);
+  for (int row = 3; row < 35; ++row)
+    CHECK(times.unique[times.indices[row]] == .999f);
+  CHECK(times.unique[times.indices[35]] == .25f);
+  std::vector<float> moments(48, 0), normal(24, 0), mean(24, 0), stddev(24, 1);
+  moments[0] = 1.0001f;
+  const auto image = vae::sample_keyframe_latents(moments.data(), normal.data(), 1, 1, mean, stddev, false);
+  const auto video = vae::sample_keyframe_latents(moments.data(), normal.data(), 1, 1, mean, stddev);
+  CHECK(image[0] == moments[0] && video[0] != image[0]);
+  CHECK(vae::torch_cpu_normal(96, 42) == vae::torch_cpu_normal_seed42(96));
+  CHECK(vae::torch_cpu_normal(96, 43) != vae::torch_cpu_normal(96, 42));
 }

@@ -474,6 +474,7 @@ std::string conditioning_cache_key(const GenerateRequest& request,
     return conditioning_cache_key(request);
   }
   std::string key = "conditioning:h3-special-v1";
+  if (request_model_family(request) == "h3_image") key += ":h3-image-refs-v1";
   append_file_identity(key, request.text_encoder_path);
   if (!request.clip_projection_path.empty()) append_file_identity(key, request.clip_projection_path);
   append_file_identity(key, request.tokenizer_path);
@@ -506,6 +507,7 @@ conditioning_cache_key_for_authority(const GenerateRequest& request,
 
 std::string conditioning_cache_key(const GenerateRequest& request) {
   std::string key = "conditioning:h3-special-v1";
+  if (request_model_family(request) == "h3_image") key += ":h3-image-refs-v1";
   append_file_identity(key, request.text_encoder_path);
   if (!request.clip_projection_path.empty()) append_file_identity(key, request.clip_projection_path);
   append_file_identity(key, request.tokenizer_path);
@@ -531,6 +533,7 @@ std::string reference_cache_key(const GenerateRequest& request,
     return reference_cache_key(request);
   }
   std::string key = "reference";
+  if (request_model_family(request) == "h3_image") key += ":h3-image-refs-v1";
   append_file_identity(key, request.video_vae_path);
   for (const std::string& identity : reference_identities)
     key += identity;
@@ -542,6 +545,7 @@ std::string reference_cache_key(const GenerateRequest& request,
 
 std::string reference_cache_key(const GenerateRequest& request) {
   std::string key = "reference";
+  if (request_model_family(request) == "h3_image") key += ":h3-image-refs-v1";
   append_file_identity(key, request.video_vae_path);
   for (const std::string& path : request.conditioning_image_paths()) {
     append_file_content_identity(key, path);
@@ -572,7 +576,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   if (plan.model.family == "h3_image") {
     return "model       MiniMax-H3-Image\ncanvas      " +
         std::to_string(plan.canvas_width) + " x " + std::to_string(plan.canvas_height) +
-        "\nmode        text-to-image\nsteps       6 Euler updates (fixed PDD grid)"
+        "\nmode        " + (request.reference_image_paths.empty() ? std::string("text-to-image")
+          : "image editing (" + std::to_string(request.reference_image_paths.size()) + " references)") +
+        "\nsteps       6 Euler updates (fixed PDD grid)"
         "\nguidance    1 (no CFG)\naudio       none\noutput      " + request.out_path + "\n";
   }
   if (plan.model.family == "ph3_image") {

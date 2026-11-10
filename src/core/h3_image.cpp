@@ -1,6 +1,9 @@
 #include "slopfab/h3_image.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/json.h"
+#include "slopfab/dit/ref2va.h"
+#include "slopfab/image.h"
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <stdexcept>
@@ -66,12 +69,24 @@ vae::ViTConfig h3_image_vae_config() {
   return c;
 }
 
+void h3_image_reference_size(int width, int height, int* out_height, int* out_width, bool vision) {
+  const int short_edge = vision ? 1024 : std::clamp(std::min(width, height), 1024, 2048);
+  dit::resolve_reference_image_size(width, height, out_height, out_width, short_edge);
+}
+
+std::string h3_image_picture_label(size_t index) {
+  return "Picture " + std::to_string(index + 1) + ": ";
+}
+
 GeneratePlan resolve_h3_image_plan(const GenerateRequest& r) {
-  if (r.has_references() || r.image_edit.image || r.continuation || r.bridge ||
+  if (!r.reference_media.empty() || r.has_refmods() || !r.end_anchor_path.empty() ||
+      r.image_edit.image || r.continuation || r.bridge ||
       r.animate || r.video_transition || r.preserve_driving_audio || !r.loras.empty() ||
       r.cache_threshold != 0 || r.skip_every != 0 || r.block_cache_span != 0 ||
       r.motion_cache.active())
-    throw std::invalid_argument("MiniMax-H3-Image supports text-to-image only, without references, adapters or caches");
+    throw std::invalid_argument("MiniMax-H3-Image accepts image references; masked edits, video/audio references, adapters and caches are unsupported");
+  if (r.reference_image_paths.size() > 16)
+    throw std::invalid_argument("MiniMax-H3-Image supports at most 16 reference images");
   if (!r.clip_projection_path.empty() || !r.video_decoder_path.empty() ||
       r.end_anchor_latents || !r.regenerate.mode.empty() || !r.remake_mode.empty())
     throw std::invalid_argument("MiniMax-H3-Image requires the H3 text encoder and its image VAE without H3 editing modes");
@@ -101,6 +116,7 @@ GeneratePlan resolve_h3_image_plan(const GenerateRequest& r) {
   GeneratePlan p;
   p.model.family = "h3_image";
   p.model.pdd_steps = 6;
+  p.model.supports_references = true;
   p.model.compatibility_architecture = dit::TransformerArchitecture::kH3Image;
   if (!r.transformer_path.empty() && std::filesystem::exists(r.transformer_path)) {
     SafeTensors checkpoint;
@@ -111,6 +127,10 @@ GeneratePlan resolve_h3_image_plan(const GenerateRequest& r) {
   }
   p.canvas_width = r.canvas_width ? r.canvas_width : 4096;
   p.canvas_height = r.canvas_height ? r.canvas_height : 4096;
+  if (!r.has_explicit_canvas() && !r.reference_image_paths.empty()) {
+    const auto image = load_reference_image(r.reference_image_paths.front());
+    h3_image_reference_size(image.width, image.height, &p.canvas_height, &p.canvas_width);
+  }
   if (p.canvas_width < 32 || p.canvas_height < 32 || p.canvas_width % 32 ||
       p.canvas_height % 32 || int64_t(p.canvas_width) * p.canvas_height > 17LL * 1024 * 1024)
     throw std::invalid_argument("MiniMax-H3-Image dimensions must be multiples of 32, at most 17 megapixels");

@@ -1,5 +1,6 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
+#include "slopfab/h3_image.h"
 #include "generation/preview.h"
 
 #include <algorithm>
@@ -343,6 +344,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         if (end_anchor) {
           resized_w = plan.canvas_width;
           resized_h = plan.canvas_height;
+        } else if (plan.model.family == "h3_image") {
+          h3_image_reference_size(image.width, image.height, &resized_h, &resized_w);
         } else {
           dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w,
                                           plan.conditioning.references_at_target_canvas
@@ -413,9 +416,21 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     outpaint_prompt_images.push_back(outpaint_source_image(request.image_edit));
     outpaint_prompt_images.insert(outpaint_prompt_images.end(), reference_images.begin(), reference_images.end());
   }
+  std::vector<RGBImage> image_model_prompt_images;
+  if (plan.model.family == "h3_image") {
+    // Qwen and the VAE resize independently from the original. Reusing the
+    // rounded VAE canvas can change the aspect ratio and Qwen token grid.
+    for (const auto& path : image_paths) {
+      auto image = load_reference_image(path);
+      int h = 0, w = 0;
+      h3_image_reference_size(image.width, image.height, &h, &w, true);
+      image_model_prompt_images.push_back(resize_reference_lanczos(image, w, h));
+    }
+  }
   PromptInputs prompt_inputs{fixed_prompt,
                              reference_identities,
-                             request.image_edit.invert_mask ? outpaint_prompt_images : reference_images,
+                             request.image_edit.invert_mask ? outpaint_prompt_images :
+                                 plan.model.family == "h3_image" ? image_model_prompt_images : reference_images,
                              reference_conditioning_grids,
                              reference_conditioning_ids,
                              media_qwen_pairs,
@@ -565,11 +580,22 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         vae_file.open(request.video_vae_path);
         const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
         const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
+        const auto encode_image = [&](auto& encoder, const RGBImage& image) {
+          if (plan.model.family != "h3_image")
+            return encoder.encode_reference_image(image, mean, stddev);
+          const auto pixels = vae::prepare_keyframe_pixels(image);
+          const auto moments = encoder.encode_moments(pixels.data(), image.height, image.width);
+          const int h = image.height / 16, w = image.width / 16;
+          const auto normal = vae::torch_cpu_normal_seed42(size_t(24) * h * w);
+          const auto latents = vae::sample_keyframe_latents(moments.data(), normal.data(), h, w,
+                                                          mean, stddev, false);
+          return vae::patchify_keyframe_latents(latents.data(), h, w);
+        };
         if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
           vae::KeyframeEncoder image_encoder(vae_file);
           for (const RGBImage& image : reference_images) {
-            clean_rows.push_back(image_encoder.encode_reference_image(image, mean, stddev));
+            clean_rows.push_back(encode_image(image_encoder, image));
             geometry.push_back(
                 {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
           }
@@ -582,7 +608,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
           vulkan::KeyframeEncoder image_encoder = vulkan::KeyframeEncoder::create(keyframe_device);
           image_encoder.load(vae_file);
           for (const RGBImage& image : reference_images) {
-            clean_rows.push_back(image_encoder.encode_reference_image(image, mean, stddev));
+            clean_rows.push_back(encode_image(image_encoder, image));
             geometry.push_back(
                 {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
           }
@@ -621,10 +647,14 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
             request.seed ^ (0x9e3779b97f4a7c15ULL *
                             (reference_index + 1 +
                              (plan.conditioning.video_first ? request.reference_media.size() : 0)));
-        const std::vector<float> noise_latents =
-            sampler::video_noise(reference_seed, 1, latent_h, latent_w);
-        const std::vector<float> noise_rows =
-            vae::patchify_keyframe_latents(noise_latents.data(), latent_h, latent_w);
+        // Image PDD references restart the same CPU RNG in patch-row order.
+        std::vector<float> noise_rows;
+        if (plan.model.family == "h3_image") {
+          noise_rows = vae::torch_cpu_normal(rows.size(), request.seed);
+        } else {
+          const auto noise_latents = sampler::video_noise(reference_seed, 1, latent_h, latent_w);
+          noise_rows = vae::patchify_keyframe_latents(noise_latents.data(), latent_h, latent_w);
+        }
         sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), 0.999f, rows.size(),
                                             rows.data());
         if (!request.end_anchor_path.empty() && reference_index + 1 == reference_images.size()) {

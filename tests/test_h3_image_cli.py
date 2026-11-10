@@ -51,6 +51,7 @@ def find_model(value):
                 return found
 model = find_model(capabilities)
 assert model and not model["planning_only"]
+assert model["max_image_references"] == 16
 
 # Verify the downloaded transformer without copying or changing it.
 checkpoint = os.environ.get("SLOPFAB_H3_IMAGE_CHECKPOINT")
@@ -59,6 +60,21 @@ if checkpoint:
     assert "MiniMax-H3-Image" in text
     run("requests", "run", "--model", "h3", "--transformer", checkpoint,
         "--dry-run", success=False)
+
+# Full-image editing uses Picture 1, with ordered additional references.
+source = root / "source.ppm"
+source.write_bytes(b"P6\n64 32\n255\n" + bytes([90, 40, 20]) * (64 * 32))
+text = run(*base, "--edit-image", str(source), "--prompt", "Make the teapot blue")
+assert "2048 x 1024" in text and "image editing (1 references)" in text
+text = run(*base, "--edit-image", str(source), "--reference-image", str(source),
+           "--resolution", "512x512")
+assert "512 x 512" in text and "image editing (2 references)" in text
+for extra in [("--edit-box", "0,0,32,32"), ("--edit-strength", "0.5"), ("--edit-feather", "2")]:
+    run(*base, "--edit-image", str(source), *extra, success=False)
+references = ("--reference-image", str(source)) * 16
+text = run(*base, "--resolution", "512x512", *references)
+assert "16 references" in text
+run(*base, "--resolution", "512x512", *references, "--reference-image", str(source), success=False)
 
 workspace.cleanup()
 print("MiniMax-H3-Image CLI checks passed")

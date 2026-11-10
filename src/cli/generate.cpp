@@ -691,6 +691,12 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (count <= 0) {
     cli_fail(2, "slopfab: --count must be a positive integer\n");
   }
+  if (!edit_image.empty() && slopfab::request_model_family(req) == "h3_image") {
+    if (saw_edit_box || saw_edit_option)
+      throw std::invalid_argument("MiniMax-H3-Image edits use prompt instructions; omit box, strength and feather options");
+    req.reference_image_paths.insert(req.reference_image_paths.begin(), edit_image);
+    edit_image.clear();
+  }
   if (!edit_image.empty()) {
     if (!saw_edit_box)
       throw std::invalid_argument("--edit-image requires --edit-box x,y,width,height");

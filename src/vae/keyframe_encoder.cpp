@@ -101,7 +101,7 @@ std::vector<float> prepare_keyframe_pixels(const RGBImage& image) {
 
 std::vector<float> sample_keyframe_latents(const float* moments, const float* normal, int height,
                                            int width, const std::vector<float>& latents_mean,
-                                           const std::vector<float>& latents_std) {
+                                           const std::vector<float>& latents_std, bool round_to_fp16) {
   constexpr int channels = 24;
   if (!moments || !normal || height <= 0 || width <= 0 || latents_mean.size() != channels ||
       latents_std.size() != channels) {
@@ -118,8 +118,10 @@ std::vector<float> sample_keyframe_latents(const float* moments, const float* no
       // then casts the sampled posterior through fp16 before normalization.
       const float logvar =
           std::clamp(moments[static_cast<size_t>(channels) * voxels + j], -30.0f, 20.0f);
-      const float sampled = moments[j] + std::exp(0.5f * logvar) * normal[j];
-      const float rounded = f16_to_f32(f32_to_f16(sampled));
+      const float sampled = round_to_fp16
+          ? moments[j] + std::exp(0.5f * logvar) * normal[j]
+          : std::fma(std::exp(0.5f * logvar), normal[j], moments[j]);
+      const float rounded = round_to_fp16 ? f16_to_f32(f32_to_f16(sampled)) : sampled;
       out[j] = (rounded - latents_mean[c]) / latents_std[c];
     }
   }
@@ -185,9 +187,13 @@ std::vector<float> patchify_keyframe_latents(const float* latents, int height, i
 }
 
 std::vector<float> torch_cpu_normal_seed42(size_t count) {
+  return torch_cpu_normal(count, 42);
+}
+
+std::vector<float> torch_cpu_normal(size_t count, uint64_t seed) {
   if (count < 16)
     throw std::runtime_error("keyframe encoder: Torch normal field must have >=16 values");
-  TorchMT19937 generator(42);
+  TorchMT19937 generator(seed);
   std::vector<float> out(count);
   auto uniform = [&] {
     return static_cast<float>(generator.next() & 0xFFFFFFu) / 16777216.0f;

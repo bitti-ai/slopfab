@@ -132,6 +132,7 @@ ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
     if (checkpoint.metadata().count("slopfab.model"))
       throw std::invalid_argument("MiniMax-H3-Image cannot use a legacy slopfab.model descriptor");
     model.family = "h3_image";
+    model.supports_references = true;
     model.pdd_steps = 6;
     model.compatibility_architecture = TransformerArchitecture::kH3Image;
     model.quantization = detect_transformer_quantization(checkpoint);

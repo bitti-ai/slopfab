@@ -1,6 +1,7 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
 #include "slopfab/model_profile.h"
+#include "slopfab/h3_image.h"
 #include "slopfab/remake.h"
 
 #include <algorithm>
@@ -92,10 +93,13 @@ bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions&
       labels.reserve(reference_images.size());
       size_t nonvision_tokens = 0;
       for (size_t i = 0; i < reference_images.size(); ++i) {
-        reference_conditioning_grids.push_back(
-            text::qwen3vl_conditioning_grid(reference_images[i].width, reference_images[i].height));
+        int width = reference_images[i].width, height = reference_images[i].height;
+        if (request_model_family(request) == "h3_image")
+          h3_image_reference_size(width, height, &height, &width, true);
+        reference_conditioning_grids.push_back(text::qwen3vl_conditioning_grid(width, height));
         const bool outpaint = request.image_edit.invert_mask;
         labels.push_back(tokenizer.encode(
+            request_model_family(request) == "h3_image" ? h3_image_picture_label(i) :
             outpaint && i == 0 ? "Source scene: "
                                : "<Picture " + std::to_string(i + (outpaint ? 0 : 1)) + ">: "));
         if (labels.back().size() > std::numeric_limits<size_t>::max() - nonvision_tokens)
@@ -248,7 +252,9 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     for (size_t i = 0; request.remake_mode.empty() && i < reference_images.size(); ++i) {
       const auto& grid = reference_conditioning_grids[i];
       const int rw = grid.width * 16, rh = grid.height * 16;
-      auto rgb = resize_rgb_bilinear(reference_images[i], rw, rh);
+      auto rgb = request_model_family(request) == "h3_image"
+          ? resize_reference_lanczos(reference_images[i], rw, rh).pixels
+          : resize_rgb_bilinear(reference_images[i], rw, rh);
       qwen_images.push_back(text::qwen3vl_patchify_resized_rgb(rgb, rw, rh));
     }
     for (auto& pair : media_qwen_pairs)

@@ -497,6 +497,7 @@ Value capabilities() {
                                   {"tasks", Value(tasks)},
                                   {"backends", Value(supported)},
                                   {"canvas_multiple", num(model_profile(f).canvas_multiple)},
+                                  {"max_image_references", f == "h3_image" ? num(16) : Value()},
                                   {"music_duration_max_seconds",
                                    f == "yue2" || f == "minimax_music3" ? num(300) : Value()}}));
   }

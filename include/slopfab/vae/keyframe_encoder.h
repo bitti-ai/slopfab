@@ -17,7 +17,7 @@ std::vector<float> prepare_keyframe_pixels(const RGBImage& image);
 // (the production caller uses torch-compatible seed 42 generation).
 std::vector<float> sample_keyframe_latents(const float* moments, const float* normal, int height,
                                            int width, const std::vector<float>& latents_mean,
-                                           const std::vector<float>& latents_std);
+                                           const std::vector<float>& latents_std, bool round_to_fp16 = true);
 
 struct EncoderWeightSummary {
   size_t tensors = 0;
@@ -35,6 +35,7 @@ std::vector<float> patchify_keyframe_latents(const float* latents, int height, i
 
 // PyTorch CPUGeneratorImpl MT19937 + contiguous-float normal_fill, seeded 42.
 std::vector<float> torch_cpu_normal_seed42(size_t count);
+std::vector<float> torch_cpu_normal(size_t count, uint64_t seed);
 
 #ifdef SLOPFAB_WITH_CUDA
 class KeyframeEncoder {
