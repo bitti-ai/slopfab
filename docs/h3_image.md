@@ -177,6 +177,16 @@ The 4096×4096 CUDA run took about 64 seconds including conditioning, loading,
 six denoising steps and PNG delivery. Both backends produced complete images;
 their full generation arithmetic is not expected to be pixel-identical.
 
+The 16-case `tools/h3_image_render_smoke.py` suite also passed on both backends:
+text generation, single-reference and two-reference editing, rectangular and
+pixel-mask inpainting, and outpainting through the CLI and C API. The CLI edit
+tests use 512x512 sources; outpainting expands these to 768x768. Tests verify
+exact preservation outside selections and inside the outpaint source interior.
+C API mask tests additionally use an unaligned 67x65 source, holes, soft coverage
+and padded input strides, then release the caller buffers and request during
+generation. All runs retain six model evaluations. Render success and source
+preservation do not remove the outpainting seam limitation described above.
+
 Sources: [original model and examples](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image),
 [PDD schedule](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/pdd_config.json),
 [VAE configuration](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/vae/config.json),
