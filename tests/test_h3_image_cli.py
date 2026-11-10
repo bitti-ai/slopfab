@@ -26,6 +26,9 @@ assert "4096 x 4096" in text and "6 Euler updates" in text
 assert "audio       none" in text
 text = run(*base, "--resolution", "2048x2048", "--steps", "6")
 assert "2048 x 2048" in text
+text = run(*base, "--resolution", "5120x4096")
+assert "5120 x 4096" in text and "6 Euler updates" in text
+run(*base, "--resolution", "5120x4128", success=False)
 for args in [
     ("--steps", "4"), ("--sampler", "ab2"), ("--sampler", "renoise"),
     ("--resolution", "1000x1024"), ("--frames", "22"),

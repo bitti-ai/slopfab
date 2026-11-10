@@ -93,6 +93,24 @@ SLOPFAB_TEST(h3_image_rejects_incompatible_requests) {
   CHECK(rejected);
 }
 
+SLOPFAB_TEST(h3_image_twenty_mipixel_canvas_limit) {
+  using namespace slopfab;
+  GenerateRequest r;
+  r.model_family = "h3_image";
+  r.canvas_width = 5120; r.canvas_height = 4096;
+  const auto p = resolve_plan(r);
+  CHECK(p.canvas_width == 5120 && p.canvas_height == 4096);
+  CHECK(p.layout.num_video_rows == 20480 && p.num_model_evaluations() == 6);
+  r.canvas_width = 4096; r.canvas_height = 5120;
+  CHECK(!rejects(r));
+  r.canvas_width = r.canvas_height = 4480;
+  CHECK(!rejects(r));
+  r.canvas_width = 5120; r.canvas_height = 4128;
+  CHECK(rejects(r));
+  r.canvas_height = 4095;
+  CHECK(rejects(r));
+}
+
 SLOPFAB_TEST(h3_image_checkpoint_identity_and_shape_validation) {
   using namespace slopfab;
   LatentFixture fixture; // an unrelated filename must not affect recognition

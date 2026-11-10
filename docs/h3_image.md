@@ -21,8 +21,10 @@ build/Release/slopfab.exe image generate --model h3_image `
 For Vulkan, select `--inference-backend vulkan --vulkan-arithmetic portable`.
 The CLI selects Flash2 attention. Output is PNG or PPM; the C API delivers one
 RGB frame. Omit `--resolution` for the upstream 4096×4096 default. Dimensions
-must be divisible by 32, with a 17 Mi-pixel ceiling that accommodates the
-published aspect-ratio presets. Small canvases are useful for execution checks.
+must be divisible by 32, with a 20 Mi-pixel ceiling (20,971,520 pixels).
+MiniMax describes an effective range of roughly 4–20 MP, with best results
+around 16 MP. For example, 5120x4096 reaches Slopfab's ceiling. Small canvases
+are useful for execution checks.
 
 The download mod lists the matching checkpoints and URLs:
 
@@ -133,7 +135,7 @@ build/Release/slopfab.exe image generate --model h3_image `
 Margins are **left, top, right, bottom**, in pixels. They must be nonnegative
 and at least one must be positive. The expanded canvas is internally padded to
 32 pixels and cropped back on delivery. Omit `--resolution`, or supply that
-padded size. The existing 17 Mi-pixel canvas limit applies, with at most 8192
+padded size. The existing 20 Mi-pixel canvas limit applies, with at most 8192
 pixels per axis. The source must contain a complete 16-pixel latent cell after
 placement. No `--edit-box`, `--edit-strength`, `--edit-feather` or `--aspect` is
 needed. Additional references remain available, starting at `<Picture 2>`;

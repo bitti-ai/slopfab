@@ -144,8 +144,8 @@ GeneratePlan resolve_h3_image_plan(const GenerateRequest& r) {
     h3_image_reference_size(image.width, image.height, &p.canvas_height, &p.canvas_width);
   }
   if (p.canvas_width < 32 || p.canvas_height < 32 || p.canvas_width % 32 ||
-      p.canvas_height % 32 || int64_t(p.canvas_width) * p.canvas_height > 17LL * 1024 * 1024)
-    throw std::invalid_argument("MiniMax-H3-Image dimensions must be multiples of 32, at most 17 megapixels");
+      p.canvas_height % 32 || int64_t(p.canvas_width) * p.canvas_height > 20LL * 1024 * 1024)
+    throw std::invalid_argument("MiniMax-H3-Image dimensions must be multiples of 32, at most 20 Mi-pixels (20971520 pixels)");
   p.geometry.trained_max_pixels = 4096 * 4096;
   p.aligned_frames = p.sampling_frames = p.layout.num_latent_frames = 1;
   p.duration_seconds = 1.0 / p.geometry.fps;
