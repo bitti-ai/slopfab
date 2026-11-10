@@ -3,6 +3,7 @@
 #include "agent.h"
 #include "commands.h"
 #include "script_host.h"
+#include "settings.h"
 #include <fstream>
 #ifdef _WIN32
 #define NOMINMAX
@@ -85,6 +86,7 @@ int update_command(const std::vector<std::string>& args) {
   const bool check = args == std::vector<std::string>{"--check"};
   if (!args.empty() && !check)
     throw CliError("INVALID_REQUEST", "usage: slopfab update [--check]");
+  record_update_check(update_check_date());
   const auto response = script_http_request(
       "https://api.github.com/repos/" + std::string(updater::kRepository) + "/releases/latest",
       http_options(30000), {}, check_cancelled);

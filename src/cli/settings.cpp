@@ -10,6 +10,19 @@ namespace slopfab::cli {
 namespace {
 namespace fs = std::filesystem;
 
+bool valid_update_date(const std::string& date) {
+  if (date.size() != 10 || date[4] != '-' || date[7] != '-') return false;
+  for (size_t i = 0; i < date.size(); ++i)
+    if (i != 4 && i != 7 && (date[i] < '0' || date[i] > '9')) return false;
+  const int year = std::stoi(date.substr(0, 4));
+  const int month = std::stoi(date.substr(5, 2));
+  const int day = std::stoi(date.substr(8, 2));
+  if (year == 0 || month < 1 || month > 12) return false;
+  const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+  return day >= 1 && day <= days[month - 1] + (month == 2 && leap ? 1 : 0);
+}
+
 fs::path settings_path() {
   return fs::absolute(config_path()).lexically_normal();
 }
@@ -67,8 +80,16 @@ Value normalize_settings(const Value& input) {
   for (const auto& field : object)
     if (field.first != "schema_version" && field.first != "weight_paths" &&
         field.first != "weights_directory" && field.first != "models" && field.first != "presets" &&
-        field.first != "output_directory")
+        field.first != "output_directory" && field.first != "auto_update" &&
+        field.first != "last_update_check")
       throw CliError("INVALID_REQUEST", "unknown setting: " + field.first, 2, field.first);
+  if (const auto* automatic = input.find("auto_update"))
+    if (automatic->type() != json::Type::Bool)
+      throw CliError("INVALID_REQUEST", "auto_update must be a boolean", 2, "auto_update");
+  if (const auto* checked = input.find("last_update_check"))
+    if (!checked->is_string() || !valid_update_date(checked->as_string()))
+      throw CliError("INVALID_REQUEST", "last_update_check must be a UTC date (YYYY-MM-DD)",
+                     2, "last_update_check");
   if (const auto* version = input.find("schema_version"))
     if (!version->is_number() || version->as_number() != 1)
       throw CliError("INVALID_REQUEST", "unsupported settings schema_version");
@@ -165,6 +186,29 @@ void ensure_settings() {
   atomic_json(path, load_settings());
 }
 
+bool begin_daily_update(const std::string& utc_date) {
+  if (!valid_update_date(utc_date)) throw std::invalid_argument("invalid update check date");
+  auto lock = settings_lock();
+  auto settings = load_settings();
+  if (const auto* automatic = settings.find("auto_update"); automatic && !automatic->as_bool())
+    return false;
+  if (const auto* checked = settings.find("last_update_check");
+      checked && checked->as_string() == utc_date)
+    return false;
+  auto object = settings.as_object();
+  object["last_update_check"] = str(utc_date);
+  atomic_json(settings_path(), Value(std::move(object)));
+  return true;
+}
+
+void record_update_check(const std::string& utc_date) {
+  if (!valid_update_date(utc_date)) throw std::invalid_argument("invalid update check date");
+  auto lock = settings_lock();
+  auto settings = load_settings().as_object();
+  settings["last_update_check"] = str(utc_date);
+  atomic_json(settings_path(), Value(std::move(settings)));
+}
+
 std::vector<std::filesystem::path> configured_weight_paths() {
   auto settings = load_settings();
   std::vector<std::filesystem::path> paths;
@@ -208,11 +252,11 @@ int settings_command(const std::vector<std::string>& args) {
     return 0;
   }
   if ((parts[0] != "weight_paths" && parts[0] != "models" && parts[0] != "presets" &&
-       parts[0] != "output_directory") ||
-      ((parts[0] == "weight_paths" || parts[0] == "output_directory") && parts.size() != 1))
+       parts[0] != "output_directory" && parts[0] != "auto_update") ||
+      ((parts[0] == "weight_paths" || parts[0] == "output_directory" || parts[0] == "auto_update") && parts.size() != 1))
     throw CliError(
         "INVALID_REQUEST",
-        "writable settings: weight_paths, output_directory, models, presets (schema_version is read-only)",
+        "writable settings: weight_paths, output_directory, models, presets, auto_update (schema_version and last_update_check are read-only)",
         2, key);
   auto lock = settings_lock();
   auto settings = load_settings();

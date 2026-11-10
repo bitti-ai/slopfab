@@ -86,7 +86,9 @@ const CommandHelp kCommands[] = {
      "Requires a pinned-key Ed25519 release signature and matching package SHA256.\n"
      "Replaces executables and bundled download/licenses mods.\n"
      "Preserves weights, projects, settings and other mods. Windows installs after this process exits.\n"
-     "Backups and installation status are saved beside the executable.\n"},
+     "Backups and installation status are saved beside the executable.\n"
+     "Regular commands also check/install in the background once per UTC day.\n"
+     "settings get last_update_check shows the last attempt; settings set auto_update false disables it.\n"},
     {"video", "slopfab video COMMAND [options]", "Generate, inspect, restore and analyze video.",
      "  generate         generate video with audio\n  regenerate       refine an H3 draft up to 2K\n"
      "  frames           extract frames or contact sheets\n"
@@ -654,7 +656,9 @@ const CommandHelp kCommands[] = {
      "  settings set models.NAME JSON        set a model alias\n"
      "  settings set presets.NAME JSON       set a generation preset\n"
      "  settings remove models.NAME          remove a model alias\n"
-     "Writable keys: weight_paths, models, presets; dotted keys access nested fields.\n"
+     "  settings set auto_update false       disable daily automatic updates (default: true)\n"
+     "  settings get last_update_check       show the last update attempt's UTC date\n"
+     "Writable keys: weight_paths, output_directory, models, presets, auto_update; dotted keys access nested fields.\n"
      "Paths may name directories or checkpoint files. Relative paths are saved as absolute paths.\n"
      "Use --config FILE to select another settings file. GPU and model files are not required.\n"},
     {"capabilities", "slopfab system capabilities",

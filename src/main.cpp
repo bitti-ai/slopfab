@@ -26,6 +26,8 @@
 using namespace slopfab::cli;
 
 int cli_main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "_update-auto")
+    return automatic_update_worker(argv[0], argv[2]);
   if (argc == 3 && std::string(argv[1]) == "_update-install")
     return update_worker(argv[0], argv[2]);
   if (argc == 2 && (std::string(argv[1]) == "_ssh-run" || std::string(argv[1]) == "_ssh-fetch"))
@@ -93,6 +95,10 @@ int cli_main(int argc, char** argv) {
       throw CliError("INVALID_REQUEST", "download options require --host or --remote");
     ensure_agent_instructions();
     ensure_settings();
+    // Updating after dispatch lets the foreground command complete normally
+    // and releases its executable before the background installer replaces it.
+    DailyUpdateOnExit automatic_update{
+        args.empty() || (args.front() != "update" && args.front() != "settings")};
     if (args.empty()) {
       print_usage();
       return finish_command(0);

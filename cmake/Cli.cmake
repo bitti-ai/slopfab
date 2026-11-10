@@ -38,7 +38,7 @@ target_include_directories(slopfab_update_package PRIVATE third_party/miniz)
 target_compile_definitions(slopfab_update_package PRIVATE
   MINIZ_NO_ARCHIVE_APIS MINIZ_NO_DEFLATE_APIS MINIZ_NO_ZLIB_APIS)
 target_link_libraries(slopfab_update_package PUBLIC slopfab_core)
-target_sources(slopfab PRIVATE src/cli/update.cpp)
+target_sources(slopfab PRIVATE src/cli/update.cpp src/cli/auto_update.cpp)
 target_link_libraries(slopfab PRIVATE slopfab_update_package)
 target_compile_definitions(slopfab PRIVATE SLOPFAB_CLI_VERSION="${PROJECT_VERSION}")
 target_sources(slopfab PRIVATE src/cli/transcribe.cpp)

@@ -278,18 +278,28 @@ if(SLOPFAB_BUILD_TESTS)
   add_executable(slopfab_native_media_tests tests/test_native_media.cpp src/cli/native_media.cpp)
   target_link_libraries(slopfab_native_media_tests PRIVATE slopfab_core)
   add_test(NAME native_media COMMAND slopfab_native_media_tests)
-  add_executable(slopfab_cli_delivery_tests tests/test_cli_delivery.cpp src/cli/agent.cpp
+  add_library(slopfab_cli_test_support STATIC src/cli/agent.cpp
     src/cli/frames.cpp src/cli/pipe_process.cpp src/cli/script_process.cpp
     src/cli/native_media.cpp src/cli/model_assets.cpp src/cli/help.cpp src/cli/startup.cpp src/cli/settings.cpp src/cli/projects.cpp)
-  target_include_directories(slopfab_cli_delivery_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-  target_link_libraries(slopfab_cli_delivery_tests PRIVATE slopfab_core ${CMAKE_DL_LIBS})
+  target_include_directories(slopfab_cli_test_support PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_link_libraries(slopfab_cli_test_support PUBLIC slopfab_core ${CMAKE_DL_LIBS})
   if(WIN32)
-    target_link_libraries(slopfab_cli_delivery_tests PRIVATE shell32)
+    target_link_libraries(slopfab_cli_test_support PUBLIC shell32)
   endif()
   if(TARGET slopfab_cuda)
-    target_link_libraries(slopfab_cli_delivery_tests PRIVATE slopfab_cuda)
+    target_link_libraries(slopfab_cli_test_support PUBLIC slopfab_cuda)
   endif()
+  add_executable(slopfab_cli_delivery_tests tests/test_cli_delivery.cpp)
+  target_link_libraries(slopfab_cli_delivery_tests PRIVATE slopfab_cli_test_support)
   add_test(NAME cli_delivery COMMAND slopfab_cli_delivery_tests)
+  if(Python3_Interpreter_FOUND)
+    add_executable(slopfab_auto_update_fixture tests/auto_update_fixture.cpp src/cli/auto_update.cpp)
+    target_link_libraries(slopfab_auto_update_fixture PRIVATE slopfab_cli_test_support)
+    add_test(NAME auto_update_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_auto_update.py"
+      "$<TARGET_FILE:slopfab_auto_update_fixture>" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(auto_update_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+  endif()
   add_executable(slopfab_startup_tests tests/test_startup.cpp src/cli/startup.cpp)
   target_link_libraries(slopfab_startup_tests PRIVATE ${CMAKE_DL_LIBS})
   add_test(NAME cli_startup COMMAND slopfab_startup_tests)
@@ -519,5 +529,9 @@ if(SLOPFAB_BUILD_TESTS)
       add_test(NAME capi_cublas_cuda13 COMMAND slopfab_capi_cuda_dispatch_tests 13)
     endif()
   endif()
+  # Tests must never fetch or install public releases. The automatic updater
+  # test explicitly enables its isolated fixture worker with a stub updater.
+  get_property(slopfab_registered_tests DIRECTORY PROPERTY TESTS)
+  set_property(TEST ${slopfab_registered_tests} APPEND PROPERTY ENVIRONMENT "SLOPFAB_NO_AUTO_UPDATE=1")
 endif()
 
