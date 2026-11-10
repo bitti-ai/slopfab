@@ -152,6 +152,20 @@ buffers and request, and verifies exact preservation and generated output.
 
 ## Outpainting (C API 1.20)
 
+The CLI can construct the expanded canvas directly:
+
+```sh
+slopfab image generate --model h3_image --edit-image scene.png --outpaint 256,128,256,128 --prompt "Extend the scene in <Picture 1>, matching its perspective and lighting." --out expanded.png
+```
+
+Margins are left, top, right, bottom in pixels. Configure model paths as for
+ordinary generation. `--outpaint-blend` controls the edge kernel described
+below. MiniMax-H3-Image uses its fixed six-step grid with no Langevin refinement;
+C API callers must explicitly set its Langevin steps to zero. See
+[H3 Image outpainting](h3_image.md#outpainting) for limits and reference numbering.
+The ordinary H3 model also accepts these CLI margins; its existing refinement
+defaults and sampling options remain available.
+
 Place the original on a larger canvas, attach that canvas with an image-edit
 setter using the original's rectangle and zero feather, then call
 `slopfab_request_set_image_edit_invert_mask(request, 1)`. The rectangle now

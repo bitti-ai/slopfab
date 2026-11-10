@@ -76,7 +76,48 @@ The model runs without audio tokens. Each output projection combines the base
 head with the residual for its trained interval. The 24-layer, width-1024 VAE
 decodes one latent frame using 2D RoPE over 32 of each head's 64 channels.
 
-The optional prompt enhancer, masked inpainting/outpainting, video/audio
+## Outpainting
+
+Expand an existing image without scaling its contents:
+
+```powershell
+build/Release/slopfab.exe image generate --model h3_image `
+  --transformer weights/minimax_h3_image_pruned_int8_convrot.safetensors `
+  --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors `
+  --vae weights/minimax_h3_image_vae_fp16.safetensors `
+  --edit-image teapot.png --outpaint 256,128,256,128 `
+  --prompt 'Extend the scene in <Picture 1>. Continue the wooden table and background, matching perspective and window light.' `
+  --out expanded.png
+```
+
+Margins are **left, top, right, bottom**, in pixels. They must be nonnegative
+and at least one must be positive. The expanded canvas is internally padded to
+32 pixels and cropped back on delivery. Omit `--resolution`, or supply that
+padded size. The existing 17 Mi-pixel canvas limit applies, with at most 8192
+pixels per axis. The source must contain a complete 16-pixel latent cell after
+placement. No `--edit-box`, `--edit-strength`, `--edit-feather` or `--aspect` is
+needed. Additional references remain available, starting at `<Picture 2>`;
+the source counts toward the 16-picture limit.
+
+The source supplies visual prompt context, locked target latents and a spatially
+positioned latent anchor. Final compositing preserves the source interior.
+`--outpaint-blend 9` (the default) blends up to eight pixels inward from edges
+facing generated space. Use `--outpaint-blend 1` to preserve every source pixel
+exactly. H3 Image retains its six Euler evaluations at strength 1 and disables
+Langevin refinement; nonzero `--outpaint-langevin-steps` is rejected.
+
+C API callers use the existing image-edit setters with the expanded canvas and
+source rectangle, enable `slopfab_request_set_image_edit_invert_mask(request, 1)`,
+then set `slopfab_request_set_outpaint_langevin_steps(request, 0)` before resolving
+or starting generation. The general H3 default of five refinement evaluations
+does not apply to this model. C++ callers can create the canvas with
+`make_outpaint_edit(source, left, top, right, bottom)` and set `langevin_steps = 0`.
+
+This is experimental constrained sampling using the existing image model;
+seam quality depends on the source and prompt. It does not add a separately
+trained outpainting checkpoint.
+
+The optional prompt enhancer, masked inpainting, video/audio
 references, original sharded full-AdaLN weights, previews and H3 latent archives
 are not supported.
 

@@ -14,14 +14,19 @@ parser = argparse.ArgumentParser(description=__doc__)
 for name in ("library", "source", "output", "transformer", "text-encoder", "vae"):
     parser.add_argument("--" + name, required=True, type=Path)
 parser.add_argument("--backend", choices=("cuda", "vulkan"), default="cuda")
+parser.add_argument("--model", choices=("h3", "h3_image"), default="h3")
 parser.add_argument("--size", type=int, default=512)
-parser.add_argument("--steps", type=int, default=20)
+parser.add_argument("--steps", type=int)
 parser.add_argument("--lora", type=Path)
 parser.add_argument("--schedule", choices=("default", "dmad-4step"), default="default")
 parser.add_argument("--strength", type=float, default=1)
 parser.add_argument("--blend-overlap", type=int, choices=range(1, 52, 2), default=9)
-parser.add_argument("--langevin-steps", type=int, choices=range(101), default=5)
+parser.add_argument("--langevin-steps", type=int, choices=range(101))
 args = parser.parse_args()
+if args.steps is None:
+    args.steps = 6 if args.model == "h3_image" else 20
+if args.langevin_steps is None:
+    args.langevin_steps = 0 if args.model == "h3_image" else 5
 assert args.size >= 96 and args.size % 32 == 0
 args.output.mkdir(parents=True, exist_ok=True)
 source = Image.open(args.source).convert("RGB")
@@ -76,6 +81,7 @@ def progress(value, _):
 request = bind("slopfab_request_create", [], handle)()
 generation = handle()
 try:
+    check(bind("slopfab_request_set_model_family", [handle, C.c_char_p])(request, args.model.encode()))
     check(bind("slopfab_request_set_verbose", [handle, C.c_int])(request, 1))
     set_model = bind("slopfab_request_set_model_path", [handle, C.c_int, C.c_char_p])
     for model, path in [(0, args.transformer), (1, args.text_encoder), (3, args.vae)]:
@@ -84,6 +90,9 @@ try:
               "Continue the same surroundings beyond the visible edges, matching perspective, scale, lighting and textures. "
               "One continuous scene, with the original content in its existing position."
               "\n\noverall_soundscape: N/A\n\nnon_diegetic_music: N/A")
+    if args.model == "h3_image":
+        prompt = ("Extend the scene in <Picture 1>. Continue the surroundings beyond the visible edges, "
+                  "matching perspective, scale, lighting and textures. Keep the source in its existing position.")
     check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, prompt.encode()))
     check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, args.steps))
     if args.lora:
@@ -93,7 +102,10 @@ try:
         request, 2 if args.schedule == "dmad-4step" else 0))
     check(bind("slopfab_request_set_seed", [handle, C.c_uint64])(request, 17))
     check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, int(args.backend == "vulkan")))
-    check(bind("slopfab_request_set_attention", [handle, C.c_char_p])(request, b"sage2"))
+    if args.model == "h3_image" and args.backend == "vulkan":
+        check(bind("slopfab_request_set_vulkan_arithmetic", [handle, C.c_int])(request, 1))
+    check(bind("slopfab_request_set_attention", [handle, C.c_char_p])(
+        request, b"flash2" if args.model == "h3_image" else b"sage2"))
     check(bind("slopfab_request_set_image_edit_path", [handle, C.c_char_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_int])(
         request, str((args.output / "canvas.png").resolve()).encode(), left, top, source.width, source.height, args.strength, 0))
     check(bind("slopfab_request_set_image_edit_invert_mask", [handle, C.c_int])(request, 1))
