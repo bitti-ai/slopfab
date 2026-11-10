@@ -47,7 +47,7 @@ if(SLOPFAB_BUILD_C_API)
   #
   # The version is the *C ABI's*, not the project's. They are different numbers
   # answering different questions — capi.h declares its own version and tells
-  # a binding to refuse a different major, while PROJECT_VERSION is 0.1.0 and
+  # a binding to refuse a different major, while PROJECT_VERSION is 0.2.0 and
   # moves whenever anything in the project does. Using the latter here would
   # produce a libslopfab.so.0 whose soname says 0 for an ABI that says 1, and
   # would bump it for releases that did not touch the C interface at all.

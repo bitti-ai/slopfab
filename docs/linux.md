@@ -175,7 +175,7 @@ the license and notice texts included in the licenses mod.
 `tools/package_bundle.py` (or `package.cmd` on Windows) packages
 existing `build/Release` and `build/linux-cli` outputs without rebuilding; use
 `--windows-dir dist/windows --linux-dir dist/linux` for `build.cmd` outputs.
-The package version comes from the root `VERSION` file, currently `0.1.0`.
+The package version comes from the root `VERSION` file, currently `0.2.0`.
 It refuses single-platform packages.
 The tokenizer
 and Vulkan shaders are compiled in. Model weights, adapters, NVIDIA/Vulkan

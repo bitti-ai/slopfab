@@ -267,9 +267,9 @@ Instance Instance::create(const InstanceOptions& options) {
   VkApplicationInfo app{};
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
   app.pApplicationName = options.application_name.c_str();
-  app.applicationVersion = VK_MAKE_API_VERSION(0, 0, 1, 0);
+  app.applicationVersion = VK_MAKE_API_VERSION(0, 0, 2, 0);
   app.pEngineName = "slopfab";
-  app.engineVersion = VK_MAKE_API_VERSION(0, 0, 1, 0);
+  app.engineVersion = VK_MAKE_API_VERSION(0, 0, 2, 0);
   app.apiVersion = requested;
   VkInstanceCreateInfo create{};
   create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;

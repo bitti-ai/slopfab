@@ -185,7 +185,7 @@ merged into the local manifest. `--project-item` replaces only the remote item.
 Release archives always contain both platform binaries. `package.cmd` packages
 the current `build/Release` Windows and `build/linux-cli` Linux outputs without
 rebuilding. It requires Python 3.10+ and can be run from any working directory.
-`VERSION` defines the build and package version, currently `0.1.0` (separate
+`VERSION` defines the build and package version, currently `0.2.0` (separate
 from the C ABI version). Run `package.cmd --help` for options:
 
 ```bat
@@ -194,7 +194,7 @@ package.cmd --windows-dir dist/windows --linux-dir dist/linux
 package.cmd --windows-dir "D:\builds\windows" --linux-dir "D:\builds\linux" --output-dir dist
 ```
 
-The archives are `dist/slopfab-0.1.0-windows-linux-x64.zip` and `.tar.gz`.
+The archives are `dist/slopfab-0.2.0-windows-linux-x64.zip` and `.tar.gz`.
 Each extracts directly into the chosen folder, with exactly these top-level entries:
 
 ```text

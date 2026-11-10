@@ -8,7 +8,7 @@
 
 namespace slopfab::cli {
 #ifndef SLOPFAB_CLI_VERSION
-#define SLOPFAB_CLI_VERSION "0.1.0"
+#define SLOPFAB_CLI_VERSION "0.2.0"
 #endif
 inline constexpr const char* kVersion = SLOPFAB_CLI_VERSION;
 
