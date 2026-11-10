@@ -80,5 +80,20 @@ text = run(*base, "--resolution", "512x512", *references)
 assert "16 references" in text
 run(*base, "--resolution", "512x512", *references, "--reference-image", str(source), success=False)
 
+text = run(*base, "--edit-image", str(source), "--outpaint", "32,16,32,16")
+assert "128 x 64" in text and "outpainting" in text and "6 Euler updates" in text
+text = run(*base, "--edit-image", str(source), "--outpaint", "1,0,0,0",
+           "--outpaint-blend", "1", "--reference-image", str(second))
+assert "96 x 32" in text and "outpainting" in text
+for extra in [("--outpaint", "0,0,0,0"), ("--outpaint", "-1,0,32,0"),
+              ("--outpaint", "1,2,3"), ("--outpaint", "2147483647,0,0,0"),
+              ("--outpaint-blend", "1"), ("--outpaint-langevin-steps", "0")]:
+    run(*base, "--edit-image", str(source), *extra, success=False)
+for extra in [("--outpaint-blend", "2"), ("--outpaint-langevin-steps", "1"),
+              ("--resolution", "512x512"), ("--edit-box", "0,0,32,32"),
+              ("--edit-strength", "0.5"), ("--aspect", "1:1"), references]:
+    run(*base, "--edit-image", str(source), "--outpaint", "32,16,32,16", *extra, success=False)
+run(*base, "--outpaint", "32,16,32,16", success=False)
+
 workspace.cleanup()
 print("MiniMax-H3-Image CLI checks passed")

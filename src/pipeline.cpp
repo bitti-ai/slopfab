@@ -576,7 +576,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   if (plan.model.family == "h3_image") {
     return "model       MiniMax-H3-Image\ncanvas      " +
         std::to_string(plan.canvas_width) + " x " + std::to_string(plan.canvas_height) +
-        "\nmode        " + (request.reference_image_paths.empty() ? std::string("text-to-image")
+        "\nmode        " + (request.image_edit.invert_mask ? std::string("outpainting (preserve source)") :
+          request.reference_image_paths.empty() ? std::string("text-to-image")
           : "image editing (" + std::to_string(request.reference_image_paths.size()) + " references)") +
         "\nsteps       6 Euler updates (fixed PDD grid)"
         "\nguidance    1 (no CFG)\naudio       none\noutput      " + request.out_path + "\n";

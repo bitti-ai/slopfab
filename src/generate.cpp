@@ -412,10 +412,6 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // ordinary DiT reference would independently resize/reframe it. Qwen gets
   // the original crop; the DiT gets a positioned crop of the pinned latents.
   std::vector<RGBImage> outpaint_prompt_images;
-  if (request.image_edit.invert_mask) {
-    outpaint_prompt_images.push_back(outpaint_source_image(request.image_edit));
-    outpaint_prompt_images.insert(outpaint_prompt_images.end(), reference_images.begin(), reference_images.end());
-  }
   std::vector<RGBImage> image_model_prompt_images;
   if (plan.model.family == "h3_image") {
     // Qwen and the VAE resize independently from the original. Reusing the
@@ -426,6 +422,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       h3_image_reference_size(image.width, image.height, &h, &w, true);
       image_model_prompt_images.push_back(resize_reference_lanczos(image, w, h));
     }
+  }
+  if (request.image_edit.invert_mask) {
+    outpaint_prompt_images.push_back(outpaint_source_image(request.image_edit));
+    const auto& pictures = plan.model.family == "h3_image" ? image_model_prompt_images : reference_images;
+    outpaint_prompt_images.insert(outpaint_prompt_images.end(), pictures.begin(), pictures.end());
   }
   PromptInputs prompt_inputs{fixed_prompt,
                              reference_identities,
@@ -514,6 +515,18 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       }
     }
 
+    const auto encode_image = [&](auto& encoder, const RGBImage& image,
+                                  const std::vector<float>& mean, const std::vector<float>& stddev) {
+      if (plan.model.family != "h3_image")
+        return encoder.encode_reference_image(image, mean, stddev);
+      const auto pixels = vae::prepare_keyframe_pixels(image);
+      const auto moments = encoder.encode_moments(pixels.data(), image.height, image.width);
+      const int h = image.height / 16, w = image.width / 16;
+      const auto normal = vae::torch_cpu_normal_seed42(size_t(24) * h * w);
+      const auto latents = vae::sample_keyframe_latents(moments.data(), normal.data(), h, w,
+                                                      mean, stddev, false);
+      return vae::patchify_keyframe_latents(latents.data(), h, w);
+    };
     if (request.image_edit.image) {
       if (!notify(RunStage::kReferences, -1, 0))
         return stop("image edit encoding");
@@ -527,7 +540,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
         vae::KeyframeEncoder encoder(vae_file);
-        inpaint->original = encoder.encode_reference_image(image, mean, stddev);
+        inpaint->original = encode_image(encoder, image, mean, stddev);
 #else
         throw std::logic_error("CUDA inference compiled out after validation");
 #endif
@@ -536,7 +549,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
         auto encoder = vulkan::KeyframeEncoder::create(device);
         encoder.load(vae_file);
-        inpaint->original = encoder.encode_reference_image(image, mean, stddev);
+        inpaint->original = encode_image(encoder, image, mean, stddev);
 #endif
       }
       inpaint->mask = edit_mask_rows(request.image_edit, plan.canvas_width, plan.canvas_height);
@@ -580,22 +593,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         vae_file.open(request.video_vae_path);
         const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
         const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
-        const auto encode_image = [&](auto& encoder, const RGBImage& image) {
-          if (plan.model.family != "h3_image")
-            return encoder.encode_reference_image(image, mean, stddev);
-          const auto pixels = vae::prepare_keyframe_pixels(image);
-          const auto moments = encoder.encode_moments(pixels.data(), image.height, image.width);
-          const int h = image.height / 16, w = image.width / 16;
-          const auto normal = vae::torch_cpu_normal_seed42(size_t(24) * h * w);
-          const auto latents = vae::sample_keyframe_latents(moments.data(), normal.data(), h, w,
-                                                          mean, stddev, false);
-          return vae::patchify_keyframe_latents(latents.data(), h, w);
-        };
         if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
           vae::KeyframeEncoder image_encoder(vae_file);
           for (const RGBImage& image : reference_images) {
-            clean_rows.push_back(encode_image(image_encoder, image));
+            clean_rows.push_back(encode_image(image_encoder, image, mean, stddev));
             geometry.push_back(
                 {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
           }
@@ -608,7 +610,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
           vulkan::KeyframeEncoder image_encoder = vulkan::KeyframeEncoder::create(keyframe_device);
           image_encoder.load(vae_file);
           for (const RGBImage& image : reference_images) {
-            clean_rows.push_back(encode_image(image_encoder, image));
+            clean_rows.push_back(encode_image(image_encoder, image, mean, stddev));
             geometry.push_back(
                 {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
           }

@@ -37,6 +37,31 @@ SLOPFAB_TEST(inpaint_packing_preserves_subpatch_coordinates) {
     CHECK(padded.pixels[(63 * 64 + 63) * 3 + c] == edit.image->pixels[(32 * 35 + 34) * 3 + c]);
 }
 
+SLOPFAB_TEST(outpaint_margins_preserve_source_and_crop_padding) {
+  using namespace slopfab;
+  const auto source = *edit_fixture().image;
+  auto edit = make_outpaint_edit(source, 17, 16, 9, 0);
+  CHECK(edit.image->width == 61 && edit.image->height == 49);
+  CHECK(edit.x == 17 && edit.y == 16 && edit.width == 35 && edit.height == 33);
+  CHECK(outpaint_source_image(edit).pixels == source.pixels);
+  edit.blend_overlap = 1;
+  const auto output = composite_image_edit(edit, PixelBuffer(3 * 64 * 64, .9f), 64, 64);
+  CHECK(output.size() == 3 * 61 * 49);
+  for (int c = 0; c < 3; ++c)
+    for (int y = 0; y < 49; ++y)
+      for (int x = 0; x < 61; ++x) {
+        const bool inside = x >= 17 && x < 52 && y >= 16;
+        const float expected = inside ? source.pixels[((y - 16) * 35 + x - 17) * 3 + c] / 255.f : .9f;
+        CHECK(output[c * 61 * 49 + y * 61 + x] == expected);
+      }
+  for (const int margin : {-1, 0, 8192, 2147483647}) {
+    bool rejected = false;
+    try { (void)make_outpaint_edit(source, margin, 0, 0, 0); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+  }
+}
+
 SLOPFAB_TEST(inpaint_composite_preserves_every_outside_pixel) {
   auto edit = edit_fixture();
   slopfab::PixelBuffer generated(3 * 64 * 64, .9f);

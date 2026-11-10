@@ -30,6 +30,8 @@ struct ImageEdit {
 };
 
 RGBImage pad_edit_image(const ImageEdit& edit, int width, int height);
+// Expand without scaling; margins are left, top, right, bottom in pixels.
+ImageEdit make_outpaint_edit(const RGBImage& source, int left, int top, int right, int bottom);
 RGBImage outpaint_source_image(const ImageEdit& edit);
 std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height);
 dit::ReferenceGeometry outpaint_keyframe_geometry(const ImageEdit& edit);

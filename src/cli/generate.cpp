@@ -123,6 +123,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string edit_image;
   bool saw_edit_box = false;
   bool saw_edit_option = false;
+  bool saw_outpaint = false, saw_outpaint_option = false, saw_langevin = false;
+  int outpaint_left = 0, outpaint_top = 0, outpaint_right = 0, outpaint_bottom = 0;
   bool saw_seed = false;
   int count = 1;
 #if !SLOPFAB_WITH_CUDA && SLOPFAB_WITH_VULKAN
@@ -170,6 +172,20 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       latent_upscale.temporal_chunking = false;
       if (latent_upscale_model.empty())
         latent_upscale_model = kDefaultLatentUpscaleModel;
+    } else if (arg == "--outpaint") {
+      std::string margins = next("--outpaint");
+      std::replace(margins.begin(), margins.end(), ',', ' ');
+      std::istringstream in(margins);
+      if (!(in >> outpaint_left >> outpaint_top >> outpaint_right >> outpaint_bottom) ||
+          !(in >> std::ws).eof())
+        throw std::invalid_argument("--outpaint expects left,top,right,bottom pixel margins");
+      saw_outpaint = true;
+    } else if (arg == "--outpaint-blend") {
+      req.image_edit.blend_overlap = integer(next("--outpaint-blend"));
+      saw_outpaint_option = true;
+    } else if (arg == "--outpaint-langevin-steps") {
+      req.image_edit.langevin_steps = integer(next("--outpaint-langevin-steps"));
+      saw_outpaint_option = saw_langevin = true;
     } else if (arg == "--edit-image") {
       edit_image = next("--edit-image");
     } else if (arg == "--edit-box") {
@@ -691,19 +707,33 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (count <= 0) {
     cli_fail(2, "slopfab: --count must be a positive integer\n");
   }
-  if (!edit_image.empty() && slopfab::request_model_family(req) == "h3_image") {
+  if (saw_outpaint_option && !saw_outpaint)
+    throw std::invalid_argument("outpaint settings require --outpaint");
+  if (saw_outpaint && (edit_image.empty() || saw_edit_box || saw_edit_option || saw_aspect))
+    throw std::invalid_argument("--outpaint requires --edit-image without edit-box, strength, feather or aspect");
+  if (!saw_outpaint && !edit_image.empty() && slopfab::request_model_family(req) == "h3_image") {
     if (saw_edit_box || saw_edit_option)
       throw std::invalid_argument("MiniMax-H3-Image edits use prompt instructions; omit box, strength and feather options");
     req.reference_image_paths.insert(req.reference_image_paths.begin(), edit_image);
     edit_image.clear();
   }
   if (!edit_image.empty()) {
-    if (!saw_edit_box)
+    if (!saw_edit_box && !saw_outpaint)
       throw std::invalid_argument("--edit-image requires --edit-box x,y,width,height");
     if (saw_aspect)
       throw std::invalid_argument("image editing inherits source dimensions; omit --aspect");
-    req.image_edit.image =
-        std::make_shared<const slopfab::RGBImage>(slopfab::load_reference_image(edit_image));
+    const auto source = slopfab::load_reference_image(edit_image);
+    if (saw_outpaint) {
+      const int blend = req.image_edit.blend_overlap;
+      const int langevin = req.image_edit.langevin_steps;
+      req.image_edit = slopfab::make_outpaint_edit(source, outpaint_left, outpaint_top,
+                                                 outpaint_right, outpaint_bottom);
+      req.image_edit.blend_overlap = blend;
+      req.image_edit.langevin_steps = !saw_langevin && slopfab::request_model_family(req) == "h3_image"
+                                         ? 0 : langevin;
+    } else {
+      req.image_edit.image = std::make_shared<const slopfab::RGBImage>(source);
+    }
     req.image_edit.validate();
     req.still_image = true;
   } else if (saw_edit_box || saw_edit_option) {

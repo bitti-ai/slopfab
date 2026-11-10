@@ -1524,6 +1524,29 @@ SLOPFAB_TEST(capi_h3_image_sixteen_references) {
   CHECK(std::string(description.text).find("16 references") != std::string::npos);
 }
 
+SLOPFAB_TEST(capi_h3_image_outpaint) {
+  Request request;
+  CHECK(slopfab_request_set_model_family(request.handle, "h3_image") == SLOPFAB_OK);
+  std::vector<uint8_t> pixels(97 * 65 * 3, 123);
+  CHECK(slopfab_request_set_image_edit_rgb24(request.handle, pixels.data(), pixels.size(),
+      97, 65, 97 * 3, 32, 16, 32, 32, 1, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request.handle, 1) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_outpaint_langevin_steps(request.handle, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_outpaint_blend_overlap(request.handle, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 128 && plan.canvas_height == 96 && plan.num_model_evaluations == 6);
+  OwnedString description;
+  CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
+  CHECK(std::string(description.text).find("outpainting") != std::string::npos);
+  for (int i = 0; i < 15; ++i)
+    CHECK(slopfab_request_add_reference_image(request.handle, "ref.png") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_image(request.handle, "ref.png") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+}
+
 SLOPFAB_TEST(capi_ph3_image_plan_and_invalid_attention) {
   Request request;
   CHECK(slopfab_request_set_model_family(request.handle, "ph3_image") == SLOPFAB_OK);

@@ -265,3 +265,32 @@ SLOPFAB_TEST(h3_image_multi_reference_positions_and_posterior) {
   CHECK(vae::torch_cpu_normal(96, 42) == vae::torch_cpu_normal_seed42(96));
   CHECK(vae::torch_cpu_normal(96, 43) != vae::torch_cpu_normal(96, 42));
 }
+
+SLOPFAB_TEST(h3_image_outpaint_canvas_and_fixed_schedule) {
+  using namespace slopfab;
+  RGBImage source;
+  source.width = 65; source.height = 63;
+  source.pixels.assign(65 * 63 * 3, 123);
+  GenerateRequest r;
+  r.model_family = "h3_image";
+  r.image_edit = make_outpaint_edit(source, 32, 17, 31, 16);
+  CHECK(rejects(r)); // General H3 Langevin default is incompatible with six PDD evaluations.
+  r.image_edit.langevin_steps = 0;
+  const auto p = resolve_plan(r);
+  CHECK(p.canvas_width == 128 && p.canvas_height == 96);
+  CHECK(p.layout.num_audio_rows == 0 && p.layout.num_latent_frames == 1);
+  CHECK(p.video_sigmas == h3_image_sigmas() && p.num_model_evaluations() == 6);
+  CHECK(describe_plan(r, p).find("outpainting") != std::string::npos);
+  CHECK(outpaint_source_image(r.image_edit).pixels == source.pixels);
+  const auto anchor = outpaint_keyframe_geometry(r.image_edit);
+  CHECK(anchor.target_aligned && anchor.target_latent_x == 2 && anchor.target_latent_y == 2);
+  r.reference_image_paths.assign(15, "unused.png");
+  CHECK(resolve_plan(r).canvas_width == 128); // Never derive canvas from extra pictures.
+  r.reference_image_paths.push_back("unused.png"); CHECK(rejects(r));
+  r.reference_image_paths.clear();
+  r.canvas_width = r.canvas_height = 512; CHECK(rejects(r));
+  r.canvas_width = 128; r.canvas_height = 96; CHECK(!rejects(r));
+  r.image_edit.strength = .5f; CHECK(rejects(r));
+  r.image_edit.strength = 1;
+  r.image_edit.invert_mask = false; CHECK(rejects(r));
+}

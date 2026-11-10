@@ -6,6 +6,27 @@
 #include <stdexcept>
 
 namespace slopfab {
+ImageEdit make_outpaint_edit(const RGBImage& source, int left, int top, int right, int bottom) {
+  const int64_t w = int64_t(source.width) + left + right;
+  const int64_t h = int64_t(source.height) + top + bottom;
+  if (source.width <= 0 || source.height <= 0 || source.width > 8192 || source.height > 8192 ||
+      source.pixels.size() != size_t(source.width) * source.height * 3 ||
+      left < 0 || top < 0 || right < 0 || bottom < 0 || w > 8192 || h > 8192)
+    throw std::invalid_argument("outpaint requires valid RGB pixels and nonnegative margins, at most 8192 per axis");
+  auto canvas = std::make_shared<RGBImage>();
+  canvas->width = int(w); canvas->height = int(h);
+  canvas->pixels.resize(size_t(w) * h * 3);
+  for (int y = 0; y < source.height; ++y)
+    std::copy_n(source.pixels.data() + size_t(y) * source.width * 3, size_t(source.width) * 3,
+                canvas->pixels.data() + (size_t(y + top) * w + left) * 3);
+  ImageEdit edit;
+  edit.image = canvas;
+  edit.x = left; edit.y = top; edit.width = source.width; edit.height = source.height;
+  edit.invert_mask = true;
+  edit.validate();
+  return edit;
+}
+
 void ImageEdit::validate() const {
   if (!image) {
     if (x || y || width || height || feather || strength != 1.0f || invert_mask || blend_overlap != 9 ||
