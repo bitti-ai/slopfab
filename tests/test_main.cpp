@@ -279,15 +279,42 @@ void test_w4a8_state() {
   std::vector<uint8_t> packed(360, 0);
   std::fill(packed.begin()+256,packed.begin()+288,0x38);
   const float channels[]={1.f,2.f};std::memcpy(packed.data()+288,channels,sizeof(channels));
-  const std::string global_path=write_temp_safetensors(make_header(global),packed,"slopfab_w4a8_global.safetensors");
-  st.open(global_path);
-  CHECK(is_w4a8_weight(st,"layer.weight"));
-  CHECK(!is_w4a8_weight(st,"absent.weight"));
-  CHECK(read_w4a8_state(st,"layer.weight","test").convrot_group_size==256);
-  validate_w4a8_weight(st,"layer.weight",2,256);
   const auto rejected = [](const auto& fn) { try { fn(); return false; } catch (const std::exception&) { return true; } };
-  CHECK(rejected([&]{validate_w4a8_weight(st,"layer.weight",2,512);}));
-  st.close();std::filesystem::remove(global_path,ec);
+  // The mixed Ref2VA export omits format_version in its global descriptors.
+  // Both versions must retain the same packed tensor validation.
+  for (bool versioned : {true, false}) {
+    auto metadata = global.as_object();
+    if (!versioned)
+      metadata.erase("format_version");
+    const auto global_path = write_temp_safetensors(
+        make_header(json::Value(metadata)), packed, "slopfab_w4a8_global.safetensors");
+    st.open(global_path);
+    CHECK(is_w4a8_weight(st, "layer.weight"));
+    CHECK(!is_w4a8_weight(st, "absent.weight"));
+    CHECK(read_w4a8_state(st, "layer.weight", "test").convrot_group_size == 256);
+    validate_w4a8_weight(st, "layer.weight", 2, 256);
+    CHECK(rejected([&] { validate_w4a8_weight(st, "layer.weight", 2, 512); }));
+    st.close();
+    std::filesystem::remove(global_path, ec);
+  }
+  for (const char* version : {"\"2.0\"", "\"\"", "1.0", "null", "true", "{}", "[]"}) {
+    auto metadata = global.as_object();
+    metadata["format_version"] = json::parse(version);
+    const auto bad_path = write_temp_safetensors(
+        make_header(json::Value(metadata)), packed, "slopfab_w4a8_version.safetensors");
+    st.open(bad_path);
+    CHECK(rejected([&] { quantization_state(st, "layer.weight"); }));
+    st.close();
+    std::filesystem::remove(bad_path, ec);
+  }
+  for (const char* metadata : {"{}", R"({"layers":null})", R"({"layers":[]})"}) {
+    const auto bad_path = write_temp_safetensors(
+        make_header(json::parse(metadata)), packed, "slopfab_w4a8_layers.safetensors");
+    st.open(bad_path);
+    CHECK(rejected([&] { quantization_state(st, "layer.weight"); }));
+    st.close();
+    std::filesystem::remove(bad_path, ec);
+  }
   packed[256]=0x7f;
   const std::string bad_path=write_temp_safetensors(make_header(global),packed,"slopfab_w4a8_bad.safetensors");
   st.open(bad_path);CHECK(rejected([&]{validate_w4a8_weight(st,"layer.weight",2,256);}));

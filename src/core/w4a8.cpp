@@ -52,7 +52,9 @@ json::Value quantization_state(const SafeTensors& checkpoint, const std::string&
     return {};
   const auto root = json::parse(found->second);
   const auto* version = root.find("format_version");
-  if (!version || version->as_string() != "1.0")
+  // Mixed Ref2VA exports also use this layers schema without a version tag.
+  // An explicit version must still identify a format we understand.
+  if (version && (!version->is_string() || version->as_string() != "1.0"))
     throw std::runtime_error("unsupported checkpoint quantization metadata version");
   const auto* layers = root.find("layers");
   if (!layers || !layers->is_object())
