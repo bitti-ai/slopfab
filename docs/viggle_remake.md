@@ -133,3 +133,13 @@ canvases are not quality tests. Both runs verified that the pinned audio
 latents stayed unchanged. The local rank-64 adapter passed all 302 projection
 target checks against the FL2VA base. Edit-mode schedules and request validation
 are covered by host tests; edit weights were not available for a visual test.
+
+Timeline-pin tests cover frame validation, image fitting, rotary placement,
+sequence removal, and sigma-based release for both modes and custom counts.
+CUDA denoising tests and Vulkan device tests verify target continuity and
+unchanged source audio; Vulkan also covers cancellation and repeated runs.
+The swap INT8 checkpoint completed two-pin (frames 0 and 60), 90-frame
+160x96 execution tests on CUDA at six steps and Vulkan at twelve steps, using
+the default 0.9 release threshold. Both produced video and audio successfully
+and retained the pinned audio latents. These small renders validate execution,
+not visual quality or pixel-exact agreement with upstream.
