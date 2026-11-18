@@ -46,9 +46,11 @@ Object guide(const Value& catalog, const std::string& model, const std::string& 
     if (item.find("model")->as_string() != model || item.find("use_case")->as_string() != use_case)
       continue;
     auto result = item.as_object();
-    result["model_guidance"] = *catalog.find("models")->find(model);
+    if (!result.count("model_guidance"))
+      result["model_guidance"] = *catalog.find("models")->find(model);
     for (const char* key : {"version", "reviewed", "notice", "workflow"})
-      result[key] = *catalog.find(key);
+      if (!result.count(key))
+        result[key] = *catalog.find(key);
     result["next"] = str(
         "Inspect references, fill remaining template placeholders, then validate the generation request. Examples are illustrations, not descriptions of your files.");
     return result;
@@ -58,6 +60,7 @@ Object guide(const Value& catalog, const std::string& model, const std::string& 
 
 struct Selection {
   std::string model, task, first, last, edit, duration, shots = "1";
+  std::string remake, driving_audio;
   std::vector<std::string> images, videos, audio;
   bool instrumental = false, layout = false, continuation = false;
   bool character_swap = false;
@@ -91,7 +94,7 @@ Selection parse_selection(const std::vector<std::string>& args) {
     }
     if (flag != "--model" && flag != "--task" && flag != "--first-frame" &&
         flag != "--last-frame" && flag != "--edit-image" && flag != "--duration" &&
-        flag != "--shots" && !repeated)
+        flag != "--shots" && flag != "--remake" && flag != "--driving-audio" && !repeated)
       invalid("unknown prompt selection option: " + flag);
     if (++i == args.size() || args[i].empty())
       invalid("missing value for " + flag);
@@ -112,6 +115,12 @@ Selection parse_selection(const std::vector<std::string>& args) {
       s.videos.push_back(value);
     else if (flag == "--reference-audio")
       s.audio.push_back(value);
+    else if (flag == "--remake") {
+      s.remake = lower(value);
+      if (s.remake != "swap" && s.remake != "edit")
+        invalid("--remake wants swap or edit");
+    } else if (flag == "--driving-audio")
+      s.driving_audio = value;
     else {
       size_t consumed = 0;
       double number = 0;
@@ -151,7 +160,15 @@ Object select_guide(const Value& catalog, const Selection& s) {
   const bool endpoints = !s.first.empty() || !s.last.empty();
   const bool refs = !s.images.empty() || !s.videos.empty() || !s.audio.empty();
   std::string use_case;
-  if (s.character_swap) {
+  if (s.remake.empty() && !s.driving_audio.empty())
+    invalid("the --driving-audio guide selector requires --remake");
+  if (!s.remake.empty()) {
+    if (s.model != "h3" || s.task != "video" || s.images.empty() || s.images.size() > 4 ||
+        s.videos.size() != 1 || !s.audio.empty() || endpoints || !s.edit.empty() ||
+        s.layout || s.continuation || s.instrumental || s.character_swap)
+      invalid("Remake requires H3 video, one source video and one to four painted images; use --driving-audio for its soundtrack, without endpoint, edit, continuation or character-swap selectors");
+    use_case = "remake";
+  } else if (s.character_swap) {
     if (s.model != "h3" || s.task != "video" || s.images.size() != 1 || s.videos.size() != 1 ||
         s.audio.size() > 1 || endpoints || !s.edit.empty() || s.layout || s.continuation ||
         s.instrumental || s.shots != "1")
@@ -198,6 +215,11 @@ Object select_guide(const Value& catalog, const Selection& s) {
                                                      : "t2va";
   }
   auto result = guide(catalog, s.model, use_case);
+  if (!s.remake.empty()) {
+    result["remake_mode"] = str(s.remake);
+    if (s.remake == "edit")
+      result["example"] = result.at("edit_example");
+  }
   Array bindings;
   int picture = 0, video = 0, audio = 0;
   auto bind = [&](const std::string& path, const std::string& label, const std::string& role,
@@ -215,13 +237,19 @@ Object select_guide(const Value& catalog, const Selection& s) {
   };
   if (!s.first.empty())
     bind(s.first, image_label(), "intended opening", "--reference-image");
+  if (!s.remake.empty())
+    bind(s.videos.front(), "<Video 1>", "source video", "--reference-video");
   for (const auto& path : s.images)
-    bind(path, image_label(), s.character_swap ? "replacement character identity" : "assign identity/style/content role", "--reference-image");
+    bind(path, image_label(), !s.remake.empty() ? "painted target frame" :
+        s.character_swap ? "replacement character identity" : "assign identity/style/content role", "--reference-image");
   if (!s.last.empty())
     bind(s.last, image_label(), "ending anchor", "--end-anchor");
   for (const auto& path : s.videos)
-    bind(path, "<Video " + std::to_string(++video) + ">", s.character_swap ? "source performance and scene" : "assign reference role",
-         "--reference-video");
+    if (s.remake.empty())
+      bind(path, "<Video " + std::to_string(++video) + ">", s.character_swap ? "source performance and scene" : "assign reference role",
+           "--reference-video");
+  if (!s.driving_audio.empty())
+    bind(s.driving_audio, "source soundtrack", "pinned target audio", "--driving-audio");
   for (const auto& path : s.audio)
     bind(path, "<Audio " + std::to_string(++audio) + ">", "assign reference role",
          "--reference-audio");

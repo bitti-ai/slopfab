@@ -29,16 +29,49 @@ with tempfile.TemporaryDirectory(prefix="slopfab-prompts-") as temporary:
     first = run("prompts", "list")
     assert "prompting guide" in first["agent_context"]["instructions"]
     index = first["data"]["guides"]
-    assert len(index) == 19
+    assert len(index) == 20
     assert {g["model"] for g in index} == {"h3", "krea2", "moss", "fibo2", "yue2", "minimax_music3"}
     for entry in index:
         guide = run("prompts", "get", entry["model"], entry["use_case"])["data"]
         assert guide["prompt_template"] and guide["example"]["prompt"]
         assert guide["model_guidance"]["sources"] and guide["model_guidance"]["slopfab_support"]
-    assert len(run("prompts", "list", "--model", "MyVideo")["data"]["guides"]) == 9
+    assert len(run("prompts", "list", "--model", "MyVideo")["data"]["guides"]) == 10
     assert run("prompts", "get", "h3", "FL2VA")["data"]["use_case"] == "fl2va"
     assert select()["use_case"] == "t2va"
     assert select("MyVideo")["use_case"] == "t2va"
+    remake = run("prompts", "get", "h3", "REMAKE")["data"]
+    assert remake["reviewed"] == "2026-11-18"
+    assert remake["sources"][0] == "https://huggingface.co/Viggle/Viggle-Remake/blob/main/PROMPTING.md"
+    sections = ["subject_definitions", "summary", "retention_analysis", "detailed_description",
+                "overall_soundscape", "non_diegetic_music"]
+    assert remake["prompt_sections"] == sections
+    for prompt in (remake["prompt_template"], remake["example"]["prompt"], remake["edit_example"]["prompt"]):
+        assert [part.split(':', 1)[0] for part in prompt.split('\n\n')] == sections
+    assert "--pin" in remake["binding"] and "--keyframe-until" in remake["slopfab_support"]
+    assert "custom --steps" in remake["slopfab_support"]
+    assert "integrated_multimodal_description" not in json.dumps(remake["model_guidance"])
+    assert "FL2VA" in remake["model_guidance"]["slopfab_support"]
+    assert "ClipProj is accepted" in remake["model_guidance"]["slopfab_support"]
+    refs = ["--reference-video", "missing.y4m", "--reference-image", "first.png",
+            "--reference-image", "second.png"]
+    for mode in ("swap", "edit"):
+        selected = select("MyVideo", "--remake", mode, *refs, "--driving-audio", "source.wav", "--shots", "2")
+        assert selected["use_case"] == "remake" and selected["remake_mode"] == mode
+        assert selected["example"]["mode"] == mode
+        bindings = selected["reference_bindings"]
+        assert [b["label"] for b in bindings] == ["<Video 1>", "<Picture 1>", "<Picture 2>", "source soundtrack"]
+        assert bindings[-1]["generation_option"] == "--driving-audio"
+        assert bindings[1]["role"] == "painted target frame"
+        assert "<Audio 1>" not in json.dumps(bindings)
+    for args in [[], ["--reference-video", "a"], ["--reference-image", "b"],
+                 refs + ["--reference-video", "another"], refs + ["--reference-audio", "a"],
+                 refs + ["--first-frame", "a"], refs + ["--continuation"], refs + ["--character-swap"],
+                 refs + ["--task", "image"], refs + ["--remake", "edit"],
+                 refs + ["--reference-image", "c", "--reference-image", "d", "--reference-image", "e"]]:
+        run("prompts", "select", "--model", "h3", "--remake", "swap", *args, code=2)
+    run("prompts", "select", "--model", "h3", "--remake", "bad", *refs, code=2)
+    run("prompts", "select", "--model", "krea2", "--remake", "swap", *refs, code=2)
+    run("prompts", "select", "--model", "h3", "--driving-audio", "source.wav", code=2)
 
     initial = select("h3", "--first-frame", "opening å.png")
     assert initial["use_case"] == "i2va" and "0.00 seconds" in initial["prompt_template"]
@@ -120,5 +153,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-prompts-") as temporary:
     result = subprocess.run([exe, "--agent", "--config", str(config), "help", "prompts"],
                             cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0 and "--first-frame" in result.stdout
+    assert "--remake" in result.stdout and "--driving-audio" in result.stdout
+    assert run("system", "capabilities")["data"]["viggle_remake"]["prompting_guide"] == "slopfab prompts get h3 remake"
 
 print("prompting CLI passed")

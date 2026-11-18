@@ -535,6 +535,7 @@ Value capabilities() {
           {"source_audio", str("pinned through audio VAE; silence for silent sources")},
           {"merged_model_needs_lora", Value(false)}, {"timeline_pins", Value(true)},
           {"pin_option", str("--pin FRAME (once per reference image)")},
+          {"prompting_guide", str("slopfab prompts get h3 remake")},
           {"keyframe_until_default", num(0.9)}})},
       {"syncnet", Value(Object{{"command", str("slopfab video syncnet VIDEO --model syncnet_v2.model --face-model sfd_face.pth")},
           {"model_sha256", str("961e8696f888fce4f3f3a6c3d5b3267cf5b343100b238e79b2659bff2c605442")},

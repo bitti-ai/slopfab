@@ -47,6 +47,39 @@
   "guides": [
     {
       "model": "h3",
+      "use_case": "remake",
+      "title": "Viggle Remake: painted frames, timeline pins and six-section prompts",
+      "reviewed": "2026-11-18",
+      "guidance": "Describe the finished video, not an editing command. Define each <Subject N> distinctly, including features that separate it from similar subjects. State changes and preserved details explicitly in retention_analysis; do not call a changed property preserved. Use all six sections in the listed order; free-form prompts have not been evaluated upstream. In detailed_description, label shots [Shot N] and use MM:SS.mmm timestamps within the requested clip.",
+      "prompt_sections": ["subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape", "non_diegetic_music"],
+      "painted_frames": "Repaint source frames to depict the intended appearance. Usually use one per shot, adding views when a subject turns or another enters. Match the canvas or source aspect ratio. Unpinned images guide appearance; pinning also anchors composition and shot timing. References remain available after their timeline pins are released.",
+      "binding": "<Video 1> names the source; <Picture N> names the N-th painted image; <Subject N> identifies an entity that changes or remains. Supply one source video and one to four painted images. Omit --pin entirely or repeat it once per painted image, in the same order.",
+      "model_guidance": {
+        "name": "Viggle Remake (H3 swap/edit)",
+        "guidance": "This use case uses the six-section Remake template below. Choose --remake swap for character changes or --remake edit for objects, background, weather or lighting.",
+        "slopfab_support": "Remake uses its merged transformer alone, or a pruned H3 FL2VA base plus the matching Remake LoRA. Do not add another mode LoRA to merged weights. Remake is an exception to ordinary H3 reference routing: its text-only labels accompany VAE-encoded references. ClipProj is accepted as an approximate text-only conditioner; the 32B H3 encoder matches the upstream recipe.",
+        "sources": ["https://huggingface.co/Viggle/Viggle-Remake/blob/main/PROMPTING.md"]
+      },
+      "slopfab_support": "Use --remake swap|edit, --reference-video SOURCE and repeat --reference-image PAINTED (upstream --ref). --pin values are zero-based source/output frames below --frames. The first timeline image is stretched to the canvas; later images are cover-cropped. --keyframe-until defaults to 0.9: keep pins while video sigma >= 0.9, then remove them. This is four evaluations on the default six-step grid; custom --steps still follows sigma. Pins do not copy output pixels. Use 90..345 frames in 17*n+5 form at 24 fps. --driving-audio SOURCE.wav attaches the source soundtrack as pinned target audio through the audio VAE; it is not a separate <Audio N> reference or sample-identical passthrough. A silent Y4M source without driving audio stays silent regardless of prompt text. Timeline pins support CUDA/Vulkan but not VEDA attention.",
+      "prompt_template": "subject_definitions: <Video 1> is {{observed_source_scene}}. <Picture 1> is {{painted_target_frame_and_shot}}. {{additional_pictures_if_supplied}} <Subject 1> is {{distinct_target_identity_or_object}}. {{other_subjects_if_present}}\n\nsummary: {{description_of_the_finished_video}}\n\nretention_analysis: {{explicit_changes}} {{details_that_remain_from_the_source}}\n\ndetailed_description: [Shot 1] {{start_MM:SS.mmm}}-{{end_MM:SS.mmm}} {{observable_target_action_composition_camera_and_sound}} {{additional_shots_with_in_range_timestamps}}\n\noverall_soundscape: {{actual_source_ambience_and_dialogue_or_silence}}\n\nnon_diegetic_music: {{actual_source_music_or_N/A}}",
+      "example": {
+        "mode": "swap",
+        "assumption": "Illustration only: a silent 90-frame source shows one performer waving beside a bench; its painted frame depicts a blue robot in that position.",
+        "prompt": "subject_definitions: <Video 1> shows a performer in a grey jacket beside a park bench. <Picture 1> depicts <Subject 1>, a blue metal robot with round amber eyes and a white scarf, in the performer's position.\n\nsummary: A blue robot waves beside the park bench.\n\nretention_analysis: The performer has the robot's appearance from <Picture 1>. The bench, trees, camera movement and timing of the wave remain as in <Video 1>.\n\ndetailed_description: [Shot 1] 00:00.000-00:03.750 <Subject 1> raises its right hand and waves, following the source performance. The camera tracks gently toward the bench.\n\noverall_soundscape: Complete silence.\n\nnon_diegetic_music: N/A"
+      },
+      "edit_example": {
+        "mode": "edit",
+        "assumption": "Illustration only: a silent 90-frame source shows a cyclist on a dry road; its painted frame shows the same scene in rain.",
+        "prompt": "subject_definitions: <Video 1> shows <Subject 1>, a cyclist in a yellow jacket, on a dry road. <Picture 1> depicts the same cyclist and road during rainfall.\n\nsummary: A cyclist rides along a wet road beneath falling rain.\n\nretention_analysis: The road is wet and the sky is overcast as in <Picture 1>. The cyclist's identity, yellow jacket, route, speed and the source camera movement remain unchanged.\n\ndetailed_description: [Shot 1] 00:00.000-00:03.750 <Subject 1> pedals along the road. Rain streaks cross the frame, and the wet pavement reflects the yellow jacket. The camera follows the movement in <Video 1>.\n\noverall_soundscape: Complete silence, matching the silent source.\n\nnon_diegetic_music: N/A"
+      },
+      "sources": [
+        "https://huggingface.co/Viggle/Viggle-Remake/blob/main/PROMPTING.md",
+        "https://huggingface.co/Viggle/Viggle-Remake/blob/main/inference/sample.py",
+        "https://huggingface.co/Viggle/Viggle-Remake/tree/main/examples/prompts"
+      ]
+    },
+    {
+      "model": "h3",
       "use_case": "character-swap",
       "title": "Replace a character while following a source performance",
       "guidance": "Use the Character Swap V1.5 LoRA on H3 Ref2VA. Identify one person to replace in <Video 1> and assign the new identity, hair, clothing and proportions to <Picture 1>. Describe the action that should carry over and the scene elements to retain. Use a short continuous shot; do not promise exact pose, lip synchronization or background preservation.",

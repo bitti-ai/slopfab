@@ -1,4 +1,4 @@
-17
+18
 
 # Slopfab media generation
 
@@ -55,9 +55,11 @@ If the user delegates choices, state reasonable defaults and proceed.
 
 - **Remake existing footage:** use Viggle Remake (`--remake swap` for characters,
   `--remake edit` for scene changes), a 24 fps source, one to four painted
-  frames and a six-section H3 prompt. Attach the source WAV with
+  frames and a six-section H3 prompt. Read `slopfab prompts get h3 remake`
+  for the official format, painted-frame guidance and timeline pins. Attach the source WAV with
   `--driving-audio`. Merged Remake weights already include their mode LoRA;
-  do not add it again. Render 90..345 frames in 17*n+5 windows; split at cuts.
+  do not add it again. Render 90..345 frames in 17*n+5 windows. Use `--pin`
+  once per painted image when shot timing or composition matters; split longer clips as needed.
 
 - **Short single shot:** give one coherent action and camera direction; keep
   subject, lighting and setting consistent rather than packing in scene changes.

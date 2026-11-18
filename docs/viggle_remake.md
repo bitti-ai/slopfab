@@ -87,6 +87,12 @@ that order. Describe the result, reference the source as `<Video 1>` and the
 painted frames as `<Picture 1>` through `<Picture 4>`, and keep timestamps
 within the clip. See upstream's [prompt guide](https://huggingface.co/Viggle/Viggle-Remake/blob/main/PROMPTING.md).
 
+Retrieve the built-in offline guide with `slopfab prompts get h3 remake`.
+For ordered reference bindings and a swap/edit example, use
+`slopfab prompts select --model h3 --remake swap --reference-video source.y4m --reference-image painted.png`.
+The guide includes the official format and pinning advice, adapted to Slopfab's
+options; it does not rewrite generation prompts automatically.
+
 Remake tokenizes the source/timestamp/image labels and prompt as separate
 text segments. Qwen receives no image/video vision tokens; the video VAE
 encodes the actual references. The 32B H3 encoder matches the upstream

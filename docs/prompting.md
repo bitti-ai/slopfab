@@ -9,10 +9,12 @@ structured responses; each successful retrieval returns one `result` with `data`
 slopfab prompts list
 slopfab prompts list --model h3
 slopfab prompts get h3 fl2va
+slopfab prompts get h3 remake
 slopfab prompts select --model h3 --first-frame opening.png --last-frame ending.png --duration 5.875
 slopfab prompts select --model h3 --last-frame ending.png
 slopfab prompts select --model h3 --reference-image character.png
 slopfab prompts select --model h3 --character-swap --reference-image character.png --reference-video source.y4m
+slopfab prompts select --model h3 --remake swap --reference-video source.y4m --reference-image painted.png --driving-audio source.wav
 slopfab prompts select --model moss --layout
 slopfab prompts select --model fibo2 --reference-image room.png --reference-image object.png
 slopfab prompts select --model minimax_music3 --instrumental
@@ -27,7 +29,7 @@ generation. A bare `prompts` lists the catalog; `help prompts` describes selecto
 
 | Model | Use cases |
 | --- | --- |
-| `h3` | `t2va`, `i2va`, `fl2va`, `l2va`, `ref2va`, `character-swap`, `continuation`, `image`, `edit` |
+| `h3` | `t2va`, `i2va`, `fl2va`, `l2va`, `ref2va`, `remake`, `character-swap`, `continuation`, `image`, `edit` |
 | `krea2` | `image` |
 | `moss` | `image`, `layout` |
 | `fibo2` | `image`, `edit`, `multi-reference` |
@@ -54,6 +56,23 @@ equal or newer versions stay untouched. Guides are also available through normal
 help and capabilities.
 
 ## H3 frame roles and local execution
+
+For Viggle Remake, retrieve `prompts get h3 remake`, or select with
+`--model h3 --remake swap|edit`, one `--reference-video` and one to four
+`--reference-image` paths. Optional `--driving-audio` binds the source soundtrack
+as target audio, without introducing an `<Audio N>` reference. Selection returns
+ordered source/painted-frame bindings and a mode-specific illustrative example.
+
+The embedded Remake guide summarizes the [official prompting guide](https://huggingface.co/Viggle/Viggle-Remake/blob/main/PROMPTING.md),
+with six ordered sections, subject labels, target-description wording, explicit
+retention and changes, shot timestamps, painted-frame selection and timeline pins.
+It includes original swap/edit examples and maps upstream options to Slopfab.
+Remake-specific model guidance replaces generic H3 guidance for this use case;
+its FL2VA adapter and text-only conditioning paths differ from ordinary Ref2VA.
+Use `--pin` and `--keyframe-until` on the generation command as described by the
+guide. Retrieval works offline from the executable; no generation or prompt
+rewriting occurs. Fill the remaining shot-timestamp placeholders after validating
+the output duration.
 
 The H3 video templates follow the upstream mode-specific alignment prelude and
 section order. T2VA has no image alignment. I2VA starts from Picture 1; FL2VA
@@ -90,8 +109,9 @@ to one and fills the ending shot number; it does not invent cuts or a shot list.
 Write any additional shots and their cut times yourself. The catalog's examples
 retain their own stated assumptions even when selectors customize the template.
 
-ClipProj is text-only in Slopfab; references need the ordinary image-capable
-conditioner. A guide cannot add unsupported conditioning to a model.
+ClipProj is text-only in Slopfab; ordinary H3 references need the image-capable
+conditioner. Remake's text-label conditioning is a supported exception. A guide
+cannot add unsupported conditioning to a model.
 
 ## Images and music
 
@@ -118,6 +138,8 @@ depend on this resource.
 
 - H3: [base video modes](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/base-en.txt)
   and [reference modes](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/h3-prompt-writing/references/ref-en.txt).
+- Viggle Remake: [official prompting guide](https://huggingface.co/Viggle/Viggle-Remake/blob/main/PROMPTING.md)
+  and [reference implementation](https://huggingface.co/Viggle/Viggle-Remake/blob/main/inference/sample.py).
 - Krea: [official walkthrough](https://www.krea.ai/blog/krea-2-deep-dive-walkthrough)
   and [model repository](https://github.com/krea-ai/krea-2).
 - MOSS: [model card](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT)
