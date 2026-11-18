@@ -465,7 +465,7 @@ const CommandHelp kCommands[] = {
      "  --bridge-left-margin <n>     replace left tail, multiple of 17 (default 17).\n"
      "  --bridge-right-margin <n>    replace right head, multiple of 17 (default 17).\n"
      "  --bridge-context <n>         locked context per side, 17*k+5 frames (default 22).\n"
-     "  --remake swap|edit          Viggle Remake: source video + 1..4 painted frames, 6 steps\n"
+     "  --remake swap|edit          Viggle Remake: source video + 1..4 painted frames, default 6 steps (--steps N)\n"
      "  --mode up3|up4|hf8         Refinement mode for video regenerate (default up3)\n"
      "  --regenerate-silence FILE  Published silence_audio_124f.safetensors (auto-discovered)\n"
      "  --regenerate-upsampler F   H3 3D latent upscaler for up3/up4 (auto-discovered)\n"

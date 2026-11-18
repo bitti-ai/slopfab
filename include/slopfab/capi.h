@@ -753,7 +753,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* requ
 
 /* Since 1.51. Viggle Remake: mode is "swap", "edit", or "" to disable.
  * Requires one source video, 1..4 painted images and a six-section H3 prompt.
- * Uses the trained six-step Euler grid and preserves the source soundtrack
+ * Defaults to the trained six-step Euler grid; set_steps selects other counts
+ * with a uniform base schedule and shifts 12/3. Preserves the source soundtrack
  * through the audio VAE (silence for a silent source). A merged Remake INT8
  * transformer needs no LoRA; a pruned FL2VA base needs the matching mode LoRA.
  * References set appearance; upstream optional timeline pins are not exposed. */

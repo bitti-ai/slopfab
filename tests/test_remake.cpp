@@ -44,9 +44,6 @@ SLOPFAB_TEST(remake_schedules_conditioning_and_validation) {
   r.remake_mode = "edit";
   const std::vector<float> edit{1, .983607f, .96f, .923077f, .857143f, .705882f, 0};
   CHECK_CLOSE(resolve_plan(r).video_sigmas, edit, 1e-6, "upstream Remake edit sigma grid");
-  r.num_inference_steps = 4;
-  CHECK(rejects([&] { resolve_plan(r); }));
-  r.num_inference_steps = 0;
   r.sampling.video_sigma_shift = 3;
   CHECK(rejects([&] { resolve_plan(r); }));
   r.sampling = {};
@@ -64,6 +61,59 @@ SLOPFAB_TEST(remake_schedules_conditioning_and_validation) {
   r = remake_request();
   r.prompt.clear();
   CHECK(rejects([&] { resolve_plan(r); }));
+}
+
+SLOPFAB_TEST(remake_custom_step_counts_and_sampling_precedence) {
+  for (const auto* mode : {"swap", "edit"}) {
+    auto r = remake_request();
+    r.remake_mode = mode;
+    const auto published = resolve_plan(r);
+    for (const int steps : {1, 4, 6, 12}) {
+      r.num_inference_steps = steps;
+      const auto p = resolve_plan(r);
+      CHECK(p.num_inference_steps == steps);
+      CHECK(p.video_timesteps.size() == size_t(steps));
+      CHECK(p.audio_timesteps.size() == size_t(steps));
+      CHECK(p.video_sigmas.size() == size_t(steps + 1));
+      CHECK(p.audio_sigmas.size() == size_t(steps + 1));
+      CHECK(p.sampler == sampler::SamplerKind::kEuler);
+      CHECK(p.video_sigma_shift == 12 && p.audio_sigma_shift == 3);
+      CHECK(p.conditioning.pin_target_audio && !p.conditioning.allow_caches);
+      CHECK(p.fixed_sampling_grid == (steps == 6));
+      if (steps == 6) {
+        CHECK(p.video_sigmas == published.video_sigmas);
+        CHECK(p.audio_sigmas == published.audio_sigmas);
+      } else {
+        for (int i = 0; i <= steps; ++i) {
+          const double base = 1.0 - double(i) / steps;
+          CHECK(std::abs(p.video_sigmas[i] - 12 * base / (1 + 11 * base)) < 1e-6);
+          CHECK(std::abs(p.audio_sigmas[i] - 3 * base / (1 + 2 * base)) < 1e-6);
+        }
+      }
+      RunOptions options;
+      validate_generation_options(r, p, options);
+    }
+    r.num_inference_steps = 0;
+    r.sampling.default_steps = 4;
+    CHECK(resolve_plan(r).num_inference_steps == 4);
+    r.num_inference_steps = 12;
+    CHECK(resolve_plan(r).num_inference_steps == 12);
+    r.num_inference_steps = 6;
+    CHECK(resolve_plan(r).video_sigmas == published.video_sigmas);
+    for (const int invalid : {-1, 1000001}) {
+      r.num_inference_steps = invalid;
+      CHECK(rejects([&] { resolve_plan(r); }));
+    }
+    r.num_inference_steps = 4;
+    r.sampling.video_sigma_shift = 3;
+    CHECK(rejects([&] { resolve_plan(r); }));
+    r.sampling = {};
+    r.sampling.sampler = sampler::SamplerKind::kAb2;
+    CHECK(rejects([&] { resolve_plan(r); }));
+    r.sampling = {};
+    r.sampling.base_sigmas = std::vector<float>{1, .5f, 0};
+    CHECK(rejects([&] { resolve_plan(r); }));
+  }
 }
 
 SLOPFAB_TEST(remake_text_labels_order_and_silent_soundtrack) {
@@ -106,6 +156,21 @@ SLOPFAB_TEST(remake_checkpoint_identity_and_double_adapter_guard) {
   r.remake_mode = "edit";
   CHECK(rejects([&] { resolve_plan(r); }));
   write_safetensors(path.string(), tensors, {{"source", "Viggle/Viggle-Remake"}, {"mode", "edit"}});
+  CHECK(resolve_plan(r).num_inference_steps == 6);
+  std::string sampling = R"({"version":1,"default_steps":6,"base_sigmas":[)";
+  const auto defaults = remake_sampling("edit");
+  for (const float sigma : *defaults.base_sigmas) {
+    if (sampling.back() != '[') sampling += ',';
+    sampling += std::to_string(sigma);
+  }
+  sampling += "]}";
+  write_safetensors(path.string(), tensors, {{"source", "Viggle/Viggle-Remake"},
+      {"mode", "edit"}, {"slopfab.sampling", sampling}});
+  r.num_inference_steps = 12;
+  const auto custom = resolve_plan(r);
+  CHECK(custom.num_inference_steps == 12 && custom.video_sigmas.size() == 13);
+  CHECK(!custom.fixed_sampling_grid);
+  r.num_inference_steps = 0;
   CHECK(resolve_plan(r).num_inference_steps == 6);
   write_safetensors(path.string(), tensors, {{"source", "MiniMaxAI/MiniMax-H3"}});
   CHECK(rejects([&] { resolve_plan(r); }));

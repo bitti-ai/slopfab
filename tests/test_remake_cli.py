@@ -31,9 +31,17 @@ with tempfile.TemporaryDirectory(prefix='slopfab-remake-') as temp:
     assert plan['conditioning'] == {'pin_target_audio':True,'include_reference_audio':False}
     assert 'fixed 362-token' not in plan['description']
     assert 'shift 12)' in plan['description']
+    for steps in (1, 4, 6, 12):
+        assert run(*base,'--steps',steps)['plans'][0]['steps'] == steps
+    sampling = root/'sampling.json'
+    sampling.write_text(json.dumps({'version':1,'default_steps':4}))
+    assert run(*base,'--sampling-settings',sampling)['plans'][0]['steps'] == 4
+    assert run(*base,'--sampling-settings',sampling,'--steps','12')['plans'][0]['steps'] == 12
     for extras, message in [(['--remake','edit','--transformer',model],'does not match'),
                             (['--lora','adapter.safetensors'],'already contain'),
-                            (['--steps','4'],'six-step'),
+                            (['--steps','-1'],''),
+                            (['--steps','1000001'],''),
+                            (['--steps','4','--sampler','ab2'],'requires Euler'),
                             (['--frames','125'],'17*n+5'),
                             (['--remake','bad'],'swap or edit'),
                             (['--reference-audio','absent.wav'],'')]:
@@ -45,8 +53,11 @@ with tempfile.TemporaryDirectory(prefix='slopfab-remake-') as temp:
                'references':[{'type':'video','path':str(movie)},{'type':'image','path':'painted.png'}],
                'options':{'remake':'swap','frames':124}}
     assert run('requests','validate','--request','-',request=request)['plans'][0]['steps'] == 6
+    request['options']['steps'] = 12
+    assert run('requests','validate','--request','-',request=request)['plans'][0]['steps'] == 12
     caps = run('system','capabilities')['data']['viggle_remake']
     assert caps['steps'] == 6 and not caps['merged_model_needs_lora']
+    assert caps['default_steps'] == 6 and caps['custom_steps']
     help_text = subprocess.run([exe,'help','video','generate'],capture_output=True,text=True).stdout
     assert '--remake' in help_text and '--animate' not in help_text
-print('PASS: Remake CLI/JSON, discovery, six-step plans, merged guards and silent sources')
+print('PASS: Remake CLI/JSON, discovery, default/custom steps, merged guards and silent sources')

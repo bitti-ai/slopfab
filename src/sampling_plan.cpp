@@ -139,8 +139,6 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   if (!request.remake_mode.empty()) {
     const auto required = remake_sampling(request.remake_mode);
     if (request.schedule != sampler::ScheduleKind::kDefault ||
-        (request.num_inference_steps && request.num_inference_steps != 6) ||
-        (overrides.default_steps && *overrides.default_steps != 6) ||
         (effective.sampler && effective.sampler != sampler::SamplerKind::kEuler) ||
         effective.audio_steps || effective.scheduler == sampler::SigmaSchedule::kBeta ||
         (effective.base_sigmas &&
@@ -149,8 +147,16 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
                       required.base_sigmas->begin(), [](float a, float b) { return std::abs(a-b) < 1e-6f; }))) ||
         effective.video_sigma_shift != required.video_sigma_shift ||
         effective.audio_sigma_shift != required.audio_sigma_shift)
-      throw std::invalid_argument("Remake requires its six-step Euler grid and shifts 12/3; omit alternate sampling settings");
+      throw std::invalid_argument("Remake requires Euler and shifts 12/3; omit alternate sampling grids and settings");
     overlay_sampling_settings(effective, required);
+    // Keep the published mode-specific grid at six steps. An explicit count
+    // selects the standard uniform base schedule at other lengths, even when
+    // the checkpoint or adapter metadata carries the published six-step grid.
+    effective.default_steps = overrides.default_steps.value_or(*required.default_steps);
+    const int steps = request.num_inference_steps == 0 ? *effective.default_steps
+                                                       : request.num_inference_steps;
+    if (steps != *required.default_steps)
+      effective.base_sigmas.reset();
     plan.sampling_sources.push_back("Viggle Remake " + request.remake_mode);
   }
   if (has_settings(overrides))

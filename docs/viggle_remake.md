@@ -66,14 +66,22 @@ embeddings must use the same labels and contain only text modality tags.
 
 ## Sampling and library API
 
-Both modes use six Euler updates, video/audio shifts 12/3 and CFG 1. The CLI
-selects these automatically and rejects incompatible step counts, grids,
-caches and other editing modes. The video sigma grids are:
+Both modes default to six Euler updates, video/audio shifts 12/3 and CFG 1.
+Set `--steps N` (for example, `--steps 12`) to change the number of updates.
+JSON requests use `options.steps`; library requests use `num_inference_steps`
+or `sampling.default_steps`, and the C API uses `slopfab_request_set_steps`.
+The explicit step count takes precedence over `sampling.default_steps`.
+At six steps, the published mode-specific video sigma grids are preserved:
 
 | Mode | Video sigmas, including terminal zero |
 |---|---|
 | swap | `1, .990476, .965243, .923077, .8, .631579, 0` |
 | edit | `1, .983607, .96, .923077, .857143, .705882, 0` |
+
+Other step counts use a uniform unshifted grid from 1 to 0 with the same
+video/audio shifts 12/3. These are custom schedules, not the published
+six-step recipe. The CLI still rejects alternate samplers, grids, shifts,
+caches and other editing modes.
 
 The catalog also records the corresponding **unshifted** `base_sigmas`;
 these are not interchangeable with the video sigma list. Source audio stays
