@@ -207,6 +207,7 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           "cache threshold and skip interval are alternatives");
   require(o.attention_band >= 0, "attention band must be nonnegative");
   if (o.attention_mode == AttentionMode::kVeda) {
+    require(r.remake_pins.empty(), "Remake timeline pins require attention without VEDA's fixed predictor layout");
     require(!o.veda.predictor_path.empty(), "VEDA requires a predictor bundle (--veda-predictor)");
     require(!p.model.compressed_attention, "VEDA cannot be combined with FastH3 VSA");
     if (o.veda.generated_sparsity != "trained")

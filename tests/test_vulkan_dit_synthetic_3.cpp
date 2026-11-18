@@ -1,6 +1,7 @@
 #include "detail/vulkan_fixture.h"
 #include "slopfab/sampler/noise.h"
 #include "slopfab/dit/pdd.h"
+#include "slopfab/remake.h"
 
 SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   using namespace slopfab;
@@ -116,6 +117,49 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   CHECK(result.audio_rows == audio);
   CHECK(result.video_rows != std::vector<float>(t.video_output_rows * 4, .5f));
   model.unload();
+  // Remake removes timeline keyframes mid-trajectory, retaining ordinary
+  // references, output latents, cached text and pinned source audio.
+  for (float threshold : {0.f, .9f, 1.f}) {
+    auto pinned = config;
+    const auto p = dit::build_ref2va_packed_sequence({1, 1, 1},
+        {{dit::ReferenceKind::kVideo, 7, 4, 4, 0},
+         {dit::ReferenceKind::kImage, 1, 4, 4, 0},
+         {dit::ReferenceKind::kImage, 1, 4, 4, 0, true, 10}}, 1, 4, 4, 1);
+    pinned.layout = p.layout; pinned.indices = p.indices; pinned.position_ids = p.position_ids;
+    pinned.keyframe_rows = 4; pinned.keyframe_until = threshold;
+    auto& pt = pinned.transformer;
+    pt.main.block.sequence = p.layout.total_rows();
+    pt.video_rows = uint32_t(p.indices.video.size());
+    pt.video_output_start = p.layout.video_start(); pt.audio_output_start = p.layout.audio_start();
+    auto engine = ExactH3Denoiser::create(context, pinned);
+    engine.load(checkpoint);
+    std::vector<float> iv(size_t(pt.video_rows) * 4, .5f);
+    std::fill_n(iv.begin(), size_t(p.layout.num_condition_video - 4) * 4, 13.f);
+    std::fill_n(iv.begin() + size_t(p.layout.num_condition_video - 4) * 4, 16, 23.f);
+    for (int steps : {6, 12})
+      for (bool cancel : {false, true}) {
+        sampler::FlowScheduler v(12), a(3);
+        if (steps == 6) {
+          const auto sampling = remake_sampling("swap");
+          v.set_base_sigmas(*sampling.base_sigmas); a.set_base_sigmas(*sampling.base_sigmas);
+        } else {
+          v.set_timesteps(steps); a.set_timesteps(steps);
+        }
+        engine.prepare(prompt.data(), prompt.size(), iv.data(), iv.size(), audio.data(), audio.size());
+        int calls = 0;
+        const auto out = engine.run(v, a, [&](uint32_t step, uint32_t) { return !cancel || step < 4; },
+            [&](uint32_t step, const std::vector<float>& vr, const std::vector<float>& ar) {
+              ++calls;
+              CHECK(ar == audio);
+              CHECK(vr.size() == size_t(pt.video_output_rows) * 4);
+              for (float value : vr)
+                CHECK_NEAR(value, .5f + .25f * (1 - v.sigmas()[step + 1]), 1e-5);
+            });
+        CHECK(calls == (cancel ? 5 : steps));
+        CHECK(out.cancelled == cancel && out.audio_rows == audio);
+      }
+    engine.unload();
+  }
   // Context noise needs more than four unique timestep codes. Exercise real
   // device copies, delayed Capstone resize, repeat runs and cancellation.
   {

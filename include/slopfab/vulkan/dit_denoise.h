@@ -35,6 +35,8 @@ struct ExactH3DenoiseConfig {
   int attention_band = 0;
   // Keep the prepared target audio rows fixed and condition them at t=1.
   bool pin_target_audio = false;
+  int keyframe_rows = 0;
+  float keyframe_until = 0.9f;
   // Opt-in host estimator. Downloads target latents/velocities while active.
   dit::MotionCacheConfig motion_cache;
   // Optional canonical four-int range record per global 128-query tile.

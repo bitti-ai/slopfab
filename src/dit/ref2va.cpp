@@ -65,6 +65,35 @@ void audio(std::vector<double>& p, int start, int n, double origin, const std::v
 }
 } // namespace
 
+Ref2VAPackedSequence release_video_keyframes(const SequenceLayout& layout,
+    const PackedIndices& indices, const std::vector<double>& positions, int rows) {
+  if (rows <= 0 || rows > layout.num_condition_video ||
+      indices.video.size() != size_t(layout.num_condition_video + layout.num_video_rows) ||
+      indices.tags.size() != size_t(layout.total_rows()) || positions.size() != indices.tags.size() * 3)
+    throw std::invalid_argument("invalid keyframe release geometry");
+  const int hi = layout.audio_start(), lo = hi - rows;
+  const int first = layout.num_condition_video - rows;
+  for (int i = 0; i < rows; ++i)
+    if (indices.video[first + i] != lo + i)
+      throw std::invalid_argument("keyframes must be the final contiguous conditioning block");
+  Ref2VAPackedSequence out{layout, indices, positions};
+  out.layout.num_condition_video -= rows;
+  auto& segments = out.layout.reference_segments;
+  for (const auto& segment : segments)
+    if (segment.start < lo && segment.start + segment.rows > lo)
+      throw std::invalid_argument("keyframe release splits a reference segment");
+  segments.erase(std::remove_if(segments.begin(), segments.end(),
+      [&](const auto& segment) { return segment.start >= lo; }), segments.end());
+  out.indices.video.erase(out.indices.video.begin() + first, out.indices.video.begin() + first + rows);
+  for (auto* stream : {&out.indices.video, &out.indices.audio, &out.indices.text})
+    for (auto& index : *stream)
+      if (index >= hi) index -= rows;
+  out.indices.tags.erase(out.indices.tags.begin() + lo, out.indices.tags.begin() + hi);
+  out.position_ids.erase(out.position_ids.begin() + size_t(lo) * 3,
+                         out.position_ids.begin() + size_t(hi) * 3);
+  return out;
+}
+
 int ReferenceGeometry::video_rows() const {
   return kind == ReferenceKind::kAudio
              ? 0

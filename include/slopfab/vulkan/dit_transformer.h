@@ -55,7 +55,9 @@ public:
   void load(const SafeTensors& checkpoint);
   // Append/remove model-call video context while keeping output heads, audio,
   // text cache and all model weights unchanged. No batch may be in flight.
-  void resize_video_context(uint32_t video_rows, std::shared_ptr<const dit::VsaTiles> tiles);
+  // output_shift moves both output slices when removing/inserting references.
+  void resize_video_context(uint32_t video_rows, std::shared_ptr<const dit::VsaTiles> tiles,
+                            int output_shift = 0);
   void unload() noexcept;
   bool loaded() const noexcept;
   bool text_prepared() const noexcept;

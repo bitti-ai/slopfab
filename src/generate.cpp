@@ -1,5 +1,6 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
+#include "slopfab/remake.h"
 #include "slopfab/h3_image.h"
 #include "generation/preview.h"
 
@@ -305,13 +306,16 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   const bool masked_image_edit = plan.model.family == "h3_image" && request.image_edit.image &&
                                   !request.image_edit.invert_mask;
   // In-memory edit sources are not represented in the file-reference cache key.
-  const bool cache_references = options.reuse_models && !masked_image_edit;
+  // Timeline images have separate canvas fitting and are encoded with their
+  // ordinary references in the same encoder session.
+  const bool cache_references = options.reuse_models && !masked_image_edit && request.remake_pins.empty();
   const auto image_paths = request.conditioning_image_paths();
   const std::vector<std::string> reference_identities =
       options.reuse_models ? reference_image_identities(request) : std::vector<std::string>();
   const std::string reference_key =
       options.reuse_models ? reference_cache_key(request, reference_identities) + arithmetic_key : std::string();
   std::vector<RGBImage> owned_reference_images;
+  std::vector<RGBImage> remake_keyframes;
   std::vector<RGBImage>& reference_images =
       cache_references ? reuse.reference_images : owned_reference_images;
   const bool reference_cache_hit =
@@ -348,6 +352,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
           std::printf("reference   %s (%dx%d)\n", path.c_str(), image.width, image.height);
         }
         int resized_h = 0, resized_w = 0;
+        if (!request.remake_pins.empty())
+          remake_keyframes.push_back(prepare_remake_keyframe(image, plan.canvas_width,
+              plan.canvas_height, remake_keyframes.empty()));
         const bool end_anchor = !request.end_anchor_path.empty() &&
                                 reference_images.size() == request.reference_image_paths.size();
         if (end_anchor) {
@@ -580,6 +587,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     std::vector<float> condition_video_rows;
     std::vector<float> condition_audio_rows;
     std::vector<float> end_anchor_rows;
+    std::vector<float> remake_keyframe_rows;
     std::vector<dit::ReferenceGeometry> reference_geometry;
     if (!reference_images.empty()) {
       if (request.video_vae_path.empty()) {
@@ -608,6 +616,18 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         vae_file.open(request.video_vae_path);
         const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
         const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
+        const auto encode_keyframes = [&](auto& encoder) {
+          for (size_t i = 0; i < remake_keyframes.size(); ++i) {
+            const auto& image = remake_keyframes[i];
+            auto rows = encode_image(encoder, image, mean, stddev);
+            const uint64_t seed = request.seed ^ (0x9e3779b97f4a7c15ULL *
+                (request.reference_media.size() + reference_images.size() + i + 1));
+            const auto noise = sampler::video_noise(seed, 1, image.height / 16, image.width / 16);
+            const auto packed = vae::patchify_keyframe_latents(noise.data(), image.height / 16, image.width / 16);
+            sampler::FlowScheduler::scale_noise(rows.data(), packed.data(), 0.999f, rows.size(), rows.data());
+            remake_keyframe_rows.insert(remake_keyframe_rows.end(), rows.begin(), rows.end());
+          }
+        };
         if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
           vae::KeyframeEncoder image_encoder(vae_file);
@@ -616,6 +636,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
             geometry.push_back(
                 {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
           }
+          encode_keyframes(image_encoder);
 #else
           throw std::logic_error("CUDA inference compiled out after validation");
 #endif
@@ -629,6 +650,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
             geometry.push_back(
                 {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
           }
+          encode_keyframes(image_encoder);
           if (options.verbose) {
             const auto& stats = image_encoder.stats();
             std::printf(
@@ -879,6 +901,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 
     // Temporal guides follow all ordinary references. Keep the keyframe last
     // even when media/refmods or continuation have appended their own rows.
+    if (!request.remake_pins.empty()) {
+      const auto pins = remake_keyframe_geometry(request.remake_pins, layout);
+      reference_geometry.insert(reference_geometry.end(), pins.begin(), pins.end());
+      condition_video_rows.insert(condition_video_rows.end(), remake_keyframe_rows.begin(), remake_keyframe_rows.end());
+    }
     if (!request.end_anchor_path.empty()) {
       reference_geometry.push_back(end_anchor_geometry(layout));
       condition_video_rows.insert(condition_video_rows.end(), end_anchor_rows.begin(), end_anchor_rows.end());
@@ -1021,6 +1048,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       in.sampling_effect = sampling_effect;
       in.inpaint = inpaint.get();
       in.continuation = continuation_constraint.get();
+      in.keyframe_rows = int(request.remake_pins.size()) * live.rows_per_frame();
+      in.keyframe_until = request.remake_keyframe_until;
       in.layout = &live;
       in.position_ids = &pos;
       in.indices = &idx;
@@ -1192,6 +1221,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       config.seed = request.seed;
       config.inpaint = inpaint;
       config.continuation = continuation_constraint;
+      config.keyframe_rows = int(request.remake_pins.size()) * live.rows_per_frame();
+      config.keyframe_until = request.remake_keyframe_until;
       config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
       if (plan.model.family == "ph3_image")

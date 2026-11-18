@@ -399,7 +399,8 @@ void ExactH3Transformer::unload() noexcept {
 }
 
 void ExactH3Transformer::resize_video_context(uint32_t video_rows,
-                                             std::shared_ptr<const dit::VsaTiles> tiles) {
+                                             std::shared_ptr<const dit::VsaTiles> tiles,
+                                             int output_shift) {
   if (!loaded() || !impl_->config.video_output_rows || impl_->config.main.block.veda)
     throw std::invalid_argument("Vulkan H3 transformer: context resize needs explicit output rows");
   auto c = impl_->config;
@@ -407,6 +408,13 @@ void ExactH3Transformer::resize_video_context(uint32_t video_rows,
   if (sequence > INT32_MAX)
     throw std::invalid_argument("Vulkan H3 transformer: context sequence overflows");
   c.video_rows = video_rows;
+  if (int64_t(c.video_output_start) + output_shift < 0 ||
+      int64_t(c.audio_output_start) + output_shift < 0 ||
+      int64_t(c.video_output_start) + output_shift > INT32_MAX ||
+      int64_t(c.audio_output_start) + output_shift > INT32_MAX)
+    throw std::invalid_argument("Vulkan H3 transformer: invalid output shift");
+  c.video_output_start = uint32_t(int64_t(c.video_output_start) + output_shift);
+  c.audio_output_start = uint32_t(int64_t(c.audio_output_start) + output_shift);
   c.main.block.sequence = static_cast<uint32_t>(sequence);
   c.main.block.vsa_tiles = std::move(tiles);
   validate_config(c);

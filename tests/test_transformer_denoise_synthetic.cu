@@ -1,6 +1,58 @@
 #include "detail/transformer_fixture.h"
 #include "slopfab/sampler/noise.h"
 #include "slopfab/generate.h"
+#include "slopfab/remake.h"
+
+SLOPFAB_TEST_CATEGORY(denoise_remake_pin_release_preserves_targets, "synthetic") {
+  using namespace slopfab;
+  const auto packed = dit::build_ref2va_packed_sequence({1, 1, 1},
+      {{dit::ReferenceKind::kImage, 1, 4, 4, 0},
+       {dit::ReferenceKind::kImage, 1, 4, 4, 0, true, 10}}, 2, 4, 4, 3);
+  const auto& l = packed.layout;
+  std::vector<float> guides(size_t(l.num_condition_video) * 96, 13.f);
+  std::fill(guides.begin() + 4 * 96, guides.end(), 23.f);
+  std::vector<float> initial(size_t(l.num_video_rows) * 96, .25f);
+  std::vector<float> soundtrack(size_t(l.num_audio_rows) * 32, -.5f);
+  for (const auto* mode : {"swap", "edit"})
+    for (int steps : {6, 12})
+      for (float threshold : {0.f, .9f, 1.f}) {
+        sampler::FlowScheduler v(12), a(3);
+        if (steps == 6) {
+          const auto settings = remake_sampling(mode);
+          v.set_base_sigmas(*settings.base_sigmas);
+          a.set_base_sigmas(*settings.base_sigmas);
+        } else {
+          v.set_timesteps(steps); a.set_timesteps(steps);
+        }
+        Transformer model;
+        auto in = make_denoise_inputs(l, packed.indices, v, a);
+        in.position_ids = &packed.position_ids;
+        in.keyframe_rows = 4; in.keyframe_until = threshold;
+        in.condition_video_rows = &guides;
+        in.init_video_rows = &initial; in.init_audio_rows = &soundtrack;
+        in.pin_target_audio = true;
+        int pinned_calls = 0, calls = 0;
+        in.velocity = [&](int step, const RowTimesteps& times, const float* vr, const float* ar,
+                          float* vv, float* av) {
+          ++calls;
+          const bool pinned = v.sigmas()[step] >= threshold;
+          pinned_calls += pinned;
+          const size_t cv = size_t(pinned ? 8 : 4) * 96;
+          CHECK(times.indices.size() == size_t(l.total_rows() - (pinned ? 0 : 4)));
+          CHECK(vr[0] == 13.f);
+          if (pinned) CHECK(vr[4 * 96] == 23.f);
+          CHECK_NEAR(vr[cv], .25f + .25f * (1 - v.sigmas()[step]), 1e-6);
+          CHECK(std::equal(soundtrack.begin(), soundtrack.end(), ar));
+          std::fill_n(vv, cv + initial.size(), .25f);
+          std::fill_n(av, soundtrack.size(), 100.f);
+        };
+        const auto out = dit::denoise(model, in);
+        CHECK(calls == steps && out.steps_computed == steps);
+        if (steps == 6 && threshold == .9f) CHECK(pinned_calls == 4);
+        CHECK(out.audio_rows == soundtrack);
+        for (float value : out.video_rows) CHECK_NEAR(value, .5f, 1e-6);
+      }
+}
 
 SLOPFAB_TEST_CATEGORY(denoise_preview_is_clean_and_does_not_change_trajectory, "synthetic") {
   using namespace slopfab;

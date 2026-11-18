@@ -1858,6 +1858,18 @@ SLOPFAB_TEST(capi_remake_plan_and_silent_source) {
   CHECK(slopfab_request_set_remake(request.handle, "edit") == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 6);
+  const int32_t pin = 123, invalid_pin = 124, negative = -1;
+  CHECK(slopfab_request_set_remake_pins(nullptr, &pin, 1, .9f) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake_pins(request.handle, nullptr, 1, .9f) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake_pins(request.handle, &pin, 5, .9f) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake_pins(request.handle, &pin, 1, 1.1f) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake_pins(request.handle, &negative, 1, .9f) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_remake_pins(request.handle, &pin, 1, .9f) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_remake_pins(request.handle, &invalid_pin, 1, .9f) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) != SLOPFAB_OK);
+  CHECK(slopfab_request_set_remake_pins(request.handle, nullptr, 0, .9f) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(slopfab_request_set_remake(request.handle, "") == SLOPFAB_OK);
 }
 

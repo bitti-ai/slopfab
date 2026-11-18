@@ -31,6 +31,19 @@ with tempfile.TemporaryDirectory(prefix='slopfab-remake-') as temp:
     assert plan['conditioning'] == {'pin_target_audio':True,'include_reference_audio':False}
     assert 'fixed 362-token' not in plan['description']
     assert 'shift 12)' in plan['description']
+    assert plan['remake_pins'] == []
+    pinned = run(*base,'--pin','0')['plans'][0]
+    assert pinned['remake_pins'] == [0] and abs(pinned['remake_keyframe_until'] - .9) < 1e-6
+    pinned = run(*base,'--reference-image','second.png','--pin','123','--pin','0',
+                 '--keyframe-until','.8','--steps','12')['plans'][0]
+    assert pinned['remake_pins'] == [123,0] and pinned['steps'] == 12
+    assert abs(pinned['remake_keyframe_until'] - .8) < 1e-6
+    for args in (['--pin','-1'], ['--pin','124'], ['--pin','1.5'],
+                 ['--pin','0','--pin','10'], ['--pin','0','--reference-image','second.png'],
+                 ['--keyframe-until','nan'], ['--keyframe-until','1.1'],
+                 ['--keyframe-until','-0.1'], ['--keyframe-until','0.9junk'],
+                 ['--pin','0','--attention','veda','--veda-predictor','absent.safetensors']):
+        run(*base,*args,ok=False)
     for steps in (1, 4, 6, 12):
         assert run(*base,'--steps',steps)['plans'][0]['steps'] == steps
     sampling = root/'sampling.json'
@@ -54,10 +67,16 @@ with tempfile.TemporaryDirectory(prefix='slopfab-remake-') as temp:
                'options':{'remake':'swap','frames':124}}
     assert run('requests','validate','--request','-',request=request)['plans'][0]['steps'] == 6
     request['options']['steps'] = 12
+    request['options']['pin'] = [123]
+    request['options']['keyframe-until'] = .8
     assert run('requests','validate','--request','-',request=request)['plans'][0]['steps'] == 12
+    assert run('requests','validate','--request','-',request=request)['plans'][0]['remake_pins'] == [123]
+    del request['options']['remake']
+    run('requests','validate','--request','-',request=request,ok=False)
     caps = run('system','capabilities')['data']['viggle_remake']
     assert caps['steps'] == 6 and not caps['merged_model_needs_lora']
     assert caps['default_steps'] == 6 and caps['custom_steps']
+    assert caps['timeline_pins'] and caps['keyframe_until_default'] == .9
     help_text = subprocess.run([exe,'help','video','generate'],capture_output=True,text=True).stdout
     assert '--remake' in help_text and '--animate' not in help_text
 print('PASS: Remake CLI/JSON, discovery, default/custom steps, merged guards and silent sources')

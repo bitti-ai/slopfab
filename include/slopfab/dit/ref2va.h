@@ -33,6 +33,11 @@ struct Ref2VAPackedSequence {
   std::vector<double> position_ids;
 };
 
+// Remove the final contiguous video conditioning block before target audio,
+// preserving every surviving rotary coordinate, including the target origin.
+Ref2VAPackedSequence release_video_keyframes(const SequenceLayout& layout,
+    const PackedIndices& indices, const std::vector<double>& positions, int rows);
+
 Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& text_tags,
                                                   const std::vector<ReferenceGeometry>& references,
                                                   int num_latent_frames, int latent_height,

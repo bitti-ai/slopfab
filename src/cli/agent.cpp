@@ -416,7 +416,9 @@ bool FileLock::acquired() const {
 }
 
 Value plan_json(const GenerateRequest& r, const GeneratePlan& p) {
-  Array warnings, sources;
+  Array warnings, sources, pins;
+  for (int frame : r.remake_pins)
+    pins.push_back(num(frame));
   if (int64_t(p.canvas_width) * p.canvas_height > p.geometry.trained_max_pixels)
     warnings.push_back(
         str("Requested canvas exceeds the trained area; memory and quality may vary."));
@@ -426,6 +428,8 @@ Value plan_json(const GenerateRequest& r, const GeneratePlan& p) {
       {"model", str(request_model_family(r))},
       {"steps", num(p.num_inference_steps)},
       {"remake_mode", str(r.remake_mode)},
+      {"remake_pins", Value(pins)},
+      {"remake_keyframe_until", num(r.remake_keyframe_until)},
       {"regenerate_mode", str(r.regenerate.mode)},
       {"sampler",
        str(p.music_flow_sampler.empty() ? sampler::sampler_name(p.sampler) : p.music_flow_sampler)},

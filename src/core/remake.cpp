@@ -3,6 +3,7 @@
 #include "slopfab/model_profile.h"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <stdexcept>
 
@@ -44,8 +45,13 @@ SamplingSettings remake_sampling(const std::string& mode) {
 }
 
 void validate_remake_request(const GenerateRequest& r) {
-  if (r.remake_mode.empty())
+  if (!std::isfinite(r.remake_keyframe_until) || r.remake_keyframe_until < 0 || r.remake_keyframe_until > 1)
+    throw std::invalid_argument("Remake keyframe-until must be in [0,1]");
+  if (r.remake_mode.empty()) {
+    if (!r.remake_pins.empty() || r.remake_keyframe_until != 0.9f)
+      throw std::invalid_argument("pin and keyframe-until require --remake");
     return;
+  }
   (void)remake_sampling(r.remake_mode);
   if (request_model_family(r) != "h3" || r.animate || r.still_image || r.continuation ||
       r.bridge || r.end_anchor_latents || !r.end_anchor_path.empty() || r.video_transition ||
@@ -53,6 +59,11 @@ void validate_remake_request(const GenerateRequest& r) {
     throw std::invalid_argument("Remake requires H3 video without other editing/continuation modes");
   if (r.num_frames < 90 || r.num_frames > 345 || (r.num_frames - 5) % 17)
     throw std::invalid_argument("Remake requires 90..345 frames in the form 17*n+5 at 24 fps");
+  if (!r.remake_pins.empty() && r.remake_pins.size() != r.reference_image_paths.size())
+    throw std::invalid_argument("Remake requires one --pin per reference image, or no pins");
+  for (int frame : r.remake_pins)
+    if (frame < 0 || frame >= r.num_frames)
+      throw std::invalid_argument("Remake pin must be a zero-based frame within the output clip");
   if (r.reference_image_paths.empty() || r.reference_image_paths.size() > 4 ||
       r.reference_media.size() != 1 || !r.reference_media.front() ||
       !r.reference_media.front()->is_video())
@@ -82,6 +93,39 @@ void validate_remake_request(const GenerateRequest& r) {
         throw std::invalid_argument("Remake on an unmerged FL2VA base requires the matching Remake LoRA");
     }
   }
+}
+
+RGBImage prepare_remake_keyframe(const RGBImage& image, int width, int height, bool first) {
+  if (width <= 0 || height <= 0 || image.width <= 0 || image.height <= 0 ||
+      image.pixels.size() != size_t(image.width) * image.height * 3)
+    throw std::invalid_argument("invalid Remake keyframe image");
+  if (first || (image.width == width && image.height == height))
+    return resize_reference_lanczos(image, width, height);
+  const double scale = std::max(double(width) / image.width, double(height) / image.height);
+  const auto round_even = [](double v) {
+    const double f = std::floor(v), d = v - f;
+    return int(d < .5 ? f : d > .5 ? f + 1 : (std::fmod(f, 2.) == 0 ? f : f + 1));
+  };
+  const auto resized = resize_reference_lanczos(image, std::max(width, round_even(image.width * scale)),
+                                               std::max(height, round_even(image.height * scale)));
+  RGBImage out{width, height, std::vector<uint8_t>(size_t(width) * height * 3)};
+  const int left = (resized.width - width) / 2, top = (resized.height - height) / 2;
+  for (int y = 0; y < height; ++y)
+    std::copy_n(resized.pixels.begin() + (size_t(y + top) * resized.width + left) * 3,
+                size_t(width) * 3, out.pixels.begin() + size_t(y) * width * 3);
+  return out;
+}
+
+std::vector<dit::ReferenceGeometry> remake_keyframe_geometry(
+    const std::vector<int>& frames, const dit::SequenceLayout& layout) {
+  std::vector<dit::ReferenceGeometry> result;
+  for (int frame : frames) {
+    dit::ReferenceGeometry g{dit::ReferenceKind::kImage, 1, layout.latent_height, layout.latent_width, 0};
+    g.target_aligned = true;
+    g.target_time_offset = (5.0 / 3.0) * frame;
+    result.push_back(g);
+  }
+  return result;
 }
 
 std::vector<std::string> remake_prompt_segments(int frames, size_t images, const std::string& prompt) {

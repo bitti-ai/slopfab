@@ -564,6 +564,24 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake(slopfab_request* reque
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake_pins(
+    slopfab_request* request, const int32_t* frames, size_t count, float keyframe_until) {
+  if (!request || count > 4 || (count && !frames) || !std::isfinite(keyframe_until) ||
+      keyframe_until < 0 || keyframe_until > 1)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_remake_pins: invalid arguments");
+  return guarded([&] {
+    std::vector<int> pins;
+    for (size_t i = 0; i < count; ++i) {
+      if (frames[i] < 0)
+        return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_remake_pins: negative frame");
+      pins.push_back(frames[i]);
+    }
+    request->request.remake_pins = std::move(pins);
+    request->request.remake_keyframe_until = keyframe_until;
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_regenerate_2k(
     slopfab_request* request, const char* mode, const char* silence_path, const char* upsampler_path) {
   if (!request || !mode)

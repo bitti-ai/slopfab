@@ -10,6 +10,7 @@
 #include "slopfab/dit/adaln.h"
 #include "slopfab/dit/pdd.h"
 #include "slopfab/dit/rope.h"
+#include "slopfab/dit/ref2va.h"
 #include "slopfab/sampler/noise.h"
 #include "slopfab/sampler/joint_schedule.h"
 
@@ -47,6 +48,15 @@ void validate_config(const ExactH3DenoiseConfig& c) {
   if (c.transformer.main.block.veda && (c.attention_band != 0 || !c.attention_ranges.empty()))
     throw std::invalid_argument("Vulkan VEDA does not support frame banding");
   const dit::SequenceLayout& l = c.layout;
+  if (c.keyframe_rows < 0 || !std::isfinite(c.keyframe_until) ||
+      c.keyframe_until < 0 || c.keyframe_until > 1)
+    throw std::invalid_argument("Vulkan H3: invalid keyframe release settings");
+  if (c.keyframe_rows) {
+    if (c.keyframe_rows >= l.num_condition_video || c.continuation || c.inpaint ||
+        c.motion_cache.active() || c.transformer.main.block.veda || !c.attention_ranges.empty())
+      throw std::invalid_argument("Vulkan H3: keyframe release needs ordinary references without editing constraints or caches");
+    (void)dit::release_video_keyframes(l, c.indices, c.position_ids, c.keyframe_rows);
+  }
   const uint32_t sequence = c.transformer.main.block.sequence;
   const uint32_t condition_video =
       l.num_condition_video < 0 ? 0u : static_cast<uint32_t>(l.num_condition_video);
@@ -168,6 +178,8 @@ struct ExactH3Denoiser::Impl {
     DeviceTensor audio_row_indices;
     H3AttentionRanges ranges;
     bool capstone_appended = false;
+    bool keyframes_released = false;
+    std::vector<float> keyframes;
   };
 
   TensorContext* context = nullptr;
@@ -178,6 +190,49 @@ struct ExactH3Denoiser::Impl {
 
   Impl(TensorContext& owner, ExactH3DenoiseConfig value)
       : context(&owner), config(std::move(value)) {
+  }
+  void resize_keyframes(bool release) {
+    auto& s = *state;
+    if (s.keyframes_released == release)
+      return;
+    auto packed = release
+        ? dit::release_video_keyframes(config.layout, config.indices, config.position_ids, config.keyframe_rows)
+        : dit::Ref2VAPackedSequence{config.layout, config.indices, config.position_ids};
+    const size_t first = size_t(config.layout.num_condition_video - config.keyframe_rows) * config.transformer.video_dim;
+    const size_t count = size_t(config.keyframe_rows) * config.transformer.video_dim;
+    std::vector<float> rows(s.video.layout().elements());
+    context->download(s.video, rows.data(), rows.size());
+    if (release) {
+      s.keyframes.assign(rows.begin() + first, rows.begin() + first + count);
+      rows.erase(rows.begin() + first, rows.begin() + first + count);
+    } else {
+      rows.insert(rows.begin() + first, s.keyframes.begin(), s.keyframes.end());
+    }
+    auto tiles = config.transformer.main.block.vsa_tiles;
+    if (tiles)
+      tiles = std::make_shared<dit::VsaTiles>(dit::build_vsa_tiles(packed.layout,
+          config.transformer.pdd_steps > 1 ? 128 : 64, config.transformer.pdd_steps > 1 ? 10 : 5));
+    s.transformer.resize_video_context(uint32_t(packed.indices.video.size()), tiles,
+                                       release ? -config.keyframe_rows : config.keyframe_rows);
+    s.video = context->allocate(matrix(packed.indices.video.size(), config.transformer.video_dim));
+    context->upload(s.video, rows.data(), rows.size());
+    s.selectors = context->allocate(vector(packed.layout.total_rows()), ScalarType::kInt32);
+    const auto rope = dit::build_h3_rope_tables(packed.position_ids, 10000.f, 16);
+    s.cosine = context->allocate(matrix(rope.rows, 96));
+    s.sine = context->allocate(matrix(rope.rows, 96));
+    context->upload(s.cosine, rope.cosine.data(), rope.cosine.size());
+    context->upload(s.sine, rope.sine.data(), rope.sine.size());
+    s.video_row_indices = context->allocate(vector(packed.indices.video.size()), ScalarType::kInt32);
+    context->upload_bytes(s.video_row_indices, packed.indices.video.data(), packed.indices.video.size() * sizeof(int32_t));
+    if (!packed.indices.audio.empty())
+      context->upload_bytes(s.audio_row_indices, packed.indices.audio.data(), packed.indices.audio.size() * sizeof(int32_t));
+    s.ranges = {};
+    if (config.attention_band) {
+      const auto band = dit::build_banded_key_ranges(packed.layout, config.attention_band, 128, 64);
+      s.ranges = H3AttentionRanges::create(*context, packed.layout.total_rows(), band.ranges.data(),
+                                          static_cast<uint32_t>(band.ranges.size()));
+    }
+    s.keyframes_released = release;
   }
   void resize_context(bool append) {
     auto& s = *state;
@@ -365,6 +420,7 @@ void ExactH3Denoiser::prepare(const float* prompt, uint64_t prompt_elements,
   if (impl_->running)
     throw std::logic_error("Vulkan H3 denoise: run is active");
   impl_->resize_context(false);
+  impl_->resize_keyframes(false);
   const auto& c = impl_->config.transformer;
   const uint64_t expected_prompt = uint64_t(c.text_rows) * c.text_dim;
   const uint64_t expected_video = uint64_t(c.video_rows) * c.video_dim;
@@ -412,6 +468,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   if (impl_->running)
     throw std::logic_error("Vulkan H3 denoise: run is active");
   impl_->resize_context(false);
+  impl_->resize_keyframes(false);
   const bool renoise = video.sampler() == sampler::SamplerKind::kRenoise;
   const bool stochastic = sampler::stochastic_sampler(video.sampler());
   if (video.sampler() != audio.sampler() ||
@@ -451,7 +508,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   if (c.continuation && (c.inpaint || c.pin_target_audio || c.motion_cache.active()))
     throw std::invalid_argument(
         "Vulkan H3 denoise: locked overlap is incompatible with image editing, pinned audio or MotionCache");
-  const uint32_t condition_video = static_cast<uint32_t>(c.layout.num_condition_video);
+  uint32_t condition_video = static_cast<uint32_t>(c.layout.num_condition_video);
   const uint32_t condition_audio = static_cast<uint32_t>(c.layout.num_condition_audio);
   const uint32_t video_output =
       c.transformer.video_output_rows ? c.transformer.video_output_rows : c.transformer.video_rows;
@@ -521,6 +578,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     motion_vv.resize(motion_video.size());
     motion_av.resize(motion_audio.size());
   }
+  const auto released = c.keyframe_rows
+      ? dit::release_video_keyframes(c.layout, c.indices, c.position_ids, c.keyframe_rows)
+      : dit::Ref2VAPackedSequence{};
   for (uint32_t step = 0; step < steps; ++step) {
     if (c.transformer.main.block.veda)
       c.transformer.main.block.veda->step = static_cast<int>(step);
@@ -529,14 +589,19 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     if (tack)
       impl_->resize_context(true);
     const float video_t = video.timesteps()[update_step.video];
+    if (c.keyframe_rows && video.sigmas()[update_step.video] < c.keyframe_until)
+      impl_->resize_keyframes(true);
+    const auto& active_layout = s.keyframes_released ? released.layout : c.layout;
+    const auto& active_indices = s.keyframes_released ? released.indices : c.indices;
+    condition_video = static_cast<uint32_t>(active_layout.num_condition_video);
     const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[update_step.audio];
     dit::RowTimesteps row = s.hyperflow
-        ? dit::build_hyperflow_timesteps(c.layout, c.indices, video_t,
+        ? dit::build_hyperflow_timesteps(active_layout, active_indices, video_t,
             1.f - video.sigmas()[update_step.video + 1], audio_t,
             c.pin_target_audio ? 1.f : 1.f - audio.sigmas()[update_step.audio + 1])
-        : conditioned ? dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t,
+        : conditioned ? dit::build_row_timesteps(active_layout, active_indices, video_t, audio_t,
                                                std::max(video_t, 0.999f), 1.0f)
-                    : dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t);
+                    : dit::build_row_timesteps(active_layout, active_indices, video_t, audio_t);
     if (c.continuation)
       overlap.prepare_context_call(nullptr, 0, c.layout, c.indices, row,
                                    video.sigmas()[update_step.video],
@@ -554,9 +619,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
                 code.begin() + uint64_t(t) * c.transformer.main.block.adaln_rank);
     }
     for (uint32_t i = 0; i < video_output; ++i)
-      video_indices[i] = row.indices[static_cast<size_t>(c.indices.video[condition_video + i])];
+      video_indices[i] = row.indices[static_cast<size_t>(active_indices.video[condition_video + i])];
     for (uint32_t i = 0; i < audio_output; ++i)
-      audio_indices[i] = row.indices[static_cast<size_t>(c.indices.audio[condition_audio + i])];
+      audio_indices[i] = row.indices[static_cast<size_t>(active_indices.audio[condition_audio + i])];
     std::vector<TensorUpload> controls{
         {&s.selectors, row.adaln.data(), row.adaln.size() * sizeof(int32_t)},
         {&s.code, code.data(), code.size() * sizeof(float)},

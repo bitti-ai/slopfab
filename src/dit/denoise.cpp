@@ -15,6 +15,7 @@
 #include <string>
 
 #include "slopfab/cuda/profile.h"
+#include "slopfab/dit/ref2va.h"
 #include "slopfab/sampler/noise.h"
 #include "slopfab/sampler/joint_schedule.h"
 
@@ -37,8 +38,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   require(inputs.video_scheduler != nullptr && inputs.audio_scheduler != nullptr,
           "both schedulers are required");
 
-  const SequenceLayout& layout = *inputs.layout;
-  const PackedIndices& indices = *inputs.indices;
+  SequenceLayout layout = *inputs.layout;
+  PackedIndices indices = *inputs.indices;
   const std::vector<float>& video_t = *inputs.video_timesteps;
   const std::vector<float>& audio_t = *inputs.audio_timesteps;
 
@@ -47,6 +48,16 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
           "timestep lists disagree with schedulers");
   const auto schedule = sampler::joint_schedule(video_t.size(), audio_t.size());
   const bool independent = video_t.size() != audio_t.size();
+  require(inputs.keyframe_rows >= 0 && std::isfinite(inputs.keyframe_until) &&
+              inputs.keyframe_until >= 0 && inputs.keyframe_until <= 1,
+          "invalid keyframe release settings");
+  require(!inputs.keyframe_rows || (inputs.position_ids && !inputs.continuation && !inputs.inpaint &&
+              !inputs.cache.enabled() && !inputs.motion_cache.active() &&
+              !transformer.block_cache_config().enabled()),
+          "keyframe release requires positions without editing constraints or caches");
+  Ref2VAPackedSequence released;
+  if (inputs.keyframe_rows)
+    released = release_video_keyframes(layout, indices, *inputs.position_ids, inputs.keyframe_rows);
   require(!inputs.continuation ||
               (!inputs.inpaint && !inputs.pin_target_audio && !inputs.cache.enabled() &&
                !inputs.motion_cache.active() && !transformer.block_cache_config().enabled()),
@@ -65,7 +76,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   const size_t audio_rows = indices.audio.size();
 
   DenoiseOutputs out;
-  const size_t cv = static_cast<size_t>(layout.num_condition_video) * patch;
+  size_t cv = static_cast<size_t>(layout.num_condition_video) * patch;
   const size_t ca = static_cast<size_t>(layout.num_condition_audio) * audio_dim;
   require((cv == 0) == (inputs.condition_video_rows == nullptr),
           "condition video rows are missing or unexpected");
@@ -208,9 +219,22 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   }
 
   out.decisions.reserve(static_cast<size_t>(std::max(0, steps)));
+  bool keyframes_released = false;
   for (int i = 0; i < steps; ++i) {
     const auto& update = schedule[static_cast<size_t>(i)];
     const float vt = video_t[update.video];
+    if (inputs.keyframe_rows && !keyframes_released &&
+        inputs.video_scheduler->sigmas()[update.video] < inputs.keyframe_until) {
+      const size_t count = size_t(inputs.keyframe_rows) * patch;
+      all_video.erase(all_video.begin() + cv - count, all_video.begin() + cv);
+      video_velocity.resize(all_video.size());
+      cv -= count;
+      layout = released.layout;
+      indices = released.indices;
+      if (!inputs.velocity)
+        transformer.prepare_sequence(layout, indices, released.position_ids);
+      keyframes_released = true;
+    }
     const float at = inputs.pin_target_audio ? 1.0f : audio_t[update.audio];
     bool compute = true;
     if (motion.enabled()) {
@@ -400,6 +424,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     inputs.continuation->restore_video(out.video_rows);
   if (context_prepared)
     transformer.prepare_sequence(layout, indices, *inputs.position_ids);
+  if (keyframes_released && !inputs.velocity)
+    transformer.prepare_sequence(*inputs.layout, *inputs.indices, *inputs.position_ids);
   return out;
 }
 

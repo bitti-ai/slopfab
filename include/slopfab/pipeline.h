@@ -115,6 +115,10 @@ struct GenerateRequest {
   bool animate = false;
   // Viggle Remake: prompt-conditioned swap/edit, Euler (default six steps), source audio.
   std::string remake_mode;
+  // Optional one zero-based source frame per painted image, in image order.
+  std::vector<int> remake_pins;
+  // Keep timeline keyframes while video sigma >= this threshold.
+  float remake_keyframe_until = 0.9f;
   bool preserve_driving_audio = false;
 
   uint64_t seed = 0;

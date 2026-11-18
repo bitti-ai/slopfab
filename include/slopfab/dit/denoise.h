@@ -88,6 +88,9 @@ struct DenoiseInputs {
   // Supplied target audio stays clean (t=1) and is never scheduler-updated.
   // It remains in the target slice so the normal output decoder returns it.
   bool pin_target_audio = false;
+  // Final condition-video rows are timeline keyframes, released below sigma.
+  int keyframe_rows = 0;
+  float keyframe_until = 0.9f;
 
   // Fixed Ref2VA anchors, in the same condition-first order as PackedIndices.
   // They are projected by every transformer evaluation but never stepped.

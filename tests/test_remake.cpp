@@ -141,6 +141,68 @@ SLOPFAB_TEST(remake_text_labels_order_and_silent_soundtrack) {
   CHECK(std::all_of(silent.begin(), silent.end(), [](float v) { return v == 0; }));
 }
 
+SLOPFAB_TEST(remake_pins_validation_and_rotary_timeline) {
+  auto r = remake_request();
+  const auto plain_plan = resolve_plan(r);
+  r.remake_pins = {0, 123};
+  const auto p = resolve_plan(r);
+  CHECK(p.layout.num_condition_video == plain_plan.layout.num_condition_video + 2 * p.layout.rows_per_frame());
+  const std::vector<int32_t> text{1, 1, 1};
+  std::vector<dit::ReferenceGeometry> refs{
+      {dit::ReferenceKind::kVideo, 35, 4, 6, 0},
+      {dit::ReferenceKind::kImage, 1, 4, 6, 0},
+      {dit::ReferenceKind::kImage, 1, 6, 4, 0}};
+  const auto plain = dit::build_ref2va_packed_sequence(text, refs, 35, 4, 6, 10);
+  const auto pins = remake_keyframe_geometry(r.remake_pins, plain.layout);
+  refs.insert(refs.end(), pins.begin(), pins.end());
+  const auto pinned = dit::build_ref2va_packed_sequence(text, refs, 35, 4, 6, 10);
+  const double origin = plain.position_ids[size_t(plain.layout.audio_start()) * 3];
+  for (size_t i = 0; i < pins.size(); ++i) {
+    const int start = plain.layout.audio_start() + int(i) * plain.layout.rows_per_frame();
+    CHECK_NEAR(pinned.position_ids[size_t(start) * 3], origin + (5.0 / 3.0) * r.remake_pins[i], 1e-12);
+  }
+  const auto released = dit::release_video_keyframes(pinned.layout, pinned.indices,
+      pinned.position_ids, 2 * plain.layout.rows_per_frame());
+  CHECK(released.position_ids == plain.position_ids);
+  CHECK(released.indices.video == plain.indices.video);
+  CHECK(released.indices.audio == plain.indices.audio);
+  CHECK(released.indices.tags == plain.indices.tags);
+  CHECK(released.layout.reference_segments.size() == plain.layout.reference_segments.size());
+  CHECK(rejects([&] { dit::release_video_keyframes(pinned.layout, pinned.indices,
+      pinned.position_ids, 1); }));
+  for (const auto& pins : {std::vector<int>{0}, std::vector<int>{-1, 10}, std::vector<int>{0, 124}}) {
+    r.remake_pins = pins;
+    CHECK(rejects([&] { resolve_plan(r); }));
+  }
+  r.remake_pins = {123, 0}; // Order follows images, not chronological order.
+  for (float threshold : {0.f, .9f, 1.f}) {
+    r.remake_keyframe_until = threshold;
+    CHECK(resolve_plan(r).num_inference_steps == 6);
+  }
+  for (float threshold : {-.1f, 1.1f, std::nanf("")}) {
+    r.remake_keyframe_until = threshold;
+    CHECK(rejects([&] { resolve_plan(r); }));
+  }
+  r.remake_keyframe_until = .9f;
+  r.remake_mode.clear();
+  CHECK(rejects([&] { resolve_plan(r); }));
+}
+
+SLOPFAB_TEST(remake_keyframe_canvas_fitting) {
+  RGBImage image{8, 4, std::vector<uint8_t>(8 * 4 * 3)};
+  for (int y = 0; y < 4; ++y)
+    for (int x = 0; x < 8; ++x)
+      std::fill_n(image.pixels.begin() + (y * 8 + x) * 3, 3, uint8_t(x * 30));
+  const auto first = prepare_remake_keyframe(image, 4, 4, true);
+  CHECK(first.pixels == resize_reference_lanczos(image, 4, 4).pixels);
+  const auto later = prepare_remake_keyframe(image, 4, 4, false);
+  CHECK(later.width == 4 && later.height == 4);
+  for (int y = 0; y < 4; ++y)
+    for (int x = 0; x < 4; ++x)
+      CHECK(later.pixels[(y * 4 + x) * 3] == (x + 2) * 30);
+  CHECK(first.pixels != later.pixels);
+}
+
 SLOPFAB_TEST(remake_checkpoint_identity_and_double_adapter_guard) {
   const auto path = std::filesystem::temp_directory_path() / "viggle_remake_swap_pruned_int8_convrot.safetensors";
   struct Cleanup { std::filesystem::path p; ~Cleanup() { std::filesystem::remove(p); } } cleanup{path};

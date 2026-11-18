@@ -4,9 +4,9 @@
 in the CLI and download catalog. `--remake swap` replaces characters;
 `--remake edit` changes objects, backgrounds, weather or lighting. Both use
 the native H3 CUDA/Vulkan pipeline, one source video and one to four painted
-frames, with a six-section H3 prompt. This implements the upstream workflow
-without optional timeline pins; references determine appearance, not a fixed
-composition at a particular output frame. Split shots at cuts when needed.
+frames, with a six-section H3 prompt. Optional timeline pins anchor painted
+frames at specific positions in the output. Without pins, references determine
+appearance and the model chooses the composition.
 Use a short edge of 480 or 736 for visual work; very small test canvases can
 produce abstract textures despite completing inference successfully.
 
@@ -39,6 +39,36 @@ slopfab video generate --remake swap --transformer weights/viggle_remake_swap_pr
 
 The command writes Y4M video and a WAV soundtrack; use external FFmpeg to
 encode/mux the final MP4.
+
+### Timeline pins
+
+Add `--pin FRAME` once per `--reference-image`, in the same image order, or
+omit pins entirely. Indices are zero-based source/output frames and must be
+less than `--frames`. For example, two painted frames can be anchored with:
+
+```sh
+--reference-image painted-start.png --reference-image painted-cut.png --pin 0 --pin 96
+```
+
+Each pinned image also remains an ordinary appearance reference. A second
+copy is encoded at the target canvas and placed at that frame's rotary time.
+The first keyframe is stretched to the canvas; subsequent keyframes are
+scaled to cover it and center-cropped, matching upstream's fitting rules.
+
+`--keyframe-until 0.9` is the default. Timeline keyframes participate while
+the current **video sigma is at least 0.9**, then are removed from the model
+input. This holds them for the first four evaluations of either published
+six-step grid. With `--steps N`, release still follows sigma, not a fraction
+of the step count. Values range from 0 (keep throughout) to 1 (only at sigma
+1). Pins guide composition; they do not replace output pixels or clamp target
+latents. Use them when shot timing or a painted frame's composition matters.
+
+JSON requests use `options.pin: [0, 96]` and `options["keyframe-until"]: 0.9`.
+The C++ fields are `remake_pins` and `remake_keyframe_until`. C API 1.53 adds
+`slopfab_request_set_remake_pins(request, frames, count, keyframe_until)`;
+passing count zero clears the pins. Both CUDA and Vulkan support release.
+VEDA attention is incompatible with the changing keyframe sequence; use the
+default attention mode for pinned requests.
 
 For the adapter alternative, replace `--transformer` with an unmerged pruned
 H3 FL2VA file and add `--lora weights/viggle_remake_swap_lora_r64.safetensors`.

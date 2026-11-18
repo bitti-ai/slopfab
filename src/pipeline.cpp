@@ -337,6 +337,10 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     plan.layout.condition_audio_is_explicit = true;
     plan.layout.num_condition_video += outpaint_keyframe_geometry(request.image_edit).video_rows();
   }
+  if (!request.remake_pins.empty()) {
+    plan.layout.condition_audio_is_explicit = true;
+    plan.layout.num_condition_video += int(request.remake_pins.size()) * plan.layout.rows_per_frame();
+  }
   if (!request.reference_media.empty()) {
     plan.layout.condition_audio_is_explicit = true;
     for (size_t index = 0; index < request.reference_media.size(); ++index) {
@@ -730,6 +734,11 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     description += request.regenerate.mode.empty()
         ? "  target audio        pinned driving soundtrack (clean t=1)\n"
         : "  target audio        published silence latent (clean t=1)\n";
+  if (!request.remake_pins.empty()) {
+    description += "  timeline pins       frames";
+    for (int frame : request.remake_pins) description += " " + std::to_string(frame);
+    description += "; release below video sigma " + std::to_string(request.remake_keyframe_until) + "\n";
+  }
   if (request.video_transition)
     description += std::string("  video transition    ") +
                    (request.video_transition == 1 ? "extend" : "bridge") +

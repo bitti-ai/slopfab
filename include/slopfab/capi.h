@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 52
+#define SLOPFAB_CAPI_VERSION_MINOR 53
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
@@ -757,8 +757,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* requ
  * with a uniform base schedule and shifts 12/3. Preserves the source soundtrack
  * through the audio VAE (silence for a silent source). A merged Remake INT8
  * transformer needs no LoRA; a pruned FL2VA base needs the matching mode LoRA.
- * References set appearance; upstream optional timeline pins are not exposed. */
+ * References set appearance; set_remake_pins also anchors them on the timeline. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake(slopfab_request* request, const char* mode);
+
+/* Since 1.53. Optional zero-based frame per reference image, in image order.
+ * count=0 clears pins; otherwise count must be 1..4. Frame bounds and matching
+ * reference count are validated at plan resolution. Keyframes remain while
+ * video sigma >= keyframe_until, in [0,1] (upstream default 0.9). */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_remake_pins(slopfab_request* request,
+    const int32_t* frames, size_t count, float keyframe_until);
 
 /* Since 1.52. Open-H3-Regenerate-2K-IC: "up3", "up4", "hf8", or "" to disable.
  * Pass the published silence latent and (for up3/up4) H3 latent upscaler paths.

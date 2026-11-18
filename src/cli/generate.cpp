@@ -641,6 +641,20 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.remake_mode = next("--remake");
       if (req.remake_mode != "swap" && req.remake_mode != "edit")
         throw std::invalid_argument("--remake wants swap or edit");
+    } else if (arg == "--pin") {
+      const std::string value = next("--pin");
+      size_t used = 0;
+      const int frame = std::stoi(value, &used);
+      if (used != value.size() || frame < 0)
+        throw std::invalid_argument("--pin wants a nonnegative integer frame index");
+      req.remake_pins.push_back(frame);
+    } else if (arg == "--keyframe-until") {
+      const std::string value = next("--keyframe-until");
+      size_t used = 0;
+      req.remake_keyframe_until = std::stof(value, &used);
+      if (used != value.size() || !std::isfinite(req.remake_keyframe_until) ||
+          req.remake_keyframe_until < 0 || req.remake_keyframe_until > 1)
+        throw std::invalid_argument("--keyframe-until wants a number in [0,1]");
     } else if (arg == "--preserve-driving-audio") {
       req.preserve_driving_audio = true;
     } else if (arg == "--prompt-embedding") {
