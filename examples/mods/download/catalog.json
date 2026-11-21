@@ -48,7 +48,7 @@
   },
   "minimaxh3": {
     "source": "https://huggingface.co/Comfy-Org/MiniMax-H3",
-    "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Singularity and Singularity v2 use the Turbo LoRA; Viggle Remake swap/edit files are listed under viggle-remake. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained. Smaller text encoders and their required projections are listed in minimaxh3-clipproj.",
+    "note": "Choose one transformer plus the shared text encoder and video/audio VAEs. Hybrid DMAD-PDMD supports references and defaults to eight Euler steps; its distillation LoRAs are already fused. Singularity and Singularity v2 use the Turbo LoRA; Viggle Remake swap/edit files are listed under viggle-remake. FastH3 Omni uses the INT8 video VAE. Existing BF16 options are retained. Smaller text encoders and their required projections are listed in minimaxh3-clipproj.",
     "files": [
       {
         "id": "fl2va-w6a8",
@@ -112,6 +112,18 @@
         "id": "ref2va-w6a8",
         "role": "transformer",
         "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_w6a8.safetensors",
+        "minVramGb": 16
+      },
+      {
+        "id": "hybrid-dmad-pdmd-int8",
+        "role": "transformer",
+        "url": "https://huggingface.co/OliviaRossi/Minimax-H3-Hybrid-DMAD-PDMD/resolve/main/Minimax-H3-Hybrid-DMAD-PDMD_int8.safetensors",
+        "minVramGb": 21
+      },
+      {
+        "id": "hybrid-dmad-pdmd-w6a8",
+        "role": "transformer",
+        "url": "https://huggingface.co/OliviaRossi/Minimax-H3-Hybrid-DMAD-PDMD/resolve/main/Minimax-H3-Hybrid-DMAD-PDMD_w6a8_g32.safetensors",
         "minVramGb": 16
       },
       {

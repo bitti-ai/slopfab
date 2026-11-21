@@ -1,7 +1,7 @@
 ---
 name: download
 description: List available model files and download selected weights.
-version: "1.8"
+version: "1.9"
 command: download
 script: main.js
 ---
