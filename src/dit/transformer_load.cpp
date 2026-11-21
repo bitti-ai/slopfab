@@ -387,7 +387,8 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     // too late for a reliable retry. Large checkpoints use the uploader's
     // bounded staging ring instead of locking the entire source in RAM.
     constexpr size_t kMaxRegisteredCheckpoint = size_t(64) << 20;
-    const bool register_mapping = checkpoint.file_size() <= kMaxRegisteredCheckpoint;
+    const bool register_mapping = checkpoint.mapping_base() &&
+                                  checkpoint.file_size() <= kMaxRegisteredCheckpoint;
     cuda::RegisteredMapping lock(register_mapping ? checkpoint.mapping_base() : nullptr,
                                   checkpoint.file_size());
     // Success is the normal path and stays quiet; a failure silently costs
