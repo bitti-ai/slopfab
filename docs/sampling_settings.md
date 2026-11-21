@@ -101,6 +101,13 @@ slopfab's uniform flow grid; `--schedule beta` is also available. ComfyUI's name
 `simple`/`sgm_uniform` schedules and optional Euler ancestral/UniPC/res_multistep
 samplers are not introduced by this preset.
 
+Validation with the released INT8 checkpoint covered eight-step, image-referenced
+128x128 generation on CUDA and portable Vulkan: both produced 22 video frames,
+stereo 32 kHz audio and finite video/audio latents. Host regressions cover release
+recognition, renamed metadata, multimedia reference planning and sampling override
+precedence. These are functional smoke checks, not full-resolution quality or
+cross-backend numerical parity claims; the W6A8 export was not exercised here.
+
 ## Independent audio steps (experimental)
 
 Use `--audio-steps` to give audio its own step count, for example when a LoRA
