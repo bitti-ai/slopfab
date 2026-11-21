@@ -89,6 +89,30 @@ int pdd_heads(const SafeTensors& st) {
 
 } // namespace
 
+bool is_hybrid_dmad_pdmd_checkpoint(const SafeTensors& checkpoint) {
+  if (checkpoint.metadata().count("slopfab.model") ||
+      !has(checkpoint, "adaln_t_table") ||
+      checkpoint.at("adaln_t_table").shape != std::vector<int64_t>{1025, 8} ||
+      !has(checkpoint, "blocks.0.adaln_proj.linear.weight") ||
+      has(checkpoint, "blocks.0.attn.to_gate_compress.weight"))
+    return false;
+
+  // The released files retain this exact merge identity even after renaming.
+  // Other hybrids or distillation strengths must not inherit this recipe.
+  const auto merge = checkpoint.metadata().find("merge_strategy");
+  if (merge != checkpoint.metadata().end())
+    return merge->second == "FL2VA_Ref2VA_Smoothstep_Hybrid_b20_35+DMAD0.85+PDMD0.333";
+
+  std::string name = std::filesystem::path(checkpoint.path()).filename().string();
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  name.erase(std::remove_if(name.begin(), name.end(),
+                            [](char c) { return c == '_' || c == '-'; }), name.end());
+  return name == "minimaxh3hybriddmadpdmdint8.safetensors" ||
+         name == "minimaxh3hybriddmadpdmdw6a8g32.safetensors";
+}
+
 static TransformerArchitecture infer_legacy_architecture(const SafeTensors& checkpoint) {
   // The released pruned checkpoints replace the timestep MLP with a lookup
   // table and contract every AdaLN projection to rank eight.
@@ -103,7 +127,7 @@ static TransformerArchitecture infer_legacy_architecture(const SafeTensors& chec
     // The released pruned Ref2VA FP8 file has the exact same tensor names,
     // shapes, dtypes and empty metadata as the FL2VA file. The distribution
     // filename is therefore the only identity signal available in the file.
-    if (path_marks_ref2va(checkpoint))
+    if (path_marks_ref2va(checkpoint) || is_hybrid_dmad_pdmd_checkpoint(checkpoint))
       return TransformerArchitecture::kRef2VAPrunedTable;
     return TransformerArchitecture::kPrunedTable;
   }

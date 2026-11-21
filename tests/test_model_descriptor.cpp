@@ -111,6 +111,93 @@ SLOPFAB_TEST(model_descriptor_rejects_unsupported_contracts) {
   dit::validate_adaln_table_config(16, 4097);
 }
 
+SLOPFAB_TEST(model_descriptor_hybrid_dmad_pdmd_identity_and_references) {
+  const std::vector<TensorWrite> tensors = {
+      {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+      {"blocks.0.adaln_proj.linear.weight", {18, 8}, std::vector<float>(18 * 8)}};
+  const std::string merge = "FL2VA_Ref2VA_Smoothstep_Hybrid_b20_35+DMAD0.85+PDMD0.333";
+  for (const char* filename : {"Minimax-H3-Hybrid-DMAD-PDMD_int8.safetensors",
+                               "Minimax-H3-Hybrid-DMAD-PDMD_w6a8_g32.safetensors",
+                               "slopfab_renamed_hybrid.safetensors",
+                               "unrelated_hybrid_dmad_pdmd_int8.safetensors"}) {
+    ModelFixture fixture;
+    fixture.path = std::filesystem::temp_directory_path() / filename;
+    std::map<std::string, std::string> metadata;
+    if (std::string(filename).find("renamed") != std::string::npos)
+      metadata["merge_strategy"] = merge;
+    write_safetensors(fixture.path.string(), tensors, metadata);
+    fixture.file.open(fixture.path.string());
+    const bool hybrid = std::string(filename).find("unrelated") == std::string::npos;
+    const auto model = dit::resolve_model_descriptor(fixture.file);
+    CHECK(model.supports_references == hybrid);
+    CHECK(!model.compressed_attention && !model.qkv_interleaved && model.pdd_steps == 1);
+    GenerateRequest request;
+    request.transformer_path = fixture.path.string();
+    const auto plan = resolve_plan(request);
+    CHECK(plan.num_model_evaluations() == (hybrid ? 8 : 50));
+    CHECK(plan.video_sigma_shift == 12 && plan.audio_sigma_shift == 3);
+    CHECK(plan.sampler == sampler::SamplerKind::kEuler && !plan.fixed_sampling_grid);
+    CHECK((describe_plan(request, plan).find("Hybrid DMAD-PDMD") != std::string::npos) == hybrid);
+    request.reference_image_paths = {"subject.png", "style.png"};
+    if (hybrid) {
+      dit::require_ref2va_transformer(fixture.file, 2);
+      CHECK(resolve_plan(request).model.supports_references);
+      const uint8_t pixel[] = {255, 0, 0};
+      auto video = ReferenceMedia::video(2);
+      video.append_frame(pixel, sizeof(pixel), 1, 1, 3, 3, 0);
+      const std::vector<float> audio(16000, 0);
+      request.reference_media = {
+          std::make_shared<ReferenceMedia>(video),
+          std::make_shared<ReferenceMedia>(ReferenceMedia::audio(audio.data(), audio.size(), 1, 8000))};
+      CHECK(resolve_plan(request).num_model_evaluations() == 8);
+    } else {
+      CHECK(fails([&] { resolve_plan(request); }));
+    }
+    // A different merge must not gain this release's recipe from its filename.
+    fixture.file.close();
+    metadata["merge_strategy"] = "FL2VA_Ref2VA_other_merge";
+    write_safetensors(fixture.path.string(), tensors, metadata);
+    fixture.file.open(fixture.path.string());
+    CHECK(!dit::is_hybrid_dmad_pdmd_checkpoint(fixture.file));
+    CHECK(!dit::resolve_model_descriptor(fixture.file).supports_references);
+    // Explicit contracts opt out of legacy identity and sampling inference.
+    fixture.write(table);
+    request.reference_media.clear();
+    CHECK(resolve_plan(request).model.supports_references);
+    CHECK(resolve_plan(request).num_model_evaluations() == 50);
+  }
+  ModelFixture gated;
+  auto compressed = tensors;
+  compressed.push_back({"blocks.0.attn.to_gate_compress.weight", {8, 8}, std::vector<float>(64)});
+  write_safetensors(gated.path.string(), compressed, {{"merge_strategy", merge}});
+  gated.file.open(gated.path.string());
+  CHECK(!dit::is_hybrid_dmad_pdmd_checkpoint(gated.file));
+}
+
+SLOPFAB_TEST(model_descriptor_hybrid_dmad_pdmd_sampling_overrides) {
+  ModelFixture fixture;
+  const std::vector<TensorWrite> tensors = {
+      {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+      {"blocks.0.adaln_proj.linear.weight", {18, 8}, std::vector<float>(18 * 8)}};
+  write_safetensors(fixture.path.string(), tensors,
+      {{"merge_strategy", "FL2VA_Ref2VA_Smoothstep_Hybrid_b20_35+DMAD0.85+PDMD0.333"},
+       {"slopfab.sampling", R"({"version":1,"default_steps":6,"video_sigma_shift":10,"sampler":"er_sde"})"}});
+  GenerateRequest request;
+  request.transformer_path = fixture.path.string();
+  auto plan = resolve_plan(request);
+  CHECK(plan.num_model_evaluations() == 6 && plan.video_sigma_shift == 10);
+  CHECK(plan.sampler == sampler::SamplerKind::kErSde);
+  request.sampling = parse_sampling_settings(
+      R"({"version":1,"default_steps":4,"sampler":"euler","video_sigma_shift":12})");
+  plan = resolve_plan(request);
+  CHECK(plan.num_model_evaluations() == 4 && plan.video_sigma_shift == 12);
+  CHECK(plan.sampler == sampler::SamplerKind::kEuler);
+  request.num_inference_steps = 10;
+  CHECK(resolve_plan(request).num_model_evaluations() == 10);
+  request.sampling.base_sigmas = std::vector<float>{1, .5f, 0};
+  CHECK(resolve_plan(request).num_model_evaluations() == 2);
+}
+
 SLOPFAB_TEST(model_descriptor_compression_is_independent_of_release) {
   ModelFixture fixture;
   fixture.write(

@@ -59,6 +59,14 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.fasth3_v2 = architecture == dit::TransformerArchitecture::kFastH3V2PrunedTable;
     if (architecture == dit::TransformerArchitecture::kViggleAnimatePrunedTable)
       effective.video_sigma_shift = kViggleVideoSigmaShift;
+    if (architecture == dit::TransformerArchitecture::kRef2VAPrunedTable &&
+        dit::is_hybrid_dmad_pdmd_checkpoint(checkpoint)) {
+      effective.default_steps = 8;
+      effective.sampler = sampler::SamplerKind::kEuler;
+      effective.video_sigma_shift = 12.0f;
+      effective.audio_sigma_shift = 3.0f;
+      plan.sampling_sources.push_back("Hybrid DMAD-PDMD compatibility preset");
+    }
     try {
       model_settings = sampling_settings_from_metadata(checkpoint.metadata());
     } catch (const std::exception& e) {

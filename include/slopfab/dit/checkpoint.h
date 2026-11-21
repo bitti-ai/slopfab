@@ -66,6 +66,9 @@ struct ModelDescriptor {
 };
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint);
+// Legacy release recognition for the fused FL2VA/Ref2VA DMAD+PDMD hybrid.
+// Explicit slopfab.model contracts opt out of filename/merge-based defaults.
+bool is_hybrid_dmad_pdmd_checkpoint(const SafeTensors& checkpoint);
 // Supported table shapes. Adapter and cache contracts are validated separately.
 void validate_adaln_table_config(int rank, int rows);
 
