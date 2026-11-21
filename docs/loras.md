@@ -1,5 +1,8 @@
 # H3 LoRA adapters
 
+[pi-H3 DWD](pi_h3.md) uses one FL2VA adapter at strength 1, its trained two- or
+four-step schedule, and direct pixel output without a video VAE decoder.
+
 [Open-H3-Regenerate-2K-IC](regenerate_2k.md) has a dedicated
 `video regenerate --mode up3|up4|hf8` workflow for draft refinement.
 
