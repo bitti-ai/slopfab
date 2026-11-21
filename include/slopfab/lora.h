@@ -44,6 +44,7 @@ public:
   const std::vector<LoraFactors>* find(const std::string& projection) const;
 
   std::shared_ptr<const dit::Hyperflow> hyperflow() const { return hyperflow_; }
+  std::shared_ptr<const SafeTensors> pi_h3() const { return pi_h3_; }
 
   size_t projection_count() const {
     return factors_.size();
@@ -60,6 +61,7 @@ public:
                                        const std::string& projection) const;
 
 private:
+  std::shared_ptr<const SafeTensors> pi_h3_;
   std::shared_ptr<const dit::Hyperflow> hyperflow_;
   std::map<std::string, std::vector<LoraFactors>> factors_;
   std::map<std::string, std::vector<float>> adaln_bias_;

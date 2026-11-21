@@ -52,8 +52,14 @@ public:
   void open(const std::string& path);
   void close();
 
+  // Non-owning tensor collection. Every source mapping must outlive this view.
+  // It owns its header only; mapping registration/prefetch are unavailable.
+  static SafeTensors borrowed(std::map<std::string, TensorView> tensors,
+                             std::map<std::string, std::string> metadata,
+                             std::string path);
+
   bool is_open() const {
-    return base_ != nullptr;
+    return base_ != nullptr || !tensors_.empty();
   }
 
   const std::string& path() const {

@@ -9,6 +9,7 @@
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/pdd.h"
 #include "slopfab/dit/hyperflow.h"
+#include "slopfab/dit/pi_h3.h"
 #include "slopfab/pipeline.h"
 
 namespace slopfab {
@@ -105,6 +106,18 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     if (std::filesystem::exists(lora.path)) {
       SafeTensors adapter;
       adapter.open(lora.path);
+      if (dit::is_pi_h3(adapter)) {
+        dit::validate_pi_h3(adapter);
+        if (lora.strength != 1 || std::count_if(request.loras.begin(), request.loras.end(),
+            [](const auto& s) { return s.strength != 0; }) != 1)
+          throw std::invalid_argument("pi-H3 requires one adapter at strength 1");
+        const int trained = dit::pi_h3_steps(lora.path);
+        const int steps = request.num_inference_steps ? request.num_inference_steps
+                            : overrides.default_steps.value_or(trained);
+        if ((trained && steps != trained) || (steps != 2 && steps != 4))
+          throw std::invalid_argument("pi-H3: use the adapter's trained step count (2 or 4); renamed adapters require --steps");
+        plan.pi_h3_steps = steps;
+      }
       if (!request.transformer_path.empty() && std::filesystem::exists(request.transformer_path)) {
         SafeTensors base;
         base.open(request.transformer_path);
@@ -144,6 +157,20 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     throw std::invalid_argument("taomate-3step requires an enabled TaoMate LoRA");
   overlay_sampling_settings(effective, adapters);
   overlay_sampling_settings(effective, overrides);
+  if (plan.pi_h3_steps) {
+    const auto grid = dit::pi_h3_base_sigmas(plan.pi_h3_steps);
+    if (request.schedule != sampler::ScheduleKind::kDefault || effective.audio_steps ||
+        effective.scheduler == sampler::SigmaSchedule::kBeta ||
+        effective.sampler.value_or(sampler::SamplerKind::kEuler) != sampler::SamplerKind::kEuler ||
+        effective.video_sigma_shift != 12.f || effective.audio_sigma_shift != 3.f ||
+        (effective.base_sigmas && *effective.base_sigmas != grid) ||
+        request.animate || request.continuation || request.image_edit.image ||
+        !request.remake_mode.empty() || !request.regenerate.mode.empty())
+      throw std::invalid_argument("pi-H3 requires its trained grid, shifts 12/3 and Euler; continuation and image editing are unsupported");
+    effective.base_sigmas = grid;
+    effective.sampler = sampler::SamplerKind::kEuler;
+    plan.sampling_sources.push_back("pi-H3 " + std::to_string(plan.pi_h3_steps) + "-step DWD");
+  }
   if (!request.remake_mode.empty()) {
     const auto required = remake_sampling(request.remake_mode);
     if (request.schedule != sampler::ScheduleKind::kDefault ||
@@ -327,6 +354,8 @@ sampler::SamplerKind resolve_sampling_sampler(const GeneratePlan& plan,
 void validate_sampling_sampler(const GeneratePlan& plan,
                                std::optional<sampler::SamplerKind> requested) {
   const auto kind = resolve_sampling_sampler(plan, requested);
+  if (plan.pi_h3_steps && kind != sampler::SamplerKind::kEuler)
+    throw std::invalid_argument("pi-H3 requires Euler");
   if (plan.model.family == "ph3_image" && kind != sampler::SamplerKind::kEuler)
     throw std::invalid_argument("P-H3 Image requires the Euler sampler");
   if (plan.model.pdd_steps > 1 && kind != sampler::SamplerKind::kEuler)

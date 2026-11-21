@@ -11,6 +11,19 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  if (p.pi_h3_steps) {
+    require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(),
+            "pi-H3 requires fresh noise and its trained sampling grid");
+    require(!r.continuation && !r.bridge && !r.end_anchor_latents && !r.video_transition,
+            "pi-H3 does not support latent continuation or bridges");
+    require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty() &&
+                o.latent_upscale_model_path.empty(),
+            "pi-H3 pixels come from final hidden states; latent effects and latent upscaling are unsupported");
+    require(o.save_latents_path.empty() && !o.on_latents,
+            "pi-H3 cannot save reusable latent archives: its video output requires the final hidden states");
+    require(!o.on_preview && o.preview_vae_path.empty(),
+            "pi-H3 does not support VAE previews");
+  }
   if ((p.model.family == "ph3_image" || p.model.family == "h3_image")) {
     require(o.inference_backend == DeviceBackend::kCuda || o.inference_backend == DeviceBackend::kVulkan,
             "H3 image generation requires CUDA or Vulkan");
@@ -53,7 +66,7 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   }
   require(r.video_decoder_path.empty() || p.model.family == "h3",
           "a separate video decoder is supported only for MiniMax H3");
-  if (p.model.family == "h3" && !r.video_decode_path().empty() &&
+  if (!p.pi_h3_steps && p.model.family == "h3" && !r.video_decode_path().empty() &&
       std::filesystem::is_regular_file(r.video_decode_path())) {
     SafeTensors decoder;
     decoder.open(r.video_decode_path());

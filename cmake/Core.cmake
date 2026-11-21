@@ -14,6 +14,7 @@ add_library(slopfab_core STATIC
   src/core/w4a8.cpp
   src/core/int8_weight.cpp
   src/core/lora.cpp
+  src/dit/pi_h3.cpp
   src/core/sampling_settings.cpp
   src/core/lora_grid.cpp
   src/core/safetensors.cpp

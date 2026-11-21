@@ -263,6 +263,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_tile_merge.cpp
     tests/test_tokenizer.cpp
     tests/test_sol_h3.cpp
+    tests/test_pi_h3.cpp
     tests/test_tokenizer_json.cpp
     tests/test_qwen_vision.cpp
     tests/test_output.cpp

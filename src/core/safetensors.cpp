@@ -22,6 +22,15 @@
 #endif
 
 namespace slopfab {
+SafeTensors SafeTensors::borrowed(std::map<std::string, TensorView> tensors,
+                                 std::map<std::string, std::string> metadata,
+                                 std::string path) {
+  SafeTensors result;
+  result.tensors_ = std::move(tensors);
+  result.metadata_ = std::move(metadata);
+  result.path_ = std::move(path);
+  return result;
+}
 namespace {
 
 // Header length prefix plus a sanity bound. Real headers run ~100 KB; anything

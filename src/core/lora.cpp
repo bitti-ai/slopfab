@@ -12,6 +12,7 @@
 #include "slopfab/json.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/dit/checkpoint.h"
+#include "slopfab/dit/pi_h3.h"
 #include "lora_grid.h"
 #include "../dit/h3_lora.h"
 
@@ -49,6 +50,10 @@ std::vector<float> values(const TensorView& tensor) {
 } // namespace
 
 void validate_lora_base(const SafeTensors& adapter, const SafeTensors& base) {
+  if (dit::is_pi_h3(adapter)) {
+    dit::validate_pi_h3(adapter);
+    dit::validate_pi_h3_base(base);
+  }
   const auto target = adapter.metadata().find("target");
   if (target != adapter.metadata().end() &&
       target->second == "MiniMaxAI/MiniMax-H3 transformer_ref (Ref2VA transformer)" &&
@@ -67,6 +72,7 @@ const std::vector<LoraFactors>* LoraAdapters::find(const std::string& name) cons
 }
 
 void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& base) {
+  std::shared_ptr<const SafeTensors> pi_h3;
   std::shared_ptr<const dit::Hyperflow> hyperflow;
   decltype(factors_) next;
   decltype(adaln_bias_) next_bias;
@@ -77,6 +83,15 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
     SafeTensors adapter;
     adapter.open(spec.path);
     validate_lora_base(adapter, base);
+    const bool pi = dit::is_pi_h3(adapter);
+    if (pi) {
+      if (spec.strength != 1 || std::count_if(specs.begin(), specs.end(),
+          [](const auto& s) { return s.strength != 0; }) != 1)
+        throw std::runtime_error("pi-H3 requires one adapter at strength 1");
+      auto owned = std::make_shared<SafeTensors>();
+      owned->open(spec.path);
+      pi_h3 = std::move(owned);
+    }
     AdaLNBasis adaln_basis;
     double worst_adaln_error = 0;
     int rebased = 0;
@@ -120,6 +135,8 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       if (item.first == detail::kLoraGridTensor)
         continue;
       const std::string key = normalize(item.first);
+      // Shape/key validation above has checked all replacements and DWD tensors.
+      if (pi && key.find(".lora_") == std::string::npos) continue;
       if (hf && (key.compare(0, 14, "time_embedder.") == 0 ||
                  key.compare(0, 23, "endpoint_time_embedder.") == 0)) {
         bool valid = false;
@@ -259,6 +276,7 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       if (adaln_target(name))
         throw std::runtime_error("Hyperflow cannot be stacked with AdaLN projection adapters");
   hyperflow_ = std::move(hyperflow);
+  pi_h3_ = std::move(pi_h3);
   factors_ = std::move(next);
   adaln_bias_ = std::move(next_bias);
 }
