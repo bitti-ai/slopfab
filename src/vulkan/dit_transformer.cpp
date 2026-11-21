@@ -199,6 +199,15 @@ struct ExactH3Transformer::Impl {
 ExactH3Transformer::ExactH3Transformer() = default;
 ExactH3Transformer::~ExactH3Transformer() = default;
 
+std::vector<float> ExactH3Transformer::video_hidden_states() const {
+  if (!loaded()) throw std::logic_error("Vulkan H3: transformer not loaded");
+  const auto& c = impl_->config;
+  const size_t rows = c.video_output_rows ? c.video_output_rows : c.video_rows;
+  std::vector<float> out(rows * c.main.block.hidden);
+  impl_->context->download(impl_->state->video_gather, out.data(), out.size());
+  return out;
+}
+
 ExactH3Transformer::ExactH3Transformer(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
 }
 

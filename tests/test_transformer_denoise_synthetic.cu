@@ -2,6 +2,31 @@
 #include "slopfab/sampler/noise.h"
 #include "slopfab/generate.h"
 #include "slopfab/remake.h"
+#include "slopfab/dit/pi_h3.h"
+
+SLOPFAB_TEST_CATEGORY(pi_h3_denoise_scales_noise_once, "synthetic") {
+  using namespace slopfab;
+  const auto layout=tiny_layout();
+  const auto indices=dit::build_indices(layout);
+  sampler::FlowScheduler video(12),audio(3);
+  video.set_base_sigmas(dit::pi_h3_base_sigmas(2));
+  audio.set_base_sigmas(dit::pi_h3_base_sigmas(2));
+  Transformer model;
+  auto in=make_denoise_inputs(layout,indices,video,audio);
+  in.scale_initial_noise=true;
+  const auto noise=sampler::video_noise(in.seed,layout.num_latent_frames,layout.latent_height,layout.latent_width);
+  std::vector<float> expected(size_t(layout.num_video_rows)*96);
+  dit::patchify_video(noise.data(),layout,expected.data());
+  for (auto& x:expected) x*=video.sigmas().front();
+  auto expected_audio=sampler::audio_noise(in.seed,layout.num_audio_latents);
+  for (auto& x:expected_audio) x*=audio.sigmas().front();
+  in.velocity=[&](int, const RowTimesteps&, const float* x, const float* a, float* v, float* av) {
+    CHECK_CLOSE(expected,std::vector<float>(x,x+expected.size()),1e-6,"pi-H3 scaled video noise");
+    CHECK_CLOSE(expected_audio,std::vector<float>(a,a+expected_audio.size()),1e-6,"pi-H3 scaled audio noise");
+    std::fill_n(v,expected.size(),0.f); std::fill_n(av,expected_audio.size(),0.f);
+  };
+  CHECK(dit::denoise(model,in).steps_computed==2);
+}
 
 SLOPFAB_TEST_CATEGORY(denoise_remake_pin_release_preserves_targets, "synthetic") {
   using namespace slopfab;

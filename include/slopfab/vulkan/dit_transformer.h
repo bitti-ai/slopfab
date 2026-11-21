@@ -53,6 +53,7 @@ public:
 
   static ExactH3Transformer create(TensorContext& context, const ExactH3TransformerConfig& config);
   void load(const SafeTensors& checkpoint);
+  std::vector<float> video_hidden_states() const;
   // Append/remove model-call video context while keeping output heads, audio,
   // text cache and all model weights unchanged. No batch may be in flight.
   // output_shift moves both output slices when removing/inserting references.

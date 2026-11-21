@@ -1,4 +1,5 @@
 #include "slopfab/text/clip_projection.h"
+#include "slopfab/dit/pi_h3.h"
 // slopfab - MiniMax H3 video generation in C++/CUDA.
 
 #include <algorithm>
@@ -71,6 +72,16 @@
 #include "slopfab/ph3_image.h"
 
 namespace slopfab::cli {
+namespace {
+bool pi_h3_adapter(const GenerateRequest& req) {
+  for (const auto& spec : req.loras) {
+    if (spec.strength == 0 || !std::filesystem::is_regular_file(spec.path)) continue;
+    SafeTensors adapter; adapter.open(spec.path);
+    if (dit::is_pi_h3(adapter)) return true;
+  }
+  return false;
+}
+}
 uint64_t random_seed() {
   std::random_device rd;
   return (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
@@ -247,7 +258,8 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
                                   : profile.transformer_hint;
     req.transformer_path = find_weight(weights, {"transformer", ""}, architecture);
   }
-  if (req.video_vae_path.empty())
+  if (req.video_vae_path.empty() && (!pi_h3_adapter(req) ||
+      !req.conditioning_image_paths().empty() || !req.reference_media.empty() || req.image_edit.image))
     req.video_vae_path = std::string_view(profile.family) == "krea2"
                              ? find_weight(weights, {"vae", "text_encoder", ""}, profile.vae_hint)
                              : find_weight(weights, {"vae", ""}, profile.vae_hint);
@@ -279,7 +291,7 @@ void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_
   if (need_text_encoder)
     require_model(req.text_encoder_path, "--text-encoder", "text_encoder/");
   require_model(req.transformer_path, "--transformer", "transformer/");
-  require_model(req.video_decode_path(), "--vae or --video-decoder", "vae/");
+  if (!pi_h3_adapter(req)) require_model(req.video_decode_path(), "--vae or --video-decoder", "vae/");
   if (!req.conditioning_image_paths().empty() || !req.reference_media.empty() ||
       req.image_edit.image)
     require_model(req.video_vae_path, "--vae (reference encoder)", "vae/");

@@ -62,10 +62,12 @@
 
 #include "helpers.h"
 #include "decode.h"
+#include "slopfab/dit/pi_h3.h"
 
 namespace slopfab::generation {
 RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& options,
-                             const std::shared_ptr<const LatentClip>& completed, RunResult result) {
+                             const std::shared_ptr<const LatentClip>& completed, RunResult result,
+                             const PiH3DecodeInput* pi_h3) {
   const auto layout = completed->layout();
   auto notify = [&options](RunStage stage, int step, int steps) {
     return !options.on_progress || options.on_progress(stage, step, steps, options.hook_userdata);
@@ -83,7 +85,46 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
   vae::DecodedVideo video;
   const Clock::time_point decode_started = Clock::now();
   auto& timings = result.video_decode_timings;
-  {
+  if (pi_h3) {
+    if (!pi_h3->adapter || pi_h3->hidden.size() != size_t(layout.num_video_rows) * 5376)
+      throw std::invalid_argument("pi-H3: missing final transformer features");
+    auto features = dit::pi_h3_modulate(*pi_h3->adapter, pi_h3->hidden.data(),
+                                       layout.num_video_rows, pi_h3->code);
+    timings.seconds_prepare = seconds_since(decode_started);
+    bool cancelled = false;
+    auto run = [&](auto& decoder, const char* backend) {
+      const auto load_started = Clock::now();
+      decoder.load(*pi_h3->adapter);
+      timings.seconds_weight_load = seconds_since(load_started);
+      if (options.verbose)
+        std::printf("pixel head  pi-H3 DWD %s %.2f GiB on device (no video VAE)\n", backend,
+                    double(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
+      decoder.progress = [&](int done, int total) {
+        cancelled = !notify(RunStage::kVideoDecode, done, total); return !cancelled;
+      };
+      const auto started = Clock::now();
+      try {
+        video = decoder.decode_features(features.data(), layout.num_latent_frames,
+                                         layout.latent_height / 2, layout.latent_width / 2);
+      } catch (...) { if (!cancelled) throw; }
+      timings.seconds_compute = seconds_since(started);
+    };
+    if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
+      cuda::SolH3Decoder decoder; run(decoder, "CUDA");
+#else
+      throw std::logic_error("CUDA inference compiled out");
+#endif
+    } else {
+#if SLOPFAB_WITH_VULKAN
+      auto device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
+      vulkan::SolH3Decoder decoder(device); run(decoder, "Vulkan");
+#else
+      throw std::logic_error("Vulkan inference compiled out");
+#endif
+    }
+    if (cancelled) return stop("pi-H3 pixel head");
+  } else {
     if (request.video_decode_path().empty()) {
       result.message = "generate needs --vae <video_vae.safetensors>";
       return result;

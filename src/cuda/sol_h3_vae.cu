@@ -7,6 +7,7 @@
 #include "slopfab/cuda/nn_kernels.cuh"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/vae/sol_h3.h"
+#include "slopfab/dit/pi_h3.h"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -179,9 +180,11 @@ struct SolH3Decoder::Impl {
   cublasHandle_t blas = nullptr;
   size_t bytes = 0;
   bool loaded = false;
+  bool dwd = false;
   std::vector<Block> blocks;
   Linear pq;
   DeviceBuffer<float> embed, embed_bias, reg, norm_w, norm_b, head, head_bias;
+  DeviceBuffer<float> first_head, first_bias;
   Impl() {
     SLOPFAB_CUBLAS_CHECK(cublas_create(&blas));
     SLOPFAB_CUBLAS_CHECK(cublas_set_stream(blas, stream.get()));
@@ -193,7 +196,7 @@ struct SolH3Decoder::Impl {
     if (view.dtype == DType::kF32)
       result.copy_from_host(static_cast<const float*>(view.data), view.numel(), stream.get());
     else {
-      const auto values = to_f32(view);
+      const auto values = dwd ? dit::pi_h3_weight(st, name) : to_f32(view);
       result.copy_from_host(values.data(), values.size(), stream.get());
       SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     }
@@ -224,21 +227,29 @@ SolH3Decoder::SolH3Decoder(SolH3Decoder&&) noexcept = default;
 SolH3Decoder& SolH3Decoder::operator=(SolH3Decoder&&) noexcept = default;
 size_t SolH3Decoder::weight_bytes() const { return impl_->bytes; }
 void SolH3Decoder::load(const SafeTensors& st) {
-  vae::validate_sol_h3_vae(st);
+  const bool dwd = dit::is_pi_h3(st);
+  if (dwd) dit::validate_pi_h3(st); else vae::validate_sol_h3_vae(st);
   auto next = std::make_unique<Impl>();
   auto& d = *next;
+  d.dwd = dwd;
+  const std::string prefix = dwd ? "dwd_pixel_refiner." : "";
   st.prefetch();
-  d.pq = d.load_linear(st, "post_quant_conv");
-  d.embed = d.load_float(st, "x_embedder.weight");
-  d.embed_bias = d.load_float(st, "x_embedder.bias");
-  d.reg = d.load_float(st, "register_tokens");
-  d.norm_w = d.load_float(st, "norm_out.weight");
-  d.norm_b = d.load_float(st, "norm_out.bias");
-  d.head = d.load_float(st, "proj_out.weight");
-  d.head_bias = d.load_float(st, "proj_out.bias");
-  for (int i = 0; i < 24; ++i) {
+  if (!dwd) d.pq = d.load_linear(st, "post_quant_conv");
+  const auto embed = prefix + (dwd ? "feature_expand" : "x_embedder");
+  d.embed = d.load_float(st, embed + ".weight");
+  d.embed_bias = d.load_float(st, embed + ".bias");
+  d.reg = d.load_float(st, prefix + "register_tokens");
+  d.norm_w = d.load_float(st, prefix + "norm_out.weight");
+  d.norm_b = d.load_float(st, prefix + "norm_out.bias");
+  d.head = d.load_float(st, prefix + "proj_out.weight");
+  d.head_bias = d.load_float(st, prefix + "proj_out.bias");
+  if (dwd) {
+    d.first_head = d.load_float(st, prefix + "first_frame_proj_out.weight");
+    d.first_bias = d.load_float(st, prefix + "first_frame_proj_out.bias");
+  }
+  for (int i = 0; i < (dwd ? 8 : 24); ++i) {
     Block b;
-    const auto p = "blocks." + std::to_string(i) + ".";
+    const auto p = prefix + "blocks." + std::to_string(i) + ".";
     b.n1 = d.load_float(st, p + "norm1.weight");
     b.n2 = d.load_float(st, p + "norm2.weight");
     b.s1 = d.load_float(st, p + "scale1");
@@ -256,14 +267,18 @@ void SolH3Decoder::load(const SafeTensors& st) {
 vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
     const std::vector<float>& mean, const std::vector<float>& stddev, const vae::DecodeSchedule&) {
   auto& d = *impl_;
-  if (!d.loaded || !z || mean.size() != 24 || stddev.size() != 24)
+  if (!d.loaded || !z || (!d.dwd && (mean.size() != 24 || stddev.size() != 24)))
     throw std::invalid_argument("Sol-H3-VAE: load weights and provide 24-channel latents/statistics");
   const auto geom = vae::build_sol_h3_geometry(T, H, W);
   const int N = geom.patches, M = geom.rows, nb = (T + 4) / 5;
   const auto s = d.stream.get();
   DeviceBuffer<float> x(size_t(M) * D), tmp(size_t(Chunk) * 2 * Inner);
   DeviceBuffer<BF> h(size_t(Chunk) * Inner);
-  {
+  if (d.dwd) {
+    x.copy_from_host(z, size_t(N) * D, s);
+    init_globals<<<(nb * 5 * D + 255) / 256, 256, 0, s>>>(x.get() + size_t(N) * D, d.reg.get(), nb * 5);
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s));
+  } else {
     DeviceBuffer<float> dz(size_t(N) * 24), dm(24), ds(24), pq(size_t(Chunk) * 24);
     dz.copy_from_host(z, dz.size(), s); dm.copy_from_host(mean.data(), 24, s);
     ds.copy_from_host(stddev.data(), 24, s);
@@ -299,8 +314,8 @@ vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
     }
     DeviceBuffer<BF> wq(size_t(max_keys) * D), wk(size_t(max_keys) * D), wv(size_t(max_keys) * D), wo(size_t(max_keys) * D);
     Workspace workspace;
-    for (int layer = 0; layer < 24; ++layer) {
-      if (progress && !progress(layer, 24)) throw std::runtime_error("Sol-H3-VAE decode cancelled");
+    for (int layer = 0; layer < int(d.blocks.size()); ++layer) {
+      if (progress && !progress(layer, int(d.blocks.size()))) throw std::runtime_error("pixel decode cancelled");
       const auto& b = d.blocks[layer];
       const int parity = layer % 2;
       for (int first = 0; first < M; first += Chunk) {
@@ -338,6 +353,28 @@ vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
   vae::DecodedVideo result;
   result.frames = vae::sol_h3_frames(T); result.height = H * 16; result.width = W * 16;
   result.data.resize(size_t(3) * result.frames * result.height * result.width);
+  if (d.dwd) {
+    DeviceBuffer<float> normalized(size_t(Chunk) * D);
+    std::vector<float> projected(size_t(Chunk) * 3072), bias(3072), first_bias(768);
+    d.head_bias.copy_to_host(bias.data(), bias.size(), s);
+    d.first_bias.copy_to_host(first_bias.data(), first_bias.size(), s);
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s));
+    for (int first = 0; first < N; first += Chunk) {
+      const int count = std::min(Chunk, N - first);
+      norm<<<count, 256, 0, s>>>(x.get() + size_t(first) * D, d.norm_w.get(), d.norm_b.get(), nullptr, normalized.get(), D, true);
+      for (int first_frame = 0; first_frame < 2; ++first_frame) {
+        const int dim = first_frame ? 768 : 3072;
+        gemm_nt(d.blas, normalized.get(), first_frame ? d.first_head.get() : d.head.get(), tmp.get(), count, dim, D);
+        tmp.copy_to_host(projected.data(), size_t(count) * dim, s);
+        SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s));
+        const auto& b = first_frame ? first_bias : bias;
+        for (int i=0; i<count*dim; ++i) projected[i] += b[i%dim];
+        dit::pi_h3_pixels(projected.data(), first, count, H, W, first_frame != 0, result);
+      }
+    }
+    if (progress && !progress(8,8)) throw std::runtime_error("pi-H3 pixel decode cancelled");
+    return result;
+  }
   DeviceBuffer<float> output(result.data.size()), normalized(size_t(Chunk) * D);
   for (int first = 0; first < N; first += Chunk) {
     const int count = std::min(Chunk, N - first);
@@ -350,5 +387,28 @@ vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
   SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s));
   if (progress && !progress(24, 24)) throw std::runtime_error("Sol-H3-VAE decode cancelled");
   return result;
+}
+
+vae::DecodedVideo SolH3Decoder::decode_features(const float* features, int T, int H, int W) {
+  auto& d = *impl_;
+  if (!d.loaded || !d.dwd || !features) throw std::invalid_argument("pi-H3: load pixel head first");
+  const auto geom = vae::build_sol_h3_geometry(T, H * 2, W * 2);
+  std::vector<float> rows(size_t(geom.patches) * D);
+  {
+    DeviceBuffer<float> input(size_t(Chunk)*5376), expanded(size_t(Chunk)*8192);
+    std::vector<float> host(size_t(Chunk)*8192), bias(8192);
+    d.embed_bias.copy_to_host(bias.data(), bias.size(), d.stream.get());
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(d.stream.get()));
+    for (int begin=0; begin<T*H*W; begin+=Chunk) {
+      const int count=std::min(Chunk,T*H*W-begin);
+      input.copy_from_host(features+size_t(begin)*5376,size_t(count)*5376,d.stream.get());
+      gemm_nt(d.blas,input.get(),d.embed.get(),expanded.get(),count,8192,5376);
+      expanded.copy_to_host(host.data(),size_t(count)*8192,d.stream.get());
+      SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(d.stream.get()));
+      for (int i=0;i<count*8192;++i) host[i]+=bias[i%8192];
+      dit::pi_h3_expand_rows(host.data(),rows.data(),begin,count,H,W);
+    }
+  }
+  return decode(rows.data(),T,H*2,W*2,{},{});
 }
 } // namespace slopfab::cuda

@@ -27,6 +27,7 @@
 #endif
 #include "slopfab/dit/denoise.h"
 #include "slopfab/dit/checkpoint.h"
+#include "slopfab/dit/pi_h3.h"
 #include "slopfab/dit/packing.h"
 #include "slopfab/dit/ref2va.h"
 #include "slopfab/dit/transformer.h"
@@ -242,6 +243,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // `return result` cases below, and any exception out of the loop — leaves no
   // running thread behind.
   CheckpointPrefetch vae_prefetch;
+  PiH3DecodeInput pi_pixels;
+  pi_pixels.adapter = loras.pi_h3();
+  const std::string video_prefetch_path = plan.pi_h3_steps ? "" : request.video_decode_path();
 
   text::Tokenizer owned_conditioning_tokenizer;
   text::Tokenizer* conditioning_tokenizer_instance = nullptr;
@@ -971,6 +975,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
+      SafeTensors dit_overlay;
+      if (pi_pixels.adapter) {
+        dit_overlay = dit::pi_h3_overlay(dit_file, *pi_pixels.adapter);
+        dit::AdaLNTable table; table.load(dit_file);
+        pi_pixels.code = table.lookup(plan.video_timesteps.back());
+      }
       dit::Transformer model;
       model.set_attention_mode(options.attention_mode);
       if (veda)
@@ -983,7 +993,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         transformer_config.adaln_rank = 16;
         transformer_config.adaln_table_rows = 4097;
       }
-      model.load(dit_file, transformer_config, &loras, load_options);
+      model.load(pi_pixels.adapter ? dit_overlay : dit_file, transformer_config, &loras, load_options);
       loras = LoraAdapters();
       result.seconds_transformer_load = seconds_since(t0);
       if (options.verbose) {
@@ -1046,6 +1056,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       if (options.on_preview && !options.preview_vae_path.empty())
         in.preview = [&](int step, const std::vector<float>& clean) { preview(step,clean); };
       in.sampling_effect = sampling_effect;
+      in.scale_initial_noise = plan.pi_h3_steps != 0;
       in.inpaint = inpaint.get();
       in.continuation = continuation_constraint.get();
       in.keyframe_rows = int(request.remake_pins.size()) * live.rows_per_frame();
@@ -1107,8 +1118,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       // overlapping the two would only make them queue behind each other on the
       // same drive. From this line to the end of the loop the pipeline touches
       // no disk at all, which is the window this is trying to fill.
-      vae_prefetch.start(request.still_image ? std::vector<std::string>{request.video_decode_path()}
-                                             : std::vector<std::string>{request.video_decode_path(),
+      vae_prefetch.start(request.still_image ? std::vector<std::string>{video_prefetch_path}
+                                             : std::vector<std::string>{video_prefetch_path,
                                                                         request.audio_vae_path},
                          options.verbose);
 
@@ -1164,6 +1175,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 
       video_rows = out.video_rows;
       audio_rows = out.audio_rows;
+      if (pi_pixels.adapter) pi_pixels.hidden = model.video_hidden_states();
       // The video VAE follows immediately and can be ~9 GiB. Keeping the
       // transformer resident here makes counted runs page GPU memory and can
       // turn the next generation dramatically slower than the first.
@@ -1207,6 +1219,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
+      SafeTensors dit_overlay;
+      if (pi_pixels.adapter) {
+        dit_overlay = dit::pi_h3_overlay(dit_file, *pi_pixels.adapter);
+        dit::AdaLNTable table; table.load(dit_file);
+        pi_pixels.code = table.lookup(plan.video_timesteps.back());
+      }
       vulkan::Device device = create_vulkan_inference_device(
           options.vulkan_portable_arithmetic, true, options.attention_mode == AttentionMode::kSage2,
           options.attention_mode);
@@ -1255,7 +1273,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       config.position_ids = pos;
       config.attention_band = options.attention_band;
       vulkan::ExactH3Denoiser model = vulkan::ExactH3Denoiser::create(context, config);
-      model.load(dit_file);
+      model.load(pi_pixels.adapter ? dit_overlay : dit_file);
       loras = LoraAdapters();
       result.seconds_transformer_load = seconds_since(t0);
 
@@ -1277,7 +1295,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         initial_audio = init_audio;
       if (request.continuation_source_noise > 0 || (!request.regenerate.mode.empty() && !init_video.empty()))
         initial_video = init_video;
-      if (plan.model.pdd_steps > 1) {
+      if (plan.model.pdd_steps > 1 || plan.pi_h3_steps) {
         if (init_video.empty())
           for (auto& v : initial_video) v *= plan.video_sigmas.front();
         if (init_audio.empty())
@@ -1313,8 +1331,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       video_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
       audio_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
       const int total_steps = plan.num_model_evaluations();
-      vae_prefetch.start(request.still_image ? std::vector<std::string>{request.video_decode_path()}
-                                             : std::vector<std::string>{request.video_decode_path(),
+      vae_prefetch.start(request.still_image ? std::vector<std::string>{video_prefetch_path}
+                                             : std::vector<std::string>{video_prefetch_path,
                                                                         request.audio_vae_path},
                          options.verbose);
       const Clock::time_point loop_start = Clock::now();
@@ -1348,6 +1366,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       result.steps_skipped = static_cast<int>(out.steps_skipped);
       video_rows = out.video_rows;
       audio_rows = out.audio_rows;
+      if (pi_pixels.adapter) pi_pixels.hidden = model.video_hidden_states();
       model.unload();
       result.seconds_denoise = seconds_since(t0);
       if (options.verbose) {
@@ -1475,7 +1494,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     options.on_latents(completed, options.hook_userdata);
 
   vae_prefetch.join();
-  return decode_and_deliver(request, options, completed, std::move(result));
+  return decode_and_deliver(request, options, completed, std::move(result),
+                            pi_pixels.adapter ? &pi_pixels : nullptr);
 }
 
 } // namespace slopfab

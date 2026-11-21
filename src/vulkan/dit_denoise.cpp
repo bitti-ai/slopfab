@@ -840,6 +840,11 @@ uint64_t ExactH3Denoiser::persistent_bytes() const noexcept {
   return loaded() ? impl_->state->transformer.persistent_bytes() : 0;
 }
 
+std::vector<float> ExactH3Denoiser::video_hidden_states() const {
+  if (!loaded()) throw std::logic_error("Vulkan H3: denoiser not loaded");
+  return impl_->state->transformer.video_hidden_states();
+}
+
 uint64_t ExactH3Denoiser::scratch_bytes() const noexcept {
   if (!loaded())
     return 0;

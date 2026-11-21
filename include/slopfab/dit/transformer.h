@@ -163,6 +163,8 @@ public:
   // the conditioning moved, is what TeaCache has to do on models that still
   // carry a timestep MLP.
   std::array<float, AdaLNTable::kRank> adaln_code(float t) const;
+  // Target-video residual stream from the most recent forward, before final norm.
+  std::vector<float> video_hidden_states() const;
 
   // Runs the token refiner over the conditioning embedding and caches the
   // result. Position-agnostic and timestep-independent, so it runs once per

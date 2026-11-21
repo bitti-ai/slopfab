@@ -11,6 +11,20 @@ Transformer::Transformer() : impl_(new Impl()) {
 
 Transformer::~Transformer() = default;
 
+std::vector<float> Transformer::video_hidden_states() const {
+  const auto& s = *impl_;
+  if (!s.has_sequence) throw std::logic_error("transformer: no prepared sequence");
+  const size_t count = size_t(s.layout.num_video_rows) * s.cfg.hidden_size;
+  std::vector<__nv_bfloat16> words(count);
+  SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(words.data(), s.hidden.get() +
+      size_t(s.layout.video_start()) * s.cfg.hidden_size, count * sizeof(__nv_bfloat16),
+      cudaMemcpyDeviceToHost, s.stream.get()));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  std::vector<float> out(count);
+  for (size_t i=0;i<count;++i) out[i] = __bfloat162float(words[i]);
+  return out;
+}
+
 const TransformerConfig& Transformer::config() const {
   return impl_->cfg;
 }

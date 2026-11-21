@@ -69,6 +69,7 @@ public:
 
   static ExactH3Denoiser create(TensorContext& context, const ExactH3DenoiseConfig& config);
   void load(const SafeTensors& checkpoint);
+  std::vector<float> video_hidden_states() const;
   void unload() noexcept;
   bool loaded() const noexcept;
   bool prepared() const noexcept;

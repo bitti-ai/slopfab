@@ -3,6 +3,7 @@
 #include "slopfab/vulkan/gemm.h"
 #include "slopfab/vae/sol_h3.h"
 #include "slopfab/tensor_convert.h"
+#include "slopfab/dit/pi_h3.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -58,10 +59,11 @@ struct SolH3Decoder::Impl {
   TensorContext context;
   TensorBatch pending;
   std::vector<Block> blocks;
-  Linear pq, embed, head;
+  Linear pq, embed, head, first_head;
   DeviceTensor reg, norm_w, norm_b;
   size_t bytes = 0;
   bool loaded = false;
+  bool dwd = false;
   explicit Impl(const Device& device) : context(device, options()) {
     context.require_blocked_attention();
   }
@@ -80,7 +82,7 @@ struct SolH3Decoder::Impl {
   DeviceTensor load_tensor(const SafeTensors& st, const std::string& name,
                            const TensorLayout& layout, bool bf16 = false) {
     auto result = context.allocate(layout, bf16 ? ScalarType::kBFloat16 : ScalarType::kFloat32);
-    const auto values = to_f32(st.at(name));
+    const auto values = dwd ? dit::pi_h3_weight(st, name) : to_f32(st.at(name));
     if (bf16) {
       std::vector<uint16_t> words(values.size());
       std::transform(values.begin(), values.end(), words.begin(), bf_bits);
@@ -118,18 +120,22 @@ SolH3Decoder& SolH3Decoder::operator=(SolH3Decoder&&) noexcept = default;
 size_t SolH3Decoder::weight_bytes() const { return impl_->bytes; }
 
 void SolH3Decoder::load(const SafeTensors& checkpoint) {
-  vae::validate_sol_h3_vae(checkpoint);
+  const bool dwd = dit::is_pi_h3(checkpoint);
+  if (dwd) dit::validate_pi_h3(checkpoint); else vae::validate_sol_h3_vae(checkpoint);
   auto& d = *impl_;
   d.flush(); d.loaded = false; d.blocks.clear(); d.bytes = 0;
+  d.dwd = dwd;
+  const std::string prefix = dwd ? "dwd_pixel_refiner." : "";
   checkpoint.prefetch();
-  d.pq = d.load_linear(checkpoint, "post_quant_conv", 24, 24, true);
-  d.embed = d.load_linear(checkpoint, "x_embedder", D, 24, false);
-  d.head = d.load_linear(checkpoint, "proj_out", 3072, D, false);
-  d.reg = d.load_tensor(checkpoint, "register_tokens", matrix(4, D));
-  d.norm_w = d.load_tensor(checkpoint, "norm_out.weight", vector(D));
-  d.norm_b = d.load_tensor(checkpoint, "norm_out.bias", vector(D));
-  for (int i = 0; i < 24; ++i) {
-    const auto p = "blocks." + std::to_string(i) + ".";
+  d.pq = dwd ? Linear{} : d.load_linear(checkpoint, "post_quant_conv", 24, 24, true);
+  d.embed = d.load_linear(checkpoint, prefix + (dwd ? "feature_expand" : "x_embedder"), dwd ? 8192 : D, dwd ? 5376 : 24, false);
+  d.head = d.load_linear(checkpoint, prefix + "proj_out", 3072, D, false);
+  d.first_head = dwd ? d.load_linear(checkpoint, prefix + "first_frame_proj_out", 768, D, false) : Linear{};
+  d.reg = d.load_tensor(checkpoint, prefix + "register_tokens", matrix(4, D));
+  d.norm_w = d.load_tensor(checkpoint, prefix + "norm_out.weight", vector(D));
+  d.norm_b = d.load_tensor(checkpoint, prefix + "norm_out.bias", vector(D));
+  for (int i = 0; i < (dwd ? 8 : 24); ++i) {
+    const auto p = prefix + "blocks." + std::to_string(i) + ".";
     Block b;
     b.n1 = d.load_tensor(checkpoint, p + "norm1.weight", vector(D));
     b.n2 = d.load_tensor(checkpoint, p + "norm2.weight", vector(D));
@@ -147,7 +153,7 @@ void SolH3Decoder::load(const SafeTensors& checkpoint) {
 vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
     const std::vector<float>& mean, const std::vector<float>& stddev, const vae::DecodeSchedule&) {
   auto& d = *impl_;
-  if (!d.loaded || !z || mean.size() != 24 || stddev.size() != 24)
+  if (!d.loaded || !z || (!d.dwd && (mean.size() != 24 || stddev.size() != 24)))
     throw std::invalid_argument("Vulkan Sol-H3-VAE: load weights and provide 24-channel latents/statistics");
   auto geom = vae::build_sol_h3_geometry(T, H, W);
   const uint32_t N = geom.patches, M = geom.rows, nb = (T + 4) / 5;
@@ -168,7 +174,13 @@ vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
   auto x = alloc(M, D), h = alloc(Chunk, D, true), branch = alloc(Chunk, D, true);
   auto ffn = alloc(Chunk, 2 * Inner, true), activation = alloc(Chunk, Inner, true);
   auto qkv = alloc(Chunk, 3 * D, true);
-  {
+  if (d.dwd) {
+    std::vector<float> initial(size_t(M) * D);
+    std::copy(z, z + size_t(N)*D, initial.begin());
+    ctx.upload_transient(x, initial.data(), initial.size());
+    d.op(d.batch(), {2, nb * 5, N}, (nb * 5 * D + 255) / 256, d.reg, d.reg, d.reg, x);
+    d.flush();
+  } else {
     auto input = alloc(24, N), raw = alloc(Chunk, 24, true), pq = alloc(Chunk, 24, true);
     auto pq32 = alloc(Chunk, 24), embedded = alloc(Chunk, D);
     auto dm = ctx.allocate(vector(24)), ds = ctx.allocate(vector(24));
@@ -221,8 +233,8 @@ vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
       d.op(batch, {8, count, offset, 0, M}, (count * 1024 + 255) / 256,
            slot.output, win.indices, slot.output, out);
     };
-    for (uint32_t layer = 0; layer < 24; ++layer) {
-      if (progress && !progress(layer, 24)) throw std::runtime_error("Sol-H3-VAE decode cancelled");
+    for (uint32_t layer = 0; layer < d.blocks.size(); ++layer) {
+      if (progress && !progress(layer, int(d.blocks.size()))) throw std::runtime_error("pixel decode cancelled");
       auto& b = d.blocks[layer];
       for (uint32_t first = 0; first < M; first += Chunk) {
         const uint32_t count = std::min(Chunk, M - first);
@@ -252,6 +264,25 @@ vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
   result.frames = vae::sol_h3_frames(T); result.height = H * 16; result.width = W * 16;
   const size_t plane = size_t(result.frames) * result.height * result.width;
   result.data.resize(plane * 3);
+  if (d.dwd) {
+    auto normed = alloc(Chunk,D), projected = alloc(Chunk,3072), first_projected = alloc(Chunk,768);
+    auto first_plan = make_plan(768,D,false);
+    std::vector<float> host(size_t(Chunk)*3072), first_host(size_t(Chunk)*768);
+    for (uint32_t begin=0;begin<N;begin+=Chunk) {
+      const auto count=std::min(Chunk,N-begin);
+      auto& batch=d.batch();
+      d.op(batch,{9,count,begin,D},Chunk,x,d.norm_w,d.norm_b,normed);
+      head_plan.record(batch,normed,d.head.w,projected,Chunk,0,0,&d.head.bias);
+      first_plan.record(batch,normed,d.first_head.w,first_projected,Chunk,0,0,&d.first_head.bias);
+      d.flush();
+      ctx.download(projected,host.data(),host.size());
+      ctx.download(first_projected,first_host.data(),first_host.size());
+      dit::pi_h3_pixels(host.data(),begin,count,H,W,false,result);
+      dit::pi_h3_pixels(first_host.data(),begin,count,H,W,true,result);
+    }
+    if (progress && !progress(8,8)) throw std::runtime_error("pi-H3 pixel decode cancelled");
+    return result;
+  }
   auto red = alloc(result.frames, uint64_t(result.height) * result.width);
   auto green = alloc(result.frames, uint64_t(result.height) * result.width);
   auto blue = alloc(result.frames, uint64_t(result.height) * result.width);
@@ -271,5 +302,28 @@ vae::DecodedVideo SolH3Decoder::decode(const float* z, int T, int H, int W,
   ctx.download(blue, result.data.data() + plane * 2, plane);
   if (progress && !progress(24, 24)) throw std::runtime_error("Sol-H3-VAE decode cancelled");
   return result;
+}
+
+vae::DecodedVideo SolH3Decoder::decode_features(const float* features, int T, int H, int W) {
+  auto& d=*impl_;
+  if (!d.loaded || !d.dwd || !features) throw std::invalid_argument("pi-H3: load pixel head first");
+  const auto geom=vae::build_sol_h3_geometry(T,H*2,W*2);
+  std::vector<float> rows(size_t(geom.patches)*D);
+  {
+    auto& ctx=d.context;
+    auto input=ctx.allocate(matrix(Chunk,5376)),expanded=ctx.allocate(matrix(Chunk,8192));
+    auto plan=DenseGemmPlan::create(ctx,{Chunk,8192,5376,DenseGemmMode::kFloat32,DenseGemmBias::kFloat32});
+    std::vector<float> host(size_t(Chunk)*8192),padded(size_t(Chunk)*5376);
+    for (int begin=0;begin<T*H*W;begin+=Chunk) {
+      const int count=std::min(int(Chunk),T*H*W-begin);
+      std::copy_n(features+size_t(begin)*5376,size_t(count)*5376,padded.data());
+      ctx.upload_transient(input,padded.data(),padded.size());
+      plan.record(d.batch(),input,d.embed.w,expanded,Chunk,0,0,&d.embed.bias);
+      d.flush();
+      ctx.download(expanded,host.data(),host.size());
+      dit::pi_h3_expand_rows(host.data(),rows.data(),begin,count,H,W);
+    }
+  }
+  return decode(rows.data(),T,H*2,W*2,{},{});
 }
 } // namespace slopfab::vulkan

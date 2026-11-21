@@ -122,6 +122,10 @@ SLOPFAB_TEST(pi_h3_local_adapter_contract) {
   CHECK(plan.pi_h3_steps==dit::pi_h3_steps(adapter_path));
   CHECK(plan.num_model_evaluations()==plan.pi_h3_steps);
   CHECK(plan.video_sigmas.front()<1 && plan.audio_sigmas.front()<1);
+  LoraAdapters loaded; loaded.load(req.loras,base);
+  CHECK(bool(loaded.pi_h3()) && loaded.projection_count()==138);
+  CHECK(loaded.find("blocks.45.mlp.fc1") && !loaded.find("blocks.46.mlp.fc1"));
+  CHECK(loaded.find("blocks.0.attn.out_proj")->front().rank==64);
   req.num_inference_steps=3;
   CHECK(fails([&] { resolve_plan(req); }));
   req.num_inference_steps=0; req.loras[0].strength=.5f;

@@ -31,6 +31,7 @@ using DenoiseBoundaryFn = std::function<void(int step, const std::vector<float>&
                                              const std::vector<float>& audio_rows)>;
 
 struct DenoiseInputs {
+  bool scale_initial_noise = false; // pi-H3 starts below sigma=1
   bool hyperflow = false;
   SamplingEffect sampling_effect;
   const InpaintConstraint* inpaint = nullptr;

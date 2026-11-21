@@ -11,6 +11,8 @@ public:
   SolH3Decoder(SolH3Decoder&&) noexcept;
   SolH3Decoder& operator=(SolH3Decoder&&) noexcept;
   void load(const SafeTensors& checkpoint);
+  // pi-H3: modulated [T*H*W,5376] transformer features, H/W in 32px patches.
+  vae::DecodedVideo decode_features(const float* features, int time, int height, int width);
   size_t weight_bytes() const;
   vae::DecodedVideo decode(const float* normalized, int time, int height, int width,
                            const std::vector<float>& mean, const std::vector<float>& std_dev,
