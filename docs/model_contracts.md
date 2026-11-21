@@ -11,6 +11,17 @@ retain their original meaning.
 
 The H3 loader resolves structural capabilities separately from the legacy release enum. Metadata is authoritative when present: renaming an explicitly described checkpoint cannot select Animate behavior or a FastH3 sampling recipe. Missing metadata preserves legacy filename/source inference, reported by `ModelDescriptor::origin`.
 
+The published MiniMax-H3-Hybrid-DMAD-PDMD INT8 and W6A8_G32 exports use the
+existing reference-capable rank-8 H3 graph. Legacy detection recognizes their
+exact `merge_strategy` value
+`FL2VA_Ref2VA_Smoothstep_Hybrid_b20_35+DMAD0.85+PDMD0.333`, including renamed files.
+If that marker is absent, the released filenames are recognized. A different
+merge marker does not inherit this release's behavior from its filename. The
+rank-8 table must be present and compressed-attention gates must be absent.
+Explicit `slopfab.model` metadata takes precedence and opts out of the hybrid's
+legacy sampling preset; use `slopfab.sampling` to describe its defaults explicitly.
+See [hybrid sampling](sampling_settings.md#hybrid-dmad-pdmd).
+
 `slopfab.model` is a SafeTensors metadata string containing JSON:
 
 ```json

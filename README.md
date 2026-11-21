@@ -21,6 +21,7 @@ attempt with `slopfab settings get last_update_check`.
 | Model | What it does |
 | --- | --- |
 | MiniMax H3 (FL2VA, Ref2VA, Singularity / v2) | Generates video with audio, or still images. Ref2VA supports image, video and audio references; Singularity variants use the Turbo LoRA. |
+| [MiniMax H3 Hybrid DMAD-PDMD](docs/sampling_settings.md#hybrid-dmad-pdmd) | Fused FL2VA/Ref2VA video/audio generation with multimedia references; defaults to eight Euler steps. INT8 ConvRot and W6A8 exports use the existing H3 backends. |
 | [FastH3 V2](docs/fasth3_v2.md) / [FastH3 OmniRef](docs/omniref.md) | Eight-step H3 generation: V2 generates video/audio from text; OmniRef also accepts multimedia references. |
 | [Viggle Remake](docs/viggle_remake.md) | Recasts characters or edits a scene from a source video, painted frames and a prompt; retains source audio. |
 | [Krea 2](docs/krea2.md) (Turbo / Raw) | Text-to-image generation; Turbo is the default image model. |

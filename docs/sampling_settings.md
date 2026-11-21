@@ -74,6 +74,33 @@ too when selected. C callers can also select `SLOPFAB_SCHEDULE_BETA` through
 CPU tests compare ER-SDE trajectories with upstream and beta indices with SciPy.
 Regenerate those reference values with `tools/sampler_reference.py --source PATH_TO_COMFYUI`.
 
+## Hybrid DMAD-PDMD
+
+[MiniMax-H3-Hybrid-DMAD-PDMD](https://huggingface.co/OliviaRossi/Minimax-H3-Hybrid-DMAD-PDMD)
+uses the ordinary H3 transformer and reference-conditioning paths on CUDA and
+Vulkan. Its INT8 ConvRot and W6A8_G32 exports are recognized as reference-capable
+from the released merge metadata or filenames, with **8 Euler updates and
+video/audio shifts of 12/3**. The plan reports `Hybrid DMAD-PDMD compatibility
+preset`. The hybrid merge and both distillation adapters are already fused;
+do not add DMAD or PDMD again to reproduce the release.
+
+```sh
+slopfab video generate --model h3 --transformer weights/transformer/Minimax-H3-Hybrid-DMAD-PDMD_int8.safetensors --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors --vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --prompt "A red ball rolls across a wooden table." --out output/hybrid.y4m
+```
+
+Add `--reference-image subject.png` for an image reference, or use the existing
+[video/audio reference options](reference_media.md). No checkpoint conversion or
+extra LoRA is required. H3 uses a single conditional prediction per update,
+equivalent to CFG 1; the image-family `--guidance` option is not needed.
+
+Use `--steps 4` for a preview or `--steps 6` for six updates. The preset remains
+overridable: model sampling metadata, adapter settings and request overrides
+retain their existing precedence. `--schedule dmad-4step` selects a separate
+re-noising recipe and is not the default for this fused model. The default uses
+slopfab's uniform flow grid; `--schedule beta` is also available. ComfyUI's named
+`simple`/`sgm_uniform` schedules and optional Euler ancestral/UniPC/res_multistep
+samplers are not introduced by this preset.
+
 ## Independent audio steps (experimental)
 
 Use `--audio-steps` to give audio its own step count, for example when a LoRA
