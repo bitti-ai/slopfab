@@ -190,9 +190,11 @@ struct ExactH3Transformer::Impl {
   ExactH3TransformerConfig config;
   std::unique_ptr<State> state;
   bool text_ready = false;
+  bool pi_h3 = false;
 
   Impl(TensorContext& owner, const ExactH3TransformerConfig& value)
-      : context(&owner), config(value) {
+      : context(&owner), config(value),
+        pi_h3(value.main.block.loras && bool(value.main.block.loras->pi_h3())) {
   }
 };
 
@@ -667,8 +669,22 @@ void ExactH3Transformer::record_forward(
   batch.copy_rows(s.text_cache, s.hidden, 0, 0, c.text_rows);
   if (taps && taps->packed_input)
     batch.copy(s.hidden, *taps->packed_input);
-  s.main.record(batch, s.hidden, main_selectors, code, cosine, sine, ranges,
-                taps ? taps->main_boundaries : nullptr);
+  if (impl_->pi_h3) {
+    // The complete graph was preflighted above. Bound submissions for the
+    // adapter's three low-rank branches per layer on desktop Vulkan drivers.
+    for (uint32_t layer = 0; layer < c.main.layers; ++layer) {
+      s.main.record_layers(batch, s.hidden, main_selectors, code, cosine, sine,
+                            layer, 1, ranges, taps ? taps->main_boundaries : nullptr);
+      try { batch.submit().wait(); }
+      catch (const std::exception& e) {
+        throw std::runtime_error("pi-H3 Vulkan layer " + std::to_string(layer) + ": " + e.what());
+      }
+      batch = impl_->context->begin_batch();
+    }
+  } else {
+    s.main.record(batch, s.hidden, main_selectors, code, cosine, sine, ranges,
+                  taps ? taps->main_boundaries : nullptr);
+  }
   if (taps && taps->main_final)
     batch.copy(s.hidden, *taps->main_final);
 

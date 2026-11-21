@@ -37,6 +37,12 @@ INT8 ConvRot matrices are materialized to BF16 for the existing Sol attention
 operators; backbone matrices retain their native quantization. The head runs
 after the backbone is unloaded.
 
+Vulkan submits pi-H3's main transformer one layer at a time. This avoids the
+device-loss observed with a single long submission on the tested Windows
+NVIDIA driver, while preserving the computation. CUDA is faster on that setup.
+The two-step smoke's latents, Y4M video and WAV audio were byte-identical before
+and after this submission change.
+
 Text-to-video and the existing FL2VA image ending-anchor path are supported.
 An ending anchor still needs `--vae` for image encoding. General multimedia
 Ref2VA conditioning and first-image reference slots are not FL2VA inputs.
@@ -45,6 +51,13 @@ approximate caches, latent continuation/bridges, latent effects/upscaling,
 reusable latent archives and VAE previews. `--dump-latents` remains available
 for numerical diagnostics, but those latents cannot reproduce DWD pixels.
 Pixel-space postprocessing uses the normal output pipeline.
+
+Validation includes both local INT8 ConvRot adapters, NVFP4/FP8 FL2VA adapter
+loading, schedule/norm/ConvRot/pixel-layout tests, and actual CUDA and Vulkan
+generation with no video VAE path. The four-step adapter was checked at
+864x480 for 124 frames on both backends; the two-step smoke uses 128x128 for
+22 frames. Use a trained canvas such as 864x480 for image quality: tiny smoke
+resolutions can produce visible patch artifacts.
 
 Sources: [pi-H3 model card](https://huggingface.co/Lakonik/pi-H3),
 [pinned upstream implementation](https://github.com/Lakonik/ComfyUI-piFlow/tree/bcb6ffb8ff6191115e5803c4ddddef6a73b0b8a8).

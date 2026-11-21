@@ -77,6 +77,9 @@ public:
   // and gather that packed stream without a shader or host boundary.
   // main_selectors are [S] AdaLN table rows, code is [T,rank], and final
   // selectors are timestep-only [V]/[A].
+  // pi-H3 validates the whole forward, then submits main layers separately to
+  // bound desktop-driver execution time. The returned batch holds the heads
+  // and must still be submitted by the caller.
   void record_forward(TensorBatch& batch, DeviceTensor& video_latents, DeviceTensor& audio_latents,
                       DeviceTensor& main_selectors, DeviceTensor& code, DeviceTensor& cosine,
                       DeviceTensor& sine, DeviceTensor& video_timestep_indices,
