@@ -1234,6 +1234,37 @@ SLOPFAB_TEST(capi_ending_anchor_lifecycle) {
   CHECK(after.sequence_rows_without_text == before.sequence_rows_without_text);
 }
 
+SLOPFAB_TEST(capi_first_last_anchor_lifecycle) {
+  Request request;
+  CHECK(slopfab_request_set_start_anchor(nullptr, "opening.png") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  slopfab_plan before{}, first{}, both{}, after{};
+  CHECK(slopfab_resolve_plan(request.handle, &before) == SLOPFAB_OK);
+  std::string path = "opening.png";
+  CHECK(slopfab_request_set_start_anchor(request.handle, path.c_str()) == SLOPFAB_OK);
+  path = "changed.png";
+  CHECK(slopfab_resolve_plan(request.handle, &first) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_end_anchor(request.handle, "ending.png") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &both) == SLOPFAB_OK);
+  const int rows = before.latent_height * before.latent_width / 4;
+  CHECK(first.sequence_rows_without_text == before.sequence_rows_without_text + rows);
+  CHECK(both.sequence_rows_without_text == before.sequence_rows_without_text + 2 * rows);
+  CHECK(both.aligned_frames == before.aligned_frames);
+  {
+    OwnedString description;
+    CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
+    CHECK(std::strstr(description.text, "opening.png") != nullptr);
+    CHECK(std::strstr(description.text, "ending.png") != nullptr);
+  }
+  CHECK(slopfab_request_set_start_anchor(request.handle, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &after) == SLOPFAB_OK);
+  CHECK(after.sequence_rows_without_text == first.sequence_rows_without_text);
+  CHECK(slopfab_request_set_end_anchor(request.handle, "") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_start_anchor(request.handle, "again.png") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_start_anchor(request.handle, "") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &after) == SLOPFAB_OK);
+  CHECK(after.sequence_rows_without_text == before.sequence_rows_without_text);
+}
+
 SLOPFAB_TEST(capi_sampling_settings) {
   Request request;
   CHECK(slopfab_request_set_sampling_settings(nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);

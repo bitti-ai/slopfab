@@ -19,8 +19,8 @@ or `--steps 4` matching its training. Ref2VA, Hybrid DMAD-PDMD, FastH3 V2 and
 OmniRef are not replacement bases for this FL2VA adapter.
 
 For Vulkan, add `--inference-backend vulkan --vulkan-arithmetic portable`. The existing
-C API adapter setter selects the same implementation. No new C API fields or
-Python dependencies are needed.
+C API adapter setter selects the same implementation. No Python dependencies
+are needed.
 
 The trained recipe uses Euler, video/audio shifts 12/3, initial noise scaled by
 the first sigma, and these unshifted grids (with terminal zero):
@@ -43,9 +43,20 @@ NVIDIA driver, while preserving the computation. CUDA is faster on that setup.
 The two-step smoke's latents, Y4M video and WAV audio were byte-identical before
 and after this submission change.
 
-Text-to-video and the existing FL2VA image ending-anchor path are supported.
-An ending anchor still needs `--vae` for image encoding. General multimedia
-Ref2VA conditioning and first-image reference slots are not FL2VA inputs.
+Text-to-video, first-frame, last-frame and first+last-frame conditioning are
+supported. Add these options to either adapter's generation command:
+
+```powershell
+--first-frame opening.png --last-frame ending.png --vae weights/vae/minimax_h3_video_vae_fp16.safetensors
+```
+
+Either image can be omitted. Images are resized to the target canvas and
+encoded as fixed guides at its opening and ending rotary times. They guide
+the generated endpoints rather than replacing output pixels. The video VAE
+is used only for image encoding; DWD still produces all output video pixels.
+`--start-anchor` and `--end-anchor` are aliases. C API 1.54 adds
+`slopfab_request_set_start_anchor`; combine it with `slopfab_request_set_end_anchor`.
+General multimedia Ref2VA and ordinary `--reference-image` slots are not FL2VA inputs.
 The current integration rejects adapter stacking, alternate sampling grids,
 approximate caches, latent continuation/bridges, latent effects/upscaling,
 reusable latent archives and VAE previews. `--dump-latents` remains available

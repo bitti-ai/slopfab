@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix="slopfab-prompts-") as temporary:
     initial = select("h3", "--first-frame", "opening å.png")
     assert initial["use_case"] == "i2va" and "0.00 seconds" in initial["prompt_template"]
     assert initial["reference_bindings"][0]["path"] == "opening å.png"
-    assert initial["reference_bindings"][0]["generation_option"] == "--reference-image"
+    assert initial["reference_bindings"][0]["generation_option"] == "--first-frame"
     last = select("h3", "--last-frame", "ending.png", "--duration", "5.875", "--shots", "2")
     assert last["use_case"] == "l2va"
     assert "<Picture 1> (from [Shot 2])" in last["prompt_template"]

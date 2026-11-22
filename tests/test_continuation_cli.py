@@ -38,6 +38,15 @@ with tempfile.TemporaryDirectory(prefix="slopfab-regenerated-overlap-") as direc
     for value in ("-17", "18", "51", "17x"):
         run(*base, "--regenerate-overlap-frames", value, success=False)
 assert "ending anchor" in run("--end-anchor", "ending.png")
+assert "opening anchor" in run("--first-frame", "opening.png")
+assert "opening anchor" in run("--start-anchor", "opening.png")
+assert "ending anchor" in run("--last-frame", "ending.png")
+both = run("--first-frame", "opening.png", "--last-frame", "ending.png")
+assert "opening anchor" in both and "ending anchor" in both
+for flag in ["--first-frame", "--last-frame", "--start-anchor"]:
+    run(flag, "", success=False)
+    for args in [("--synthetic-latents",), ("--animate",)]:
+        run(flag, "frame.png", *args, success=False)
 for args in [("--synthetic-latents",), ("--animate",)]:
     run("--end-anchor", "ending.png", *args, success=False)
 with tempfile.TemporaryDirectory(prefix="slopfab-lock-overlap-") as directory:

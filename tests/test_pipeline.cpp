@@ -494,6 +494,16 @@ SLOPFAB_TEST(ending_anchor_cache_identity) {
   CHECK(prompt != slopfab::conditioning_cache_key(r));
   CHECK(vae != slopfab::reference_cache_key(r));
   r.canvas_width = 64;
+  r.start_anchor_path = r.end_anchor_path;
+  r.end_anchor_path.clear();
+  CHECK(prompt != slopfab::conditioning_cache_key(r));
+  CHECK(vae != slopfab::reference_cache_key(r));
+  const auto opening = slopfab::reference_cache_key(r);
+  r.canvas_width = 96;
+  CHECK(opening != slopfab::reference_cache_key(r));
+  r.canvas_width = 64;
+  r.end_anchor_path = r.start_anchor_path;
+  r.start_anchor_path.clear();
   r.reference_image_paths = {r.end_anchor_path};
   r.end_anchor_path.clear();
   CHECK(prompt != slopfab::conditioning_cache_key(r));

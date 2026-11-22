@@ -368,13 +368,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--reference-image") {
       req.reference_image_paths.emplace_back(next("--reference-image"));
     } else if (arg == "--first-frame" || arg == "--start-anchor") {
-      req.start_anchor_path = next(arg.c_str());
+      req.start_anchor_path = next("--first-frame");
       if (req.start_anchor_path.empty())
-        throw std::invalid_argument(arg + " requires an image path");
+        throw std::invalid_argument(std::string(arg) + " requires an image path");
     } else if (arg == "--end-anchor" || arg == "--last-frame") {
-      req.end_anchor_path = next(arg.c_str());
+      req.end_anchor_path = next("--last-frame");
       if (req.end_anchor_path.empty())
-        throw std::invalid_argument(arg + " requires an image path");
+        throw std::invalid_argument(std::string(arg) + " requires an image path");
     } else if (arg == "--reference-video" || arg == "--reference-audio") {
       const bool is_video = arg == "--reference-video";
       reference_files.emplace_back(next(is_video ? "--reference-video" : "--reference-audio"),

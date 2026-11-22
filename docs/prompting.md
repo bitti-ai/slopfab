@@ -82,18 +82,18 @@ Picture 1** to the ending. Ref2VA uses its six-section reference schema.
 | Intended input | Selector | Guide | Local generation binding |
 | --- | --- | --- | --- |
 | Text only | No references | T2VA | Text prompt |
-| Opening image | `--first-frame FIRST` | I2VA | `--reference-image FIRST`, compatible Ref2VA weights |
+| Opening image | `--first-frame FIRST` | I2VA | `--first-frame FIRST`, compatible FL2VA or Ref2VA weights |
 | Ending image | `--last-frame LAST` | L2VA | `--end-anchor LAST`, compatible FL2VA or Ref2VA weights |
-| Both endpoints | Both selectors | FL2VA | `--reference-image FIRST --end-anchor LAST`, compatible Ref2VA weights |
+| Both endpoints | Both selectors | FL2VA | `--first-frame FIRST --last-frame LAST`, compatible FL2VA or Ref2VA weights |
 | Identity/style/content | Ordinary reference selectors | Ref2VA | Ordered ordinary references, compatible Ref2VA weights |
 | Saved latent continuation | `--continuation` | Continuation | Consult `help generate` for continuation, Keystone/Capstone and locking |
 
-`--first-frame` and `--last-frame` are **guide selectors only**, not generation
-options. Slopfab has an ending-image anchor but no dedicated first-image temporal
-constraint. An ordinary opening reference plus I2VA/FL2VA wording expresses the
-intended opening without guaranteeing pixel equality. FL2VA checkpoints reject
-ordinary reference-image inputs: the guide's name must not be used to infer the
-checkpoint. These limits are included in the returned guide.
+`--first-frame` and `--last-frame` are both guide selectors and generation
+options. They supply fixed temporal anchors on the target canvas, separately
+or together. FL2VA, including pi-H3, supports these anchors; compatible Ref2VA
+weights also accept them. Supply the video VAE encoder for image conditioning.
+Anchors guide the endpoints without guaranteeing exact pixel equality.
+FL2VA checkpoints still reject ordinary reference-image inputs.
 
 Generic `--reference-image` inputs never silently become first frames. For a
 mixed identity/style reference and endpoint request, load `h3 ref2va` and the

@@ -647,6 +647,54 @@ SLOPFAB_TEST(ending_anchor_positions_and_continuation) {
   }
 }
 
+SLOPFAB_TEST(first_last_anchor_positions_and_validation) {
+  using namespace slopfab;
+  GenerateRequest r;
+  r.canvas_width = 64;
+  r.canvas_height = 32;
+  r.num_frames = 22;
+  r.start_anchor_path = "opening.png";
+  const auto first = resolve_plan(r);
+  CHECK(first.layout.num_condition_video == 2);
+  CHECK(first.layout.num_condition_audio == 0);
+  CHECK(!r.has_references() && !r.has_native_references());
+  r.end_anchor_path = "ending.png";
+  const auto both = resolve_plan(r);
+  CHECK(both.layout.num_condition_video == 4);
+  CHECK(both.layout.num_video_rows == first.layout.num_video_rows);
+  CHECK(both.layout.num_audio_rows == first.layout.num_audio_rows);
+  CHECK(both.aligned_frames == 22);
+  CHECK(both.layout.condition_audio_is_explicit);
+  CHECK(r.conditioning_image_paths() == std::vector<std::string>({"opening.png", "ending.png"}));
+  const auto opening = start_anchor_geometry(both.layout);
+  const auto ending = end_anchor_geometry(both.layout);
+  const auto packed = dit::build_ref2va_packed_sequence({0, 0}, {opening, ending}, 7, 2, 4, 37);
+  const auto& pos = packed.position_ids;
+  const int first_row = packed.indices.video[0];
+  const int last_row = packed.indices.video[2];
+  const int target = packed.indices.video[4];
+  CHECK_NEAR(pos[first_row * 3], pos[target * 3], 0);
+  CHECK_NEAR(pos[last_row * 3] - pos[target * 3], 35, 1e-10);
+  for (int i = 0; i < 2; ++i)
+    for (int axis = 1; axis < 3; ++axis) {
+      CHECK_NEAR(pos[(first_row + i) * 3 + axis], pos[(target + i) * 3 + axis], 0);
+      CHECK_NEAR(pos[(last_row + i) * 3 + axis], pos[(target + i) * 3 + axis], 0);
+    }
+  r.end_anchor_path.clear();
+  r.still_image = true;
+  CHECK(rejects([&] { resolve_plan(r); }));
+  r.still_image = false;
+  LatentFixture source;
+  source.write();
+  r.continuation = LatentClip::load(source.path.string());
+  CHECK(rejects([&] { resolve_plan(r); }));
+  r.continuation.reset();
+  for (const auto* family : {"h3_image", "ph3_image", "moss", "fibo2", "yue2", "minimax_music3", "krea2"}) {
+    r.model_family = family;
+    CHECK(rejects([&] { resolve_plan(r); }));
+  }
+}
+
 SLOPFAB_TEST(ending_anchor_accepts_fl2va_temporal_conditioning) {
   using namespace slopfab;
   LatentFixture weights, source;
@@ -659,6 +707,12 @@ SLOPFAB_TEST(ending_anchor_accepts_fl2va_temporal_conditioning) {
   r.end_anchor_path = "ending.png";
   r.num_frames = 17;
   CHECK(resolve_plan(r).model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable);
+  r.start_anchor_path = "opening.png";
+  CHECK(resolve_plan(r).model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable);
+  r.end_anchor_path.clear();
+  CHECK(resolve_plan(r).model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable);
+  r.start_anchor_path.clear();
+  r.end_anchor_path = "ending.png";
   r.continuation = LatentClip::load(source.path.string());
   CHECK(resolve_plan(r).aligned_frames == 56);
   r.reference_image_paths = {"subject.png"};
