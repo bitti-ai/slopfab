@@ -31,8 +31,9 @@ constexpr int kMinFrames = 22;
 void append_media_identity(std::string& key, const GenerateRequest& request) {
   key += ":remake:" + request.remake_mode;
   key += ":regenerate:" + request.regenerate.mode;
+  key += ":start-anchor:" + std::to_string(!request.start_anchor_path.empty());
   key += ":end-anchor:" + std::to_string(!request.end_anchor_path.empty());
-  if (!request.end_anchor_path.empty()) {
+  if (request.has_frame_anchors()) {
     const auto plan = resolve_plan(request);
     key += ":" + std::to_string(plan.canvas_width) + "x" + std::to_string(plan.canvas_height);
   }
@@ -94,7 +95,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   request.context_noise.validate();
   if (request.context_noise.strength > 0 &&
       (request_model_family(request) != "h3" || request.still_image || request.bridge ||
-       request.end_anchor_latents || !request.end_anchor_path.empty() || request.video_transition ||
+       request.end_anchor_latents || request.has_frame_anchors() || request.video_transition ||
        request.animate || request.image_edit.image || request.continuation_source_noise > 0 ||
        request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
        request.motion_cache.active()))
@@ -108,7 +109,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   if (request.keystone.source) {
     validate_keystone(request.keystone);
     if (request_model_family(request) != "h3" || request.still_image || request.bridge ||
-        request.end_anchor_latents || !request.end_anchor_path.empty() || request.video_transition ||
+        request.end_anchor_latents || request.has_frame_anchors() || request.video_transition ||
         request.animate || request.image_edit.image || request.continuation_source_noise > 0 ||
         request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
         request.motion_cache.active())
@@ -126,15 +127,17 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   if (request.end_anchor_latents &&
       (request_model_family(request) != "h3" || request.still_image || request.bridge ||
        request.video_transition || request.animate || request.image_edit.image ||
-       !request.end_anchor_path.empty() || request.cache_threshold > 0 || request.skip_every > 0 ||
+       request.has_frame_anchors() || request.cache_threshold > 0 || request.skip_every > 0 ||
        request.block_cache_span > 0 || request.motion_cache.active()))
     throw std::invalid_argument(
         "latent ending anchor requires H3 video without image anchors, bridges, transitions, edits or approximate caches");
-  if (!request.end_anchor_path.empty() &&
+  if (request.has_frame_anchors() &&
       (request_model_family(request) != "h3" || request.still_image || request.bridge ||
        request.video_transition || request.animate || request.image_edit.image))
     throw std::invalid_argument(
-        "ending anchor requires H3 video generation or continuation without bridge, transitions or edits");
+        "frame anchors require H3 video generation or continuation without bridge, transitions or edits");
+  if (!request.start_anchor_path.empty() && request.continuation)
+    throw std::invalid_argument("opening anchor cannot be combined with a continuation source");
   if (request_model_family(request) == "yue2" || request_model_family(request) == "minimax_music3") return resolve_music_plan(request);
   if (request_model_family(request) == "h3_image")
     return resolve_h3_image_plan(request);
@@ -190,12 +193,12 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     const bool fl2va = plan.model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable &&
                        !plan.model.compressed_attention;
     if ((request.has_references() && !plan.model.supports_references && request.remake_mode.empty()) ||
-        ((request.continuation || request.bridge || request.end_anchor_latents || !request.end_anchor_path.empty()) &&
+        ((request.continuation || request.bridge || request.end_anchor_latents || request.has_frame_anchors()) &&
          !plan.model.supports_references && !fl2va))
       throw std::invalid_argument("selected model does not support reference conditioning");
     if (plan.model.compressed_attention && plan.model.pdd_steps == 1 &&
         (request.has_references() || request.continuation || request.bridge ||
-         request.end_anchor_latents || !request.end_anchor_path.empty() || request.image_edit.invert_mask))
+         request.end_anchor_latents || request.has_frame_anchors() || request.image_edit.invert_mask))
       throw std::invalid_argument(
           "compressed attention currently supports unconditioned media layouts only");
   }
@@ -208,7 +211,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
         "MotionCache is incompatible with the resolved conditioning or attention contract");
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
     bool has_video = bool(request.continuation) || bool(request.bridge) ||
-                     bool(request.end_anchor_latents) || !request.end_anchor_path.empty();
+                     bool(request.end_anchor_latents) || request.has_frame_anchors();
     for (const auto& media : request.reference_media)
       has_video |= media->is_video();
     for (const auto& ref : request.refmods)
@@ -329,6 +332,10 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   plan.layout.num_audio_rows = plan.geometry.audio_channels * plan.layout.num_audio_latents;
   plan.layout.num_video_rows =
       plan.layout.num_latent_frames * plan.layout.rows_per_frame(plan.geometry);
+  if (!request.start_anchor_path.empty()) {
+    plan.layout.condition_audio_is_explicit = true;
+    plan.layout.num_condition_video += start_anchor_geometry(plan.layout).video_rows();
+  }
   if (!request.end_anchor_path.empty()) {
     plan.layout.condition_audio_is_explicit = true;
     plan.layout.num_condition_video += end_anchor_geometry(plan.layout).video_rows();
@@ -798,6 +805,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   if (request.continuation_source_noise > 0)
     description += "  middle initialization held final source latent slice; video noise " +
                    std::to_string(plan.video_sigmas.front()) + "; audio uses full schedule\n";
+  if (!request.start_anchor_path.empty())
+    description += "  opening anchor      " + request.start_anchor_path +
+                   " (target canvas; fixed opening conditioning)\n";
   if (!request.end_anchor_path.empty())
     description += "  ending anchor       " + request.end_anchor_path +
                    " (target canvas; fixed ending conditioning)\n";

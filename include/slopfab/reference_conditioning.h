@@ -16,8 +16,9 @@ ReferenceConditionOptions animate_reference_options(int width, int height);
 ReferenceConditionOptions transition_reference_options(int width, int height, int edge);
 void align_transition_guides(std::vector<dit::ReferenceGeometry>& geometry,
                              int target_latent_frames);
-// FL2VA last-image rotary position, on the target canvas. No target rows
+// FL2VA first/last-image rotary positions, on the target canvas. No target rows
 // are overwritten: this is fixed conditioning, not a pixel-copy constraint.
+dit::ReferenceGeometry start_anchor_geometry(const dit::SequenceLayout& target);
 dit::ReferenceGeometry end_anchor_geometry(const dit::SequenceLayout& target);
 
 struct ReferenceConditionPlan {

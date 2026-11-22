@@ -839,6 +839,16 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_context_noise(
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_start_anchor(slopfab_request* request,
+                                                            const char* path) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "opening anchor: null request");
+  return guarded([&] {
+    request->request.start_anchor_path = path ? path : "";
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_end_anchor(slopfab_request* request,
                                                           const char* path) {
   if (!request)

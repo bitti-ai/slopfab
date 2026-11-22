@@ -86,7 +86,7 @@ GeneratePlan resolve_h3_image_plan(const GenerateRequest& r) {
     throw std::invalid_argument("MiniMax-H3-Image masked editing requires strength 1 to retain six PDD evaluations");
   if (outpaint && r.image_edit.langevin_steps != 0)
     throw std::invalid_argument("MiniMax-H3-Image outpainting requires Langevin steps 0 to retain six PDD evaluations");
-  if (!r.reference_media.empty() || r.has_refmods() || !r.end_anchor_path.empty() ||
+  if (!r.reference_media.empty() || r.has_refmods() || r.has_frame_anchors() ||
       r.continuation || r.bridge ||
       r.animate || r.video_transition || r.preserve_driving_audio || !r.loras.empty() ||
       r.cache_threshold != 0 || r.skip_every != 0 || r.block_cache_span != 0 ||

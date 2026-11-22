@@ -284,7 +284,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   if (options.source == LatentSource::kDenoise && !options.prompt_embedding_path.empty())
     fixed_prompt =
         text::read_prompt_embedding(options.prompt_embedding_path,
-                                     request.has_native_references() || !request.end_anchor_path.empty());
+                                     request.has_native_references() || request.has_frame_anchors());
 
   if (plan.conditioning.fixed_prompt_tokens > 0 &&
       fixed_prompt.num_tokens != plan.conditioning.fixed_prompt_tokens)
@@ -359,9 +359,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         if (!request.remake_pins.empty())
           remake_keyframes.push_back(prepare_remake_keyframe(image, plan.canvas_width,
               plan.canvas_height, remake_keyframes.empty()));
-        const bool end_anchor = !request.end_anchor_path.empty() &&
-                                reference_images.size() == request.reference_image_paths.size();
-        if (end_anchor) {
+        const bool frame_anchor = reference_images.size() >= request.reference_image_paths.size();
+        if (frame_anchor) {
           resized_w = plan.canvas_width;
           resized_h = plan.canvas_height;
         } else if (plan.model.family == "h3_image") {
@@ -590,12 +589,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     // --- fixed image anchors ------------------------------------------------
     std::vector<float> condition_video_rows;
     std::vector<float> condition_audio_rows;
-    std::vector<float> end_anchor_rows;
+    std::vector<float> start_anchor_rows, end_anchor_rows;
     std::vector<float> remake_keyframe_rows;
     std::vector<dit::ReferenceGeometry> reference_geometry;
     if (!reference_images.empty()) {
       if (request.video_vae_path.empty()) {
-        result.message = "image references and ending anchors require --video-vae for H3 image encoding";
+        result.message = "image references and frame anchors require --video-vae for H3 image encoding";
         return result;
       }
       const Clock::time_point t0 = Clock::now();
@@ -680,6 +679,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       // reapplied every generation onto a fresh copy of the cached rows. Keep
       // each ordered reference on its own deterministic stream.
       reference_geometry = geometry;
+      reference_geometry.resize(request.reference_image_paths.size());
       for (size_t reference_index = 0; reference_index < reference_images.size();
            ++reference_index) {
         const RGBImage& image = reference_images[reference_index];
@@ -700,16 +700,17 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         }
         sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), 0.999f, rows.size(),
                                             rows.data());
-        if (!request.end_anchor_path.empty() && reference_index + 1 == reference_images.size()) {
+        if (!request.start_anchor_path.empty() && reference_index == request.reference_image_paths.size()) {
+          start_anchor_rows = std::move(rows);
+        } else if (!request.end_anchor_path.empty() && reference_index + 1 == reference_images.size()) {
           end_anchor_rows = std::move(rows);
-          reference_geometry.pop_back();
         } else {
           condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
         }
       }
       if (options.verbose)
         std::printf("references  %zu images -> %zu fixed video rows in %.2f s%s\n",
-                    reference_images.size(), (condition_video_rows.size() + end_anchor_rows.size()) / 96, seconds_since(t0),
+                    reference_images.size(), (condition_video_rows.size() + start_anchor_rows.size() + end_anchor_rows.size()) / 96, seconds_since(t0),
                     encode_cache_hit ? " (cached encode)" : "");
     }
 
@@ -903,12 +904,16 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     if (request.video_transition)
       align_transition_guides(reference_geometry, layout.num_latent_frames);
 
-    // Temporal guides follow all ordinary references. Keep the keyframe last
+    // Temporal guides follow all ordinary references. Keep the anchors last
     // even when media/refmods or continuation have appended their own rows.
     if (!request.remake_pins.empty()) {
       const auto pins = remake_keyframe_geometry(request.remake_pins, layout);
       reference_geometry.insert(reference_geometry.end(), pins.begin(), pins.end());
       condition_video_rows.insert(condition_video_rows.end(), remake_keyframe_rows.begin(), remake_keyframe_rows.end());
+    }
+    if (!request.start_anchor_path.empty()) {
+      reference_geometry.push_back(start_anchor_geometry(layout));
+      condition_video_rows.insert(condition_video_rows.end(), start_anchor_rows.begin(), start_anchor_rows.end());
     }
     if (!request.end_anchor_path.empty()) {
       reference_geometry.push_back(end_anchor_geometry(layout));

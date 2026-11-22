@@ -139,6 +139,8 @@ struct GenerateRequest {
   // the same order labels images in the multimodal prompt and packed sequence.
   std::vector<std::string> reference_image_paths;
 
+  // Optional opening keyframe, on the target canvas at the target's first time.
+  std::string start_anchor_path;
   // Optional ending keyframe, resized to the target canvas. Unlike ordinary
   // references it shares the target's spatial grid and final rotary time.
   // With continuation this anchors the end of the newly sampled window.
@@ -148,8 +150,14 @@ struct GenerateRequest {
   std::shared_ptr<const LatentClip> end_anchor_latents;
   int end_anchor_context_frames = 22;
 
+  bool has_frame_anchors() const {
+    return !start_anchor_path.empty() || !end_anchor_path.empty();
+  }
+
   std::vector<std::string> conditioning_image_paths() const {
     auto paths = reference_image_paths;
+    if (!start_anchor_path.empty())
+      paths.push_back(start_anchor_path);
     if (!end_anchor_path.empty())
       paths.push_back(end_anchor_path);
     return paths;

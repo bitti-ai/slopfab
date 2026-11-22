@@ -54,7 +54,7 @@ void validate_remake_request(const GenerateRequest& r) {
   }
   (void)remake_sampling(r.remake_mode);
   if (request_model_family(r) != "h3" || r.animate || r.still_image || r.continuation ||
-      r.bridge || r.end_anchor_latents || !r.end_anchor_path.empty() || r.video_transition ||
+      r.bridge || r.end_anchor_latents || r.has_frame_anchors() || r.video_transition ||
       r.image_edit.image || r.has_refmods() || r.context_noise.strength > 0 || r.keystone.source)
     throw std::invalid_argument("Remake requires H3 video without other editing/continuation modes");
   if (r.num_frames < 90 || r.num_frames > 345 || (r.num_frames - 5) % 17)

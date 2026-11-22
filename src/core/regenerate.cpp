@@ -33,7 +33,7 @@ void validate_regenerate_request(const GenerateRequest& r) {
   }
   const int steps = regenerate_steps(r.regenerate.mode);
   if (request_model_family(r) != "h3" || r.still_image || r.animate || !r.remake_mode.empty() ||
-      r.continuation || r.bridge || r.end_anchor_latents || !r.end_anchor_path.empty() ||
+      r.continuation || r.bridge || r.end_anchor_latents || r.has_frame_anchors() ||
       r.video_transition || r.image_edit.image || r.has_refmods() || r.keystone.source ||
       r.context_noise.strength > 0 || r.preserve_driving_audio)
     throw std::invalid_argument("Regenerate requires H3 Ref2VA video without other editing or continuation modes");

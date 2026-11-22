@@ -236,7 +236,7 @@ Object select_guide(const Value& catalog, const Selection& s) {
     return "<Picture " + std::to_string(picture) + ">";
   };
   if (!s.first.empty())
-    bind(s.first, image_label(), "intended opening", "--reference-image");
+    bind(s.first, image_label(), "opening anchor", "--first-frame");
   if (!s.remake.empty())
     bind(s.videos.front(), "<Video 1>", "source video", "--reference-video");
   for (const auto& path : s.images)

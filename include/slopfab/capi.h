@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 53
+#define SLOPFAB_CAPI_VERSION_MINOR 54
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Since 1.46: optional reduced-resolution H3 previews. The packed RGB8 buffer
@@ -1067,6 +1067,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_source_init(
  * Independent of continuation: clearing either leaves the other intact. */
 SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_end_anchor(slopfab_request* request, const char* path);
+
+/* Since 1.54. Guide the opening of H3 video toward an image, resized to the
+ * target canvas at its first rotary time. Supports FL2VA (including pi-H3)
+ * and compatible Ref2VA on CUDA/Vulkan. Combine with set_end_anchor for
+ * first+last conditioning. Requires the video VAE encoder, not pixel copying.
+ * Incompatible with continuation. NULL/empty clears only the opening anchor. */
+SLOPFAB_C_API int SLOPFAB_CALL
+slopfab_request_set_start_anchor(slopfab_request* request, const char* path);
 
 /* Since 1.40. Preserve a completed ending segment's video AND audio latents.
  * context_frames is 17*k+5 (>=5), fitting in the source; its opening context
