@@ -699,7 +699,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "                      audio %.6f .. %.6f (shift %.6g)\n"
       "  seed                %llu\n"
       "  output              %s\n",
-      request.prompt.size(), request.reference_image_paths.size(),
+      request.prompt.size(), request.conditioning_image_paths().size(),
+      request.has_frame_anchors() && !request.has_references() ? " (frame-to-video)" :
       !request.has_references() ? (request.still_image ? " (text-to-image)" : " (text-to-video)")
                                 : " (Ref2VA, ordered)",
       plan.canvas_height, plan.canvas_width, provenance,

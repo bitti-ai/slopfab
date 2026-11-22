@@ -43,6 +43,16 @@ assert "opening anchor" in run("--start-anchor", "opening.png")
 assert "ending anchor" in run("--last-frame", "ending.png")
 both = run("--first-frame", "opening.png", "--last-frame", "ending.png")
 assert "opening anchor" in both and "ending anchor" in both
+with tempfile.TemporaryDirectory(prefix="slopfab-frame-anchors-") as directory:
+    path = Path(directory) / "request.json"
+    for first, last in [("first-frame", "last-frame"), ("start-anchor", "end-anchor")]:
+        path.write_text(json.dumps({"schema_version": 1, "task": "video", "prompt": "test",
+            "options": {"transformer": "missing-lock-fixture.safetensors", "frames": 22,
+                        first: "opening.png", last: "ending.png"}}))
+        result = subprocess.run([exe, "requests", "run", "--request", str(path), "--dry-run"],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "opening anchor" in result.stdout and "ending anchor" in result.stdout
 for flag in ["--first-frame", "--last-frame", "--start-anchor"]:
     run(flag, "", success=False)
     for args in [("--synthetic-latents",), ("--animate",)]:

@@ -664,6 +664,7 @@ SLOPFAB_TEST(first_last_anchor_positions_and_validation) {
   CHECK(both.layout.num_video_rows == first.layout.num_video_rows);
   CHECK(both.layout.num_audio_rows == first.layout.num_audio_rows);
   CHECK(both.aligned_frames == 22);
+  CHECK(describe_plan(r, both).find("2 (frame-to-video)") != std::string::npos);
   CHECK(both.layout.condition_audio_is_explicit);
   CHECK(r.conditioning_image_paths() == std::vector<std::string>({"opening.png", "ending.png"}));
   const auto opening = start_anchor_geometry(both.layout);

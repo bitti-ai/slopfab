@@ -70,5 +70,12 @@ generation with no video VAE path. The four-step adapter was checked at
 22 frames. Use a trained canvas such as 864x480 for image quality: tiny smoke
 resolutions can produce visible patch artifacts.
 
+First-frame conditioning was also checked on CUDA at 864x480 for 22 frames
+with the two-step adapter. First+last conditioning produced 56 frames at
+864x480 with two steps on CUDA and four steps on Vulkan. Both image guides
+were encoded, endpoints were visually checked, and output used the DWD pixel
+head without loading a video VAE decoder. CPU/CLI/C API regressions cover
+anchor positions, cache roles, request JSON, and independent anchor clearing.
+
 Sources: [pi-H3 model card](https://huggingface.co/Lakonik/pi-H3),
 [pinned upstream implementation](https://github.com/Lakonik/ComfyUI-piFlow/tree/bcb6ffb8ff6191115e5803c4ddddef6a73b0b8a8).
