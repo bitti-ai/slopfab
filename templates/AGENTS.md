@@ -1,4 +1,4 @@
-18
+19
 
 # Slopfab media generation
 
@@ -33,13 +33,12 @@ If the user delegates choices, state reasonable defaults and proceed.
   which references or existing assets must remain consistent?
 - **Images/video:** aspect ratio, generation resolution and final delivery size.
   Offer 16:9 landscape, 9:16 portrait, 1:1 square, or 4:5 portrait for a feed;
-  3:2/2:3 suits photographs. Image starting sizes: 1536x864, 864x1536,
-  1024x1024, 1024x1280, or 1536x1024/1024x1536 respectively.
-  For 16:9 video, offer 512x288 for a draft or 1024x576 for a more detailed
+  3:2/2:3 suits photographs, MiniMax H3 Image defaults to 16 MP.
+  For video, default to 768p.
   generation; reverse dimensions for portrait. A final 1920x1080/1080x1920
   delivery can be a separate upscale. Validate model alignment and VRAM limits;
-  these are choices, not universally supported presets. Do not silently crop,
-  stretch, or reduce an agreed resolution.
+  these are choices, not universally supported presets. Do not stretch, or reduce 
+  an agreed resolution, cropping small slices is ok.
 - **Video:** duration, one continuous shot versus cuts, camera movement, intended
   ending, and whether sound/music is needed. **Music:** duration, mood/style,
   instruments/tempo, instrumental versus vocals, lyrics/language, and loop or ending.
@@ -47,19 +46,6 @@ If the user delegates choices, state reasonable defaults and proceed.
   sound in a short or smaller draft before an expensive full generation.
 
 ## Match the method to the scene
-
-- **Refine an H3 draft to 2K:** use `video regenerate` with
-  the IC LoRA, HyperFlow, Ref2VA, full multimodal Qwen and one 124-frame draft
-  at 24 fps. Keep its original caption. Default output is 2560x1440; mux the
-  original soundtrack back afterward. Consult `docs/regenerate_2k.md`.
-
-- **Remake existing footage:** use Viggle Remake (`--remake swap` for characters,
-  `--remake edit` for scene changes), a 24 fps source, one to four painted
-  frames and a six-section H3 prompt. Read `slopfab prompts get h3 remake`
-  for the official format, painted-frame guidance and timeline pins. Attach the source WAV with
-  `--driving-audio`. Merged Remake weights already include their mode LoRA;
-  do not add it again. Render 90..345 frames in 17*n+5 windows. Use `--pin`
-  once per painted image when shot timing or composition matters; split longer clips as needed.
 
 - **Short single shot:** give one coherent action and camera direction; keep
   subject, lighting and setting consistent rather than packing in scene changes.
@@ -81,6 +67,10 @@ If the user delegates choices, state reasonable defaults and proceed.
   preserve framing and unaffected content. Keep approved references and recipes.
 - **Lipsync:** Use clean audio reference for lipsync generation. Use Demucs to
   separate vocals if needed. Use SyncNet to evaluate the quality of the lipsync.
+- **Refine to 2K:** If 2K is requested, use `video regenerate`.
+- **Remake existing footage:** use Viggle Remake (`--remake swap` for characters,
+  `--remake edit` for scene changes). Read `slopfab prompts get h3 remake`
+  for the official format, painted-frame guidance and timeline pins. Split longer clips as needed.
 
 ## Keep a reviewable project
 
@@ -106,8 +96,8 @@ Run `slopfab projects update NAME` to construct OUTPUT/NAME.html from that JSON
 using the bundled template. Do this every time new generated media or a preview
 is ready to show the user, and after every direct JSON edit. Generation with
 --project and media registration rebuild the page automatically.
-Keep working files
-and versioned assets inside the project folder.
+
+Keep working files and versioned assets inside the project folder.
 Always copy the final generation result directly into the configured output folder,
 using the project name and the appropriate media extension: OUTPUT/NAME.mp4,
 OUTPUT/NAME.png or OUTPUT/NAME.wav, for example. Refresh this delivery copy when
@@ -118,11 +108,3 @@ previous versions, unrelated items and saved latents needed for continuation.
 Use external FFmpeg for browser-friendly previews of native Y4M/PPM, keeping
 video soundtracks synchronized. After clip changes, rebuild and register the
 parent video and run `slopfab projects update NAME` before showing the page.
-
-The generated template defaults the main player
-to the latest full assembled video, with FULL VIDEO first in the clip
-list and clip selections playing in that main view. Clip cards show a single
-frame decoded by the browser from their video, without pregenerated thumbnail
-images. Other library assets open in a popup over the page.
-Pasted page prompts are edit requests; reconcile them with the latest project
-state before acting.
